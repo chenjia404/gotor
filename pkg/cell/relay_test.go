@@ -2,9 +2,31 @@ package cell
 
 import (
 	"bytes"
+	"encoding/binary"
 	"strings"
 	"testing"
 )
+
+func TestRelayCellEncode_SetsLengthFromData(t *testing.T) {
+	// 调用方若只填 Data 而漏设 Length，Encode 必须写入真实长度。
+	// 真实 EXTEND2 曾因此 Length=0，Guard 无法解析。
+	rc := &RelayCell{
+		Command:  RelayExtend2,
+		StreamID: 0,
+		Data:     []byte{3, 0, 6, 1, 2, 3, 4, 5, 6},
+	}
+	encoded, err := rc.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.Length != uint16(len(rc.Data)) {
+		t.Fatalf("Length=%d want %d", rc.Length, len(rc.Data))
+	}
+	got := binary.BigEndian.Uint16(encoded[9:11])
+	if got != uint16(len(rc.Data)) {
+		t.Fatalf("encoded length field=%d want %d", got, len(rc.Data))
+	}
+}
 
 func TestNewRelayCell(t *testing.T) {
 	streamID := uint16(42)

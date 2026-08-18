@@ -132,11 +132,9 @@ func (e *Extension) ExtendCircuit(ctx context.Context, target string, handshakeT
 		return fmt.Errorf("failed to build EXTEND2 data for target %q: %w", target, err)
 	}
 
-	// Create RELAY_EXTEND2 cell
-	relayCell := &cell.RelayCell{
-		Command:  cell.RelayExtend2,
-		StreamID: 0, // EXTEND2 uses stream ID 0
-		Data:     extend2Data,
+	relayCell, err := cell.NewRelayCell(0, cell.RelayExtend2, extend2Data)
+	if err != nil {
+		return fmt.Errorf("failed to encode EXTEND2 relay cell: %w", err)
 	}
 
 	e.logger.Debug("Sending EXTEND2 relay cell",

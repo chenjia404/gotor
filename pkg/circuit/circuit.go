@@ -79,6 +79,9 @@ type Circuit struct {
 	deliverTimer   *time.Timer // Timer for relay cell delivery timeout
 	deliverTimerMu sync.Mutex
 	mux            *CellMux
+	destroyCh      chan struct{}
+	destroyOnce    sync.Once
+	destroyReason  byte
 }
 
 // Hop represents a single hop in a circuit (one relay)
@@ -142,7 +145,18 @@ func NewCircuit(id uint32) *Circuit {
 		sendmeSent:       0,                              // No SENDME cells sent yet
 		replayProtection: cell.NewReplayProtection(),     // SECURITY-001: Initialize replay protection
 		deliverTimer:     deliverTimer,                   // AUDIT-MED-4 FIX: Reusable timer
+		destroyCh:        make(chan struct{}),
 	}
+}
+
+// NotifyDestroyed 由连接 mux 在收到 DESTROY 时调用，打断 RELAY 等待。
+func (c *Circuit) NotifyDestroyed(reason byte) {
+	c.destroyOnce.Do(func() {
+		c.mu.Lock()
+		c.destroyReason = reason
+		c.mu.Unlock()
+		close(c.destroyCh)
+	})
 }
 
 // AddHop adds a hop to the circuit
@@ -1169,7 +1183,15 @@ func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
 // This blocks until a relay cell is received or the context is cancelled
 func (c *Circuit) ReceiveRelayCell(ctx context.Context) (*cell.RelayCell, error) {
 	select {
-	case relayCell := <-c.relayReceiveChan:
+	case <-c.destroyCh:
+		c.mu.RLock()
+		reason := c.destroyReason
+		c.mu.RUnlock()
+		return nil, fmt.Errorf("circuit destroyed: reason=%d", reason)
+	case relayCell, ok := <-c.relayReceiveChan:
+		if !ok {
+			return nil, fmt.Errorf("circuit closed")
+		}
 		return relayCell, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()

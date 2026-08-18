@@ -125,7 +125,12 @@ func (m *CellMux) dispatch(c *cell.Cell) {
 			circ := m.circuits[c.CircID]
 			m.mu.Unlock()
 			if circ != nil {
+				reason := byte(0)
+				if len(c.Payload) > 0 {
+					reason = c.Payload[0]
+				}
 				circ.SetState(StateFailed)
+				circ.NotifyDestroyed(reason)
 			}
 		}
 	case cell.CmdRelay, cell.CmdRelayEarly:
