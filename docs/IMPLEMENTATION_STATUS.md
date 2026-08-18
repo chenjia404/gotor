@@ -27,8 +27,8 @@
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
 | VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | PARTIAL | VERSIONS CircID=2 已修；CERTS ExtLen/type4 验签已按 spec+Arti 修正；AUTH_CHALLENGE 仅跳过；真实握手待 E2E |
-| CREATE2 / ntor / CREATED2 | UNVERIFIED | 算法已按 spec 重写；真实 Guard CREATE2 待 E2E |
-| EXTEND2 / EXTENDED2 | UNVERIFIED | 带 identity link specifier；依赖 mux 投递；待真实网络 |
+| CREATE2 / ntor / CREATED2 | WORKING | 真实 Guard CREATE2/CREATED2 已成功（72 字节密钥） |
+| EXTEND2 / EXTENDED2 | BROKEN | Guard 立即 DESTROY reason=1（TORPROTOCOL）；见 docs/interop/extend2.md |
 | Circuit crypto / digest | PARTIAL | 有单元测试与 layered encrypt；缺 C Tor/Arti 官方 cell 向量与真实流量对照 |
 | RELAY_BEGIN/CONNECTED/DATA/END | PARTIAL | 实现存在；未用真实 exit 流证明 |
 | SENDME / flow control | PARTIAL | 有 window 计数；SENDME 认证与 1MB+ soak 未完成 |

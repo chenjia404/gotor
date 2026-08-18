@@ -27,12 +27,39 @@ func requireRealTor(t *testing.T) {
 
 func TestRealGuardCreate2(t *testing.T) {
 	requireRealTor(t)
-	circ, p := buildLiveCircuit(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	log := logger.NewDefault()
+	dirClient := directory.NewClient(log)
+	relays, err := dirClient.FetchConsensus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var guard *directory.Relay
+	for _, r := range relays {
+		if r.IsGuard() && r.IsRunning() && r.ORPort > 0 {
+			guard = r
+			break
+		}
+	}
+	if guard == nil {
+		t.Fatal("no guard in consensus")
+	}
+	if err := dirClient.FetchMicrodescriptorsFor(ctx, []*directory.Relay{guard}); err != nil {
+		t.Fatal(err)
+	}
+
+	builder := circuit.NewBuilder(circuit.NewManager(), log)
+	circ, err := builder.BuildFirstHop(ctx, guard, 90*time.Second)
+	if err != nil {
+		t.Fatalf("CREATE2: %v", err)
+	}
 	defer circ.Close()
 	if circ.Length() < 1 {
 		t.Fatalf("CREATE2 did not add guard hop")
 	}
-	t.Logf("CREATE2 OK guard=%s fp=%s circuit=%d", p.Guard.Nickname, p.Guard.GetFingerprintHex(), circ.ID)
+	t.Logf("CREATE2 OK guard=%s fp=%s circuit=%d hops=%d", guard.Nickname, guard.GetFingerprintHex(), circ.ID, circ.Length())
 }
 
 func TestRealThreeHopCircuit(t *testing.T) {

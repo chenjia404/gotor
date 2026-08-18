@@ -137,10 +137,13 @@ func (e *Extension) ExtendCircuit(ctx context.Context, target string, handshakeT
 		return fmt.Errorf("failed to encode EXTEND2 relay cell: %w", err)
 	}
 
-	e.logger.Debug("Sending EXTEND2 relay cell",
+	e.logger.Info("Sending EXTEND2 relay cell",
 		"circuit_id", e.circuit.ID,
 		"target", target,
-		"data_size", len(extend2Data))
+		"nspec", extend2Data[0],
+		"data_size", len(extend2Data),
+		"htype", handshakeType,
+		"hdata_len", len(handshakeData))
 
 	// Send EXTEND2 relay cell through the circuit
 	if err := e.circuit.SendRelayCell(relayCell); err != nil {
