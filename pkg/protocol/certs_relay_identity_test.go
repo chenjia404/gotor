@@ -213,7 +213,7 @@ func TestValidateRelayIdentity_Ed25519_InvalidKeyLength(t *testing.T) {
 	certs := &CERTSCell{
 		Certificates: []*Certificate{
 			{
-				CertType:    CertTypeEd25519Signing,
+				CertType:    CertTypeEd25519Identity,
 				Ed25519Cert: ed25519Cert,
 			},
 		},
@@ -231,40 +231,10 @@ func TestValidateRelayIdentity_Ed25519_InvalidKeyLength(t *testing.T) {
 
 // TestValidateRelayIdentity_Ed25519_InvalidExpectedLength tests error with wrong expected identity length
 func TestValidateRelayIdentity_Ed25519_InvalidExpectedLength(t *testing.T) {
-	// Create valid Ed25519 cert
-	data := make([]byte, 40+64)
-	offset := 0
-	data[offset] = 1 // Version
-	offset++
-	data[offset] = 4 // CertType
-	offset++
-
-	expirationHours := uint32(time.Now().Add(365*24*time.Hour).Unix() / 3600)
-	binary.BigEndian.PutUint32(data[offset:offset+4], expirationHours)
-	offset += 4
-
-	data[offset] = 1 // CertKeyType
-	offset++
-
 	validKey := make([]byte, 32)
-	copy(data[offset:offset+32], validKey)
-	offset += 32
-
-	data[offset] = 0 // No extensions
-	offset++
-
-	ed25519Cert := &Ed25519Certificate{
-		Version:      1,
-		CertType:     4,
-		CertifiedKey: validKey,
-	}
-
 	certs := &CERTSCell{
 		Certificates: []*Certificate{
-			{
-				CertType:    CertTypeEd25519Signing,
-				Ed25519Cert: ed25519Cert,
-			},
+			type7IdentityCertificate(validKey),
 		},
 	}
 
@@ -386,6 +356,7 @@ func TestValidateRelayIdentity_BothRSAAndEd25519(t *testing.T) {
 				CertType:    CertTypeEd25519Signing,
 				Ed25519Cert: ed25519Cert,
 			},
+			type7IdentityCertificate(expectedIdentity),
 		},
 	}
 

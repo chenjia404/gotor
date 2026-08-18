@@ -26,7 +26,7 @@
 | Microdescriptor fetch/parse | PARTIAL | 解析与 digest 已按 spec 修正，真实网络可填充密钥；缺长期 fixture 回归 |
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
-| VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | PARTIAL | 生产路径已接入 handshake；AUTH_CHALLENGE 仅跳过（client 不认证为 relay） |
+| VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | PARTIAL | VERSIONS CircID=2 已修；CERTS ExtLen/type4 验签已按 spec+Arti 修正；AUTH_CHALLENGE 仅跳过；真实握手待 E2E |
 | CREATE2 / ntor / CREATED2 | UNVERIFIED | 算法已按 spec 重写；真实 Guard CREATE2 待 E2E |
 | EXTEND2 / EXTENDED2 | UNVERIFIED | 带 identity link specifier；依赖 mux 投递；待真实网络 |
 | Circuit crypto / digest | PARTIAL | 有单元测试与 layered encrypt；缺 C Tor/Arti 官方 cell 向量与真实流量对照 |
@@ -71,6 +71,10 @@
 - `IdentityKey`：microdescriptor `id ed25519`（32 字节，给 EXTEND2 `[03]`）。
 - `RSAIdentity`：共识 `r` 行（20 字节，ntor NODEID + EXTEND2 `[02]`）。
 - `HasNtorKeys()` / `HasExtendKeys()` 拒绝全零。
+
+### Link VERSIONS CircID 宽度 — 本轮已修（原 BROKEN）
+
+TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 CircID，对端当成 PADDING。现已按 `CIRCID_LEN(0)=2` 发送/接收，协商后再切 4 字节。见 `docs/interop/link-versions.md`。
 
 ### Link protocol / TLS — PARTIAL
 
@@ -152,6 +156,8 @@
 | 6 | Building 不能发 RELAY | `SendRelayCell` 只允许 Open | EXTEND2 必须在 build 期间发送 |
 | 7 | CircID 被拒 | MSB 未置 1 | link proto ≥4 |
 | 8 | EXTEND2 缺 identity specifier | 只发 IPv4 | `[00][02][03]` |
+| 9 | VERSIONS 超时 | CircID 用 4 字节，对端当成 PADDING | negotiating-channels CIRCID_LEN(v=0)=2 |
+| 10 | CERTS type 4 验签失败 | ExtLen 被当成含 type+flags；identity 误用 signing key | cert-spec；Arti `tor-cert` encode.rs |
 
 ---
 
@@ -189,4 +195,4 @@
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-当前：协议主链路 blocker 已按 spec 修复；**真实网络验收仍为 UNVERIFIED**。
+当前：协议主链路 blocker（含 CERTS ExtLen）已按 spec 修复；**真实网络验收仍为 UNVERIFIED**，须跑 `TOR_INTEGRATION_TEST=1`。

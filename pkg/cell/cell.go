@@ -133,10 +133,23 @@ func NewCell(circID uint32, cmd Command) *Cell {
 	}
 }
 
-// Encode writes the cell to the provided writer
+// Encode writes the cell using CIRCID_LEN=4（link protocol ≥4）。
+// 握手开始的 VERSIONS 必须用 EncodeLink(w, 2)。
 func (c *Cell) Encode(w io.Writer) error {
-	// Write circuit ID (4 bytes, big-endian)
-	if err := binary.Write(w, binary.BigEndian, c.CircID); err != nil {
+	return c.EncodeLink(w, 4)
+}
+
+// EncodeLink 按指定 CircID 宽度编码。
+// spec preliminaries：CIRCID_LEN(v)=2 当 v<4；VERSIONS 固定按 v=0 发送。
+func (c *Cell) EncodeLink(w io.Writer, circIDLen int) error {
+	if circIDLen != 2 && circIDLen != 4 {
+		return fmt.Errorf("invalid CircID length %d, want 2 or 4", circIDLen)
+	}
+	if circIDLen == 2 {
+		if err := binary.Write(w, binary.BigEndian, uint16(c.CircID)); err != nil {
+			return fmt.Errorf("failed to write circuit ID: %w", err)
+		}
+	} else if err := binary.Write(w, binary.BigEndian, c.CircID); err != nil {
 		return fmt.Errorf("failed to write circuit ID: %w", err)
 	}
 
@@ -182,12 +195,25 @@ func (c *Cell) Encode(w io.Writer) error {
 	return nil
 }
 
-// DecodeCell reads a cell from the provided reader
+// DecodeCell 按 CIRCID_LEN=4 解码。
 func DecodeCell(r io.Reader) (*Cell, error) {
+	return DecodeCellLink(r, 4)
+}
+
+// DecodeCellLink 按指定 CircID 宽度解码。VERSIONS 阶段必须传 2。
+func DecodeCellLink(r io.Reader, circIDLen int) (*Cell, error) {
+	if circIDLen != 2 && circIDLen != 4 {
+		return nil, fmt.Errorf("invalid CircID length %d, want 2 or 4", circIDLen)
+	}
 	cell := &Cell{}
 
-	// Read circuit ID (4 bytes)
-	if err := binary.Read(r, binary.BigEndian, &cell.CircID); err != nil {
+	if circIDLen == 2 {
+		var id uint16
+		if err := binary.Read(r, binary.BigEndian, &id); err != nil {
+			return nil, fmt.Errorf("failed to read circuit ID: %w", err)
+		}
+		cell.CircID = uint32(id)
+	} else if err := binary.Read(r, binary.BigEndian, &cell.CircID); err != nil {
 		return nil, fmt.Errorf("failed to read circuit ID: %w", err)
 	}
 

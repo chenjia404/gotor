@@ -2,6 +2,7 @@
 package protocol
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rsa"
 	"crypto/sha1" // #nosec G505 - SHA-1 required by Tor spec for RSA fingerprints
@@ -12,6 +13,10 @@ import (
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 )
+
+// ExtTypeSignedWithEd25519Key 是 cert-spec 的 signed-with-ed25519-key 扩展。
+// ExtLen=32，ExtData 为签名所用的 Ed25519 公钥。
+const ExtTypeSignedWithEd25519Key uint8 = 0x04
 
 // CertType represents the type of certificate in a CERTS cell
 // Per tor-spec.txt §4.2, different cert types serve different purposes
@@ -75,6 +80,9 @@ type Ed25519Certificate struct {
 	CertifiedKey []byte
 	Extensions   []Ed25519Extension
 	Signature    []byte
+	// SignedBytes 是签名覆盖的原始字节（不含 SIGNATURE）。
+	// 验签必须用线上字节，禁止按字段重编码（ExtLen 历史实现曾算错）。
+	SignedBytes []byte
 }
 
 // Ed25519Extension represents an extension in an Ed25519 certificate
@@ -136,12 +144,15 @@ func ParseCERTSCell(cellData *cell.Cell) (*CERTSCell, error) {
 		}
 		copy(cert.CertBody, certBody)
 
-		// Parse certificate based on type
 		if err := parseCertificateBody(cert); err != nil {
-			// Log error but continue - some cert types may not be critical
-			// We'll validate required certs separately
-			cert.X509Cert = nil
-			cert.Ed25519Cert = nil
+			switch cert.CertType {
+			case CertTypeEd25519Signing, CertTypeEd25519TLSLink, CertTypeEd25519Auth, CertTypeEd25519Identity:
+				return nil, fmt.Errorf("failed to parse CERTS entry %d (%s): %w", i, cert.CertType, err)
+			default:
+				// X.509 / 未知类型：保留原文，由后续校验决定是否硬失败
+				cert.X509Cert = nil
+				cert.Ed25519Cert = nil
+			}
 		}
 
 		certs.Certificates = append(certs.Certificates, cert)
@@ -162,8 +173,17 @@ func parseCertificateBody(cert *Certificate) error {
 		cert.X509Cert = x509Cert
 		return nil
 
-	case CertTypeEd25519Signing, CertTypeEd25519TLSLink, CertTypeEd25519Auth, CertTypeEd25519Identity:
-		// These are Ed25519 certificates per cert-spec.txt
+	case CertTypeEd25519Identity:
+		// CERTS type 7 是 RSA→Ed25519 cross-certificate，不是 Ed25519 cert。
+		// cert-spec: ED25519_KEY(32) || EXPIRATION(4) || SIGLEN(1) || SIGNATURE
+		cross, err := parseRSAEd25519CrossCert(cert.CertBody)
+		if err != nil {
+			return fmt.Errorf("failed to parse RSA→Ed25519 cross-cert: %w", err)
+		}
+		cert.Ed25519Cert = cross
+		return nil
+
+	case CertTypeEd25519Signing, CertTypeEd25519TLSLink, CertTypeEd25519Auth:
 		ed25519Cert, err := parseEd25519Certificate(cert.CertBody)
 		if err != nil {
 			return fmt.Errorf("failed to parse Ed25519 certificate type %s: %w", cert.CertType, err)
@@ -177,50 +197,62 @@ func parseCertificateBody(cert *Certificate) error {
 	}
 }
 
-// parseEd25519Certificate parses an Ed25519 certificate per cert-spec.txt
-// Format:
+func parseRSAEd25519CrossCert(data []byte) (*Ed25519Certificate, error) {
+	if len(data) < 37 {
+		return nil, fmt.Errorf("cross-cert too short: %d", len(data))
+	}
+	sigLen := int(data[36])
+	if len(data) < 37+sigLen {
+		return nil, fmt.Errorf("cross-cert truncated: need %d, have %d", 37+sigLen, len(data))
+	}
+	hours := binary.BigEndian.Uint32(data[32:36])
+	key := make([]byte, 32)
+	copy(key, data[0:32])
+	sig := make([]byte, sigLen)
+	copy(sig, data[37:37+sigLen])
+	return &Ed25519Certificate{
+		CertType:     7,
+		ExpiresAt:    time.Unix(int64(hours)*3600, 0).UTC(),
+		CertifiedKey: key,
+		Signature:    sig,
+	}, nil
+}
+
+// parseEd25519Certificate 按 cert-spec / Arti tor-cert 解析 Ed25519 证书。
 //
-//	Version       [1 octet]   Must be 1
-//	CertType      [1 octet]   Type of certificate
-//	ExpirationDate [4 octets]  Hours since epoch
-//	CertKeyType   [1 octet]   Type of certified key
-//	CertifiedKey  [32 octets] The key being certified
-//	N             [1 octet]   Number of extensions
-//	N times:
-//	  ExtLength   [2 octets]  Extension length
-//	  ExtType     [1 octet]   Extension type
-//	  ExtFlags    [1 octet]   Extension flags
-//	  ExtData     [ExtLength-2 octets] Extension data
-//	Signature     [64 octets] Ed25519 signature
+// 扩展编码（ExtLen 只含 ExtData，不含 ExtType/ExtFlags）：
+//
+//	ExtLen   [2]  = len(ExtData)
+//	ExtType  [1]
+//	ExtFlags [1]
+//	ExtData  [ExtLen]
+//
+// signed-with-ed25519-key（type 04）的 ExtLen 必须为 32。
+// 签名覆盖 PREFIX 之外的全部前置字段；现行 cert-spec 明确没有 prefix 字符串。
 func parseEd25519Certificate(data []byte) (*Ed25519Certificate, error) {
-	if len(data) < 40 { // Minimum: 1+1+4+1+32+1 = 40 bytes (no extensions, no signature yet)
+	if len(data) < 40 { // Version+Type+Exp+KeyType+Key+N_EXT，尚无签名
 		return nil, fmt.Errorf("Ed25519 certificate too short: %d bytes", len(data))
 	}
 
 	cert := &Ed25519Certificate{}
 	offset := 0
 
-	// Version (1 byte)
 	cert.Version = data[offset]
 	offset++
 	if cert.Version != 1 {
 		return nil, fmt.Errorf("unsupported Ed25519 certificate version: %d", cert.Version)
 	}
 
-	// CertType (1 byte)
 	cert.CertType = data[offset]
 	offset++
 
-	// ExpirationDate (4 bytes, hours since epoch)
 	expirationHours := binary.BigEndian.Uint32(data[offset : offset+4])
 	offset += 4
-	cert.ExpiresAt = time.Unix(int64(expirationHours)*3600, 0)
+	cert.ExpiresAt = time.Unix(int64(expirationHours)*3600, 0).UTC()
 
-	// CertKeyType (1 byte)
 	cert.CertKeyType = data[offset]
 	offset++
 
-	// CertifiedKey (32 bytes)
 	if offset+32 > len(data) {
 		return nil, fmt.Errorf("truncated certified key at offset %d", offset)
 	}
@@ -228,49 +260,56 @@ func parseEd25519Certificate(data []byte) (*Ed25519Certificate, error) {
 	copy(cert.CertifiedKey, data[offset:offset+32])
 	offset += 32
 
-	// Number of extensions (1 byte)
 	if offset >= len(data) {
 		return nil, fmt.Errorf("truncated extension count at offset %d", offset)
 	}
 	numExtensions := int(data[offset])
 	offset++
 
-	// Parse extensions
 	cert.Extensions = make([]Ed25519Extension, 0, numExtensions)
 	for i := 0; i < numExtensions; i++ {
-		if offset+2 > len(data) {
-			return nil, fmt.Errorf("truncated extension length at offset %d", offset)
+		if offset+4 > len(data) {
+			return nil, fmt.Errorf("truncated extension header at offset %d", offset)
 		}
-		extLen := binary.BigEndian.Uint16(data[offset : offset+2])
+		extLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
 		offset += 2
-
-		if extLen < 2 {
-			return nil, fmt.Errorf("invalid extension length: %d", extLen)
+		if offset+2+extLen > len(data) {
+			return nil, fmt.Errorf("truncated extension data: ExtLen=%d at offset %d", extLen, offset)
 		}
-
-		if offset+int(extLen) > len(data) {
-			return nil, fmt.Errorf("truncated extension data at offset %d", offset)
-		}
-
 		ext := Ed25519Extension{
 			ExtType: data[offset],
 			Flags:   data[offset+1],
-			ExtData: make([]byte, extLen-2),
+			ExtData: make([]byte, extLen),
 		}
-		copy(ext.ExtData, data[offset+2:offset+int(extLen)])
-		offset += int(extLen)
-
+		copy(ext.ExtData, data[offset+2:offset+2+extLen])
+		offset += 2 + extLen
 		cert.Extensions = append(cert.Extensions, ext)
 	}
 
-	// Signature (64 bytes)
 	if offset+64 > len(data) {
 		return nil, fmt.Errorf("truncated signature at offset %d", offset)
 	}
+	if offset+64 != len(data) {
+		return nil, fmt.Errorf("Ed25519 certificate has %d trailing bytes after signature", len(data)-offset-64)
+	}
+	cert.SignedBytes = append([]byte(nil), data[:offset]...)
 	cert.Signature = make([]byte, 64)
 	copy(cert.Signature, data[offset:offset+64])
 
 	return cert, nil
+}
+
+// SignedWithEd25519Key 返回 signed-with-ed25519-key 扩展中的公钥（若存在）。
+func (e *Ed25519Certificate) SignedWithEd25519Key() []byte {
+	if e == nil {
+		return nil
+	}
+	for _, ext := range e.Extensions {
+		if ext.ExtType == ExtTypeSignedWithEd25519Key && len(ext.ExtData) == ed25519.PublicKeySize {
+			return ext.ExtData
+		}
+	}
+	return nil
 }
 
 // FindCertificate finds a certificate of the given type in the CERTS cell
@@ -315,38 +354,43 @@ func (c *CERTSCell) ValidateRelayIdentity(expectedRSAFingerprint string, expecte
 		}
 	}
 
-	// Check for Ed25519 identity certificate if identity provided
 	if len(expectedEd25519Identity) > 0 {
-		// Try type 4 (Ed25519 signing key) first
-		ed25519Cert := c.FindCertificate(CertTypeEd25519Signing)
-		if ed25519Cert == nil {
-			// Try type 7 (cross-certification)
-			ed25519Cert = c.FindCertificate(CertTypeEd25519Identity)
-		}
-
-		if ed25519Cert == nil || ed25519Cert.Ed25519Cert == nil {
-			return fmt.Errorf("missing Ed25519 identity certificate")
-		}
-
-		// Verify Ed25519 identity matches
-		certifiedKey := ed25519Cert.Ed25519Cert.CertifiedKey
-		if len(certifiedKey) != 32 {
-			return fmt.Errorf("invalid Ed25519 certified key length: %d", len(certifiedKey))
-		}
-
-		// Compare with expected identity
 		if len(expectedEd25519Identity) != 32 {
 			return fmt.Errorf("invalid expected Ed25519 identity length: %d", len(expectedEd25519Identity))
 		}
-
-		for i := 0; i < 32; i++ {
-			if certifiedKey[i] != expectedEd25519Identity[i] {
-				return fmt.Errorf("Ed25519 identity mismatch")
-			}
+		identityKey, err := c.Ed25519IdentityKey()
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(identityKey, expectedEd25519Identity) {
+			return fmt.Errorf("Ed25519 identity mismatch")
 		}
 	}
 
 	return nil
+}
+
+// Ed25519IdentityKey 返回 relay 长期 Ed25519 身份公钥。
+//
+// 来源（按优先级）：
+//  1. CERTS type 7 RSA→Ed25519 cross-cert 的 ED25519_KEY
+//  2. type 4 的 signed-with-ed25519-key 扩展
+//
+// type 4 的 CertifiedKey 是中期 signing key，不是 identity。
+func (c *CERTSCell) Ed25519IdentityKey() ([]byte, error) {
+	if type7 := c.FindCertificate(CertTypeEd25519Identity); type7 != nil && type7.Ed25519Cert != nil {
+		key := type7.Ed25519Cert.CertifiedKey
+		if len(key) != 32 {
+			return nil, fmt.Errorf("invalid Ed25519 certified key length: %d", len(key))
+		}
+		return key, nil
+	}
+	if type4 := c.FindCertificate(CertTypeEd25519Signing); type4 != nil && type4.Ed25519Cert != nil {
+		if key := type4.Ed25519Cert.SignedWithEd25519Key(); len(key) == 32 {
+			return key, nil
+		}
+	}
+	return nil, fmt.Errorf("missing Ed25519 identity certificate")
 }
 
 // ValidateExpiration checks if any certificates in the CERTS cell have expired
@@ -373,17 +417,12 @@ func (c *CERTSCell) ValidateExpiration() error {
 	return nil
 }
 
-// VerifySignature verifies the Ed25519 signature on a certificate.
-// Per cert-spec.txt, the signature is over all bytes of the certificate
-// before the signature field itself.
+// VerifySignature 按 cert-spec 验证 Ed25519 证书签名。
+// 签名覆盖证书在 SIGNATURE 之前的全部字段，没有 prefix 字符串
+//（见 spec：「this signature is not personalized with a prefix string」）。
 //
-// Parameters:
-//   - signingKey: The Ed25519 public key used to create the signature (32 bytes)
-//     For self-signed certs, this is the certified key itself.
-//     For cross-signed certs, this is the signing authority's key.
-//
-// Returns:
-//   - error if verification fails, nil if signature is valid
+// signingKey 必须是实际签名公钥。type 4 由长期 identity 签名，不是 self-signed。
+// 若存在 signed-with-ed25519-key 扩展，其公钥必须与 signingKey 一致。
 func (e *Ed25519Certificate) VerifySignature(signingKey []byte) error {
 	if len(signingKey) != ed25519.PublicKeySize {
 		return fmt.Errorf("invalid signing key length: %d, expected %d", len(signingKey), ed25519.PublicKeySize)
@@ -393,56 +432,58 @@ func (e *Ed25519Certificate) VerifySignature(signingKey []byte) error {
 		return fmt.Errorf("invalid signature length: %d, expected %d", len(e.Signature), ed25519.SignatureSize)
 	}
 
-	// Reconstruct the signed message (all fields before signature)
-	// Per cert-spec.txt: Version || CertType || ExpirationDate || CertKeyType ||
-	// CertifiedKey || NumExtensions || Extensions
-	signedData := make([]byte, 0, 256)
-
-	// Version (1 byte)
-	signedData = append(signedData, e.Version)
-
-	// CertType (1 byte)
-	signedData = append(signedData, e.CertType)
-
-	// ExpirationDate (4 bytes, hours since epoch)
-	expirationHours := uint32(e.ExpiresAt.Unix() / 3600)
-	expBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(expBytes, expirationHours)
-	signedData = append(signedData, expBytes...)
-
-	// CertKeyType (1 byte)
-	signedData = append(signedData, e.CertKeyType)
-
-	// CertifiedKey (32 bytes)
-	signedData = append(signedData, e.CertifiedKey...)
-
-	// Number of extensions (1 byte)
-	signedData = append(signedData, byte(len(e.Extensions)))
-
-	// Extensions
-	for _, ext := range e.Extensions {
-		// ExtLength (2 bytes) - length of (ExtType + ExtFlags + ExtData)
-		extLen := uint16(2 + len(ext.ExtData))
-		extLenBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(extLenBytes, extLen)
-		signedData = append(signedData, extLenBytes...)
-
-		// ExtType (1 byte)
-		signedData = append(signedData, ext.ExtType)
-
-		// ExtFlags (1 byte)
-		signedData = append(signedData, ext.Flags)
-
-		// ExtData
-		signedData = append(signedData, ext.ExtData...)
+	if extKey := e.SignedWithEd25519Key(); extKey != nil && !bytes.Equal(extKey, signingKey) {
+		return fmt.Errorf("signed-with-ed25519-key extension does not match verification key")
 	}
 
-	// Verify signature using Ed25519
+	signedData := e.signedMessage()
 	if !ed25519.Verify(ed25519.PublicKey(signingKey), signedData, e.Signature) {
 		return fmt.Errorf("Ed25519 signature verification failed")
 	}
 
 	return nil
+}
+
+func (e *Ed25519Certificate) signedMessage() []byte {
+	if len(e.SignedBytes) > 0 {
+		return e.SignedBytes
+	}
+	return e.reconstructSignedBytes()
+}
+
+func (e *Ed25519Certificate) reconstructSignedBytes() []byte {
+	signedData := make([]byte, 0, 256)
+	signedData = append(signedData, e.Version)
+	signedData = append(signedData, e.CertType)
+
+	expirationHours := uint32(e.ExpiresAt.Unix() / 3600)
+	expBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(expBytes, expirationHours)
+	signedData = append(signedData, expBytes...)
+
+	signedData = append(signedData, e.CertKeyType)
+	signedData = append(signedData, e.CertifiedKey...)
+	signedData = append(signedData, byte(len(e.Extensions)))
+
+	for _, ext := range e.Extensions {
+		// ExtLen = len(ExtData)，与 cert-spec / Arti encode.rs 一致
+		extLenBytes := make([]byte, 2)
+		binary.BigEndian.PutUint16(extLenBytes, uint16(len(ext.ExtData)))
+		signedData = append(signedData, extLenBytes...)
+		signedData = append(signedData, ext.ExtType)
+		signedData = append(signedData, ext.Flags)
+		signedData = append(signedData, ext.ExtData...)
+	}
+	return signedData
+}
+
+// EncodeEd25519Certificate 按 cert-spec 编码（测试与向量生成用）。
+func EncodeEd25519Certificate(cert *Ed25519Certificate) []byte {
+	body := cert.signedMessage()
+	out := make([]byte, 0, len(body)+len(cert.Signature))
+	out = append(out, body...)
+	out = append(out, cert.Signature...)
+	return out
 }
 
 // ValidateSignatures verifies Ed25519 certificate signatures in the CERTS cell
@@ -452,6 +493,12 @@ func (e *Ed25519Certificate) VerifySignature(signingKey []byte) error {
 // or signed by the identity key found in another certificate.
 func (c *CERTSCell) ValidateSignatures() error {
 	for _, cert := range c.Certificates {
+		switch cert.CertType {
+		case CertTypeEd25519Signing, CertTypeEd25519TLSLink, CertTypeEd25519Auth:
+			if cert.Ed25519Cert == nil {
+				return fmt.Errorf("%s certificate was present but not parsed", cert.CertType)
+			}
+		}
 		if cert.Ed25519Cert == nil {
 			continue
 		}

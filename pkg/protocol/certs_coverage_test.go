@@ -397,8 +397,7 @@ func TestEd25519CertWithExtensions(t *testing.T) {
 		signedData = append(signedData, pubKey...) // CertifiedKey
 		signedData = append(signedData, 1)         // NumExtensions
 
-		// Extension length (2 + len(ExtData))
-		extLen := uint16(2 + len(ext.ExtData))
+		extLen := uint16(len(ext.ExtData))
 		extLenBytes := make([]byte, 2)
 		binary.BigEndian.PutUint16(extLenBytes, extLen)
 		signedData = append(signedData, extLenBytes...)

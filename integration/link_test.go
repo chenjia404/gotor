@@ -50,7 +50,7 @@ func TestRealLinkHandshake(t *testing.T) {
 
 	hs := protocol.NewHandshake(conn, log)
 	if err := hs.PerformHandshake(ctx); err != nil {
-		t.Fatalf("link handshake: %v", err)
+		t.Fatalf("link handshake guard=%s fp=%s: %v", guard.Nickname, guard.GetFingerprintHex(), err)
 	}
 	if hs.NegotiatedVersion() < 3 {
 		t.Fatalf("unexpected link version %d", hs.NegotiatedVersion())

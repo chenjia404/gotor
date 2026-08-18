@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1609,9 +1610,9 @@ func TestFetchMicrodescriptorsNoDigests(t *testing.T) {
 // TestFetchMicrodescriptorBatching tests batch size limits
 func TestFetchMicrodescriptorBatching(t *testing.T) {
 	// Create test HTTP server that counts requests
-	requestCount := 0
+	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
+		requestCount.Add(1)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("onion-key\nntor-onion-key test\nid ed25519 test\n"))
 	}))
@@ -1636,8 +1637,8 @@ func TestFetchMicrodescriptorBatching(t *testing.T) {
 	_ = client.FetchMicrodescriptors(ctx, relays)
 
 	// Should have made at least 1 batch request (exact count depends on error handling)
-	if requestCount == 0 {
+	if requestCount.Load() == 0 {
 		t.Error("Expected at least one batch request")
 	}
-	t.Logf("Made %d batch requests for 100 microdescriptors", requestCount)
+	t.Logf("Made %d batch requests for 100 microdescriptors", requestCount.Load())
 }

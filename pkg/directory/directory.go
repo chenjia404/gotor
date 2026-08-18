@@ -205,12 +205,7 @@ func (c *Client) FetchConsensus(ctx context.Context) ([]*Relay, error) {
 		}
 
 		c.logger.Info("Successfully fetched consensus", "relays", len(relays), "authority", authority)
-
-		// 全量 microdesc 拉取是 best-effort；3-hop 路径会再对选中的 relay 做定向拉取。
-		if err := c.FetchMicrodescriptors(ctx, relays); err != nil {
-			c.logger.Warn("Bulk microdescriptor fetch incomplete; path relays will be fetched on demand", "error", err)
-		}
-
+		// 不在此处拉全网 microdesc。选路后由 FetchMicrodescriptorsFor 只拉 Guard/Middle/Exit。
 		return relays, nil
 	}
 

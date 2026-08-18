@@ -94,10 +94,25 @@ func TestCellSizeCompliance(t *testing.T) {
 			t.Fatalf("Encode failed: %v", err)
 		}
 
-		// Should be: CircID(4) + Cmd(1) + Len(2) + Payload(6) = 13 bytes
+		// Encode() 默认 CIRCID_LEN=4（协商后）。握手线上必须用 EncodeLink(..., 2)。
 		expectedSize := 4 + 1 + 2 + 6
 		if buf.Len() != expectedSize {
 			t.Errorf("VERSIONS: encoded size = %d bytes, want %d (variable-length)", buf.Len(), expectedSize)
+		}
+
+		var handshake bytes.Buffer
+		if err := cell.EncodeLink(&handshake, 2); err != nil {
+			t.Fatalf("EncodeLink(2) failed: %v", err)
+		}
+		if handshake.Len() != 2+1+2+6 {
+			t.Errorf("VERSIONS handshake wire size = %d, want 11 (CIRCID_LEN=2)", handshake.Len())
+		}
+		decoded, err := DecodeCellLink(&handshake, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decoded.Command != CmdVersions || decoded.CircID != 0 {
+			t.Errorf("decoded VERSIONS cmd=%s circ=%d", decoded.Command, decoded.CircID)
 		}
 	})
 }

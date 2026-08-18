@@ -109,9 +109,8 @@ func TestEd25519CertificateVerifySignature_WithExtensions(t *testing.T) {
 	signedData = append(signedData, byte(len(cert.Extensions)))
 
 	for _, ext := range cert.Extensions {
-		extLen := uint16(2 + len(ext.ExtData))
 		extLenBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(extLenBytes, extLen)
+		binary.BigEndian.PutUint16(extLenBytes, uint16(len(ext.ExtData)))
 		signedData = append(signedData, extLenBytes...)
 		signedData = append(signedData, ext.ExtType)
 		signedData = append(signedData, ext.Flags)
@@ -370,17 +369,13 @@ func TestValidateSignatures_Integration(t *testing.T) {
 	expBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(expBytes, expirationHours)
 
-	// Build type-7 (Ed25519Identity) certificate in wire format
-	// CertifiedKey = identity public key; signed by identity private key
-	identityCertData := make([]byte, 0, 256)
-	identityCertData = append(identityCertData, 1) // Version
-	identityCertData = append(identityCertData, 7) // CertType (Ed25519 identity)
+	// Type 7 是 RSA→Ed25519 cross-cert：KEY(32) || EXP(4) || SIGLEN(1) || SIG
+	// ValidateSignatures 只用其中的 Ed25519 identity 公钥验证 type 4。
+	identityCertData := make([]byte, 0, 64)
+	identityCertData = append(identityCertData, identityPubKey...)
 	identityCertData = append(identityCertData, expBytes...)
-	identityCertData = append(identityCertData, 1)                 // CertKeyType
-	identityCertData = append(identityCertData, identityPubKey...) // CertifiedKey (32 bytes)
-	identityCertData = append(identityCertData, 0)                 // No extensions
-	identitySignature := ed25519.Sign(identityPrivKey, identityCertData)
-	identityCertData = append(identityCertData, identitySignature...)
+	identityCertData = append(identityCertData, 1) // SIGLEN
+	identityCertData = append(identityCertData, 0) // dummy RSA sig byte
 
 	// Build type-4 (Ed25519Signing) certificate in wire format
 	// CertifiedKey = signing public key; signed by identity private key

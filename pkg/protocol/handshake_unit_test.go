@@ -146,7 +146,7 @@ func TestReceiveVersionsValidPayload(t *testing.T) {
 	versionsCell.Payload = []byte{0x00, 0x04, 0x00, 0x05} // Versions 4 and 5
 
 	var buf bytes.Buffer
-	if err := versionsCell.Encode(&buf); err != nil {
+	if err := versionsCell.EncodeLink(&buf, 2); err != nil {
 		t.Fatalf("Failed to encode VERSIONS cell: %v", err)
 	}
 
