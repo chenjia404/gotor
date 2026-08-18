@@ -38,6 +38,7 @@ func TestEXTEND2CellFormat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			circuit := NewCircuit(1)
 			ext := NewExtension(circuit, logger.NewDefault())
+			ext.SetTargetRelay(newStubRelay())
 
 			// Generate handshake data
 			handshakeData := make([]byte, 84) // ntor size
@@ -109,6 +110,7 @@ func TestEXTEND2CellFormat(t *testing.T) {
 func TestEXTEND2LinkSpecifiers(t *testing.T) {
 	circuit := NewCircuit(1)
 	ext := NewExtension(circuit, logger.NewDefault())
+	ext.SetTargetRelay(newStubRelay())
 
 	handshakeData := make([]byte, 84)
 	rand.Read(handshakeData)
@@ -179,6 +181,7 @@ func TestEXTEND2HandshakeData(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			circuit := NewCircuit(1)
 			ext := NewExtension(circuit, logger.NewDefault())
+			ext.SetTargetRelay(newStubRelay())
 
 			handshakeData, err := ext.generateHandshakeData(tt.handshakeType)
 			if err != nil {
@@ -229,7 +232,7 @@ func TestEXTENDED2CellFormat(t *testing.T) {
 			ext.ephemeralPrivate = ephemeral.Private[:]
 
 			// Set server keys (dummy values for format testing)
-			ext.serverIdentity = make([]byte, 32)
+			ext.serverIdentity = make([]byte, 20)
 			ext.serverNtorKey = make([]byte, 32)
 			rand.Read(ext.serverIdentity)
 			rand.Read(ext.serverNtorKey)
@@ -281,7 +284,7 @@ func TestEXTENDED2Processing(t *testing.T) {
 		}
 
 		// Generate relay identity key
-		relayIdentity := make([]byte, 32)
+		relayIdentity := make([]byte, 20)
 		rand.Read(relayIdentity)
 
 		// Client generates handshake data
@@ -411,7 +414,7 @@ func TestEXTENDED2InsufficientKeyMaterial(t *testing.T) {
 	ext.ephemeralPrivate = ephemeral.Private[:]
 
 	// Set server keys
-	ext.serverIdentity = make([]byte, 32)
+	ext.serverIdentity = make([]byte, 20)
 	ext.serverNtorKey = make([]byte, 32)
 	rand.Read(ext.serverIdentity)
 	rand.Read(ext.serverNtorKey)

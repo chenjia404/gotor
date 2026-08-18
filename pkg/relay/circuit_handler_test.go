@@ -29,9 +29,8 @@ func TestCircuitHandler_HandleCreate2(t *testing.T) {
 		t.Fatalf("Failed to generate client key: %v", err)
 	}
 
-	// Build ntor handshake data (84 bytes):
-	// NODEID (32) || KEYID (32) || CLIENT_PK (32)
-	serverIdentity := keys.Identity.Public
+	// NODEID(20) || KEYID(32) || CLIENT_PK(32)
+	serverIdentity := keys.RSANodeID()
 
 	// Compute server public ntor key from private key
 	var serverNtorPriv [32]byte
@@ -40,9 +39,9 @@ func TestCircuitHandler_HandleCreate2(t *testing.T) {
 	curve25519.ScalarBaseMult(&serverNtorPub, &serverNtorPriv)
 
 	handshakeData := make([]byte, 84)
-	copy(handshakeData[0:32], serverIdentity)       // NODEID (use full Ed25519 key)
-	copy(handshakeData[32:64], serverNtorPub[:])    // KEYID
-	copy(handshakeData[64:84], clientKey.Public[:]) // CLIENT_PK
+	copy(handshakeData[0:20], serverIdentity)
+	copy(handshakeData[20:52], serverNtorPub[:])
+	copy(handshakeData[52:84], clientKey.Public[:])
 
 	// Build CREATE2 cell
 	// Payload: HTYPE (2) || HLEN (2) || HDATA (84)
@@ -547,16 +546,16 @@ func BenchmarkHandleCreate2(b *testing.B) {
 	// Generate client keypair
 	clientKey, _ := crypto.GenerateNtorKeyPair()
 
-	serverIdentity := keys.Identity.Public
+	serverIdentity := keys.RSANodeID()
 	var serverNtorPriv [32]byte
 	copy(serverNtorPriv[:], keys.NtorOnionKey)
 	var serverNtorPub [32]byte
 	curve25519.ScalarBaseMult(&serverNtorPub, &serverNtorPriv)
 
 	handshakeData := make([]byte, 84)
-	copy(handshakeData[0:32], serverIdentity)
-	copy(handshakeData[32:64], serverNtorPub[:])
-	copy(handshakeData[64:84], clientKey.Public[:])
+	copy(handshakeData[0:20], serverIdentity)
+	copy(handshakeData[20:52], serverNtorPub[:])
+	copy(handshakeData[52:84], clientKey.Public[:])
 
 	payload := make([]byte, 4+84)
 	payload[0] = 0x00

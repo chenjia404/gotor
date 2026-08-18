@@ -45,12 +45,14 @@ const (
 // The Tor consensus is cryptographically signed, so transport encryption is not critical
 // Using consensus-microdesc format (consensus-method 33) which includes "m" lines with microdescriptor digests
 var DefaultAuthorities = []string{
-	"http://194.109.206.212/tor/status-vote/current/consensus-microdesc",      // gabelmoo
-	"http://131.188.40.189/tor/status-vote/current/consensus-microdesc",       // moria1
-	"http://128.31.0.34:9131/tor/status-vote/current/consensus-microdesc",     // tor26
-	"http://86.59.21.38/tor/status-vote/current/consensus-microdesc",          // longclaw
-	"http://199.58.81.140/tor/status-vote/current/consensus-microdesc",        // bastet
-	"http://204.13.164.118:18080/tor/status-vote/current/consensus-microdesc", // faravahar
+	"http://128.31.0.39:9231/tor/status-vote/current/consensus-microdesc", // moria1
+	"http://217.196.147.77/tor/status-vote/current/consensus-microdesc",   // tor26
+	"http://45.66.35.11/tor/status-vote/current/consensus-microdesc",      // dizum
+	"http://131.188.40.189/tor/status-vote/current/consensus-microdesc",   // gabelmoo
+	"http://193.23.244.244/tor/status-vote/current/consensus-microdesc",   // dannenberg
+	"http://199.58.81.140/tor/status-vote/current/consensus-microdesc",    // longclaw
+	"http://204.13.164.118/tor/status-vote/current/consensus-microdesc",   // bastet
+	"http://216.218.219.41/tor/status-vote/current/consensus-microdesc",   // faravahar
 }
 
 // DirectoryAuthority represents a known Tor directory authority (SPEC-003)
@@ -126,9 +128,11 @@ type Relay struct {
 	DirPort         int
 	Flags           []string
 	Published       time.Time
-	IdentityKey     []byte   // Ed25519 identity key (32 bytes) - SPEC-001
-	NtorOnionKey    []byte   // Curve25519 ntor onion key (32 bytes) - SPEC-001
-	MicrodescDigest string   // SHA256 digest of microdescriptor (base64) - SPEC-001
+	RSAIdentity     []byte   // 20-byte SHA-1 of RSA identity (ntor NODEID)
+	FingerprintHex  string   // 40-char uppercase hex of RSAIdentity (CERTS / logs)
+	IdentityKey     []byte   // Ed25519 identity key (32 bytes)
+	NtorOnionKey    []byte   // Curve25519 ntor onion key (32 bytes)
+	MicrodescDigest string   // SHA256 digest of microdescriptor (base64, no padding)
 	Family          []string // Relay family members (fingerprints) - Path Selection Enhancement
 	Bandwidth       uint64   // Advertised bandwidth in bytes/sec (from "w" line) - path-spec.txt §2.2
 }
@@ -173,7 +177,7 @@ func NewClient(log *logger.Logger) *Client {
 
 	return &Client{
 		httpClient: &http.Client{
-			Timeout:   10 * time.Second, // Reduced timeout for faster fallback
+			Timeout:   45 * time.Second,
 			Transport: transport,
 		},
 		logger:      log.Component("directory"),
@@ -202,10 +206,9 @@ func (c *Client) FetchConsensus(ctx context.Context) ([]*Relay, error) {
 
 		c.logger.Info("Successfully fetched consensus", "relays", len(relays), "authority", authority)
 
-		// Fetch microdescriptors to populate relay keys (SPEC-001)
+		// 全量 microdesc 拉取是 best-effort；3-hop 路径会再对选中的 relay 做定向拉取。
 		if err := c.FetchMicrodescriptors(ctx, relays); err != nil {
-			c.logger.Warn("Failed to fetch microdescriptors, relays will lack cryptographic keys", "error", err)
-			// Don't fail the entire consensus fetch, just warn
+			c.logger.Warn("Bulk microdescriptor fetch incomplete; path relays will be fetched on demand", "error", err)
 		}
 
 		return relays, nil
@@ -445,6 +448,10 @@ func (c *Client) parseConsensusWithMetadata(r io.Reader) ([]*Relay, *ConsensusMe
 				Fingerprint: fingerprint,
 				Address:     address,
 			}
+			if rsaID, err := DecodeRSAIdentity(fingerprint); err == nil {
+				currentRelay.RSAIdentity = rsaID
+				currentRelay.FingerprintHex = fingerprintHex(rsaID)
+			}
 
 			// Parse ORPort (track errors for SEC-014)
 			if _, err := fmt.Sscanf(parts[orPortIdx], "%d", &currentRelay.ORPort); err != nil {
@@ -609,6 +616,22 @@ func (r *Relay) String() string {
 	return fmt.Sprintf("%s (%s:%d)", r.Nickname, r.Address, r.ORPort)
 }
 
+// RSAIdentityBytes 返回 ntor NODEID（20 字节 RSA fingerprint）。
+func (r *Relay) RSAIdentityBytes() []byte {
+	return r.RSAIdentity
+}
+
+// GetFingerprintHex 返回 40 字符大写 hex fingerprint。
+func (r *Relay) GetFingerprintHex() string {
+	if r.FingerprintHex != "" {
+		return r.FingerprintHex
+	}
+	if len(r.RSAIdentity) == 20 {
+		return fingerprintHex(r.RSAIdentity)
+	}
+	return r.Fingerprint
+}
+
 // GetIdentityKey returns the relay's Ed25519 identity key (SPEC-001)
 func (r *Relay) GetIdentityKey() []byte {
 	return r.IdentityKey
@@ -619,9 +642,27 @@ func (r *Relay) GetNtorOnionKey() []byte {
 	return r.NtorOnionKey
 }
 
-// HasValidKeys returns true if the relay has both required cryptographic keys (SPEC-001)
+// HasNtorKeys 表示 CREATE2 所需的 RSA NODEID + ntor onion key 已齐。
+func (r *Relay) HasNtorKeys() bool {
+	return len(r.RSAIdentity) == 20 && len(r.NtorOnionKey) == 32 && !allZero(r.RSAIdentity) && !allZero(r.NtorOnionKey)
+}
+
+// HasExtendKeys 表示 EXTEND2 还需要 Ed25519 identity。
+func (r *Relay) HasExtendKeys() bool {
+	return r.HasNtorKeys() && len(r.IdentityKey) == 32 && !allZero(r.IdentityKey)
+}
+
+// HasValidKeys 保持旧名，要求完整 3-hop 密钥。
 func (r *Relay) HasValidKeys() bool {
-	return len(r.IdentityKey) == 32 && len(r.NtorOnionKey) == 32
+	return r.HasExtendKeys()
+}
+
+func allZero(b []byte) bool {
+	var acc byte
+	for _, v := range b {
+		acc |= v
+	}
+	return acc == 0
 }
 
 // InSameFamily checks if this relay is in the same family as another relay
@@ -1141,239 +1182,4 @@ func extractSignatureData(sigBlock string) string {
 	}
 
 	return sigData.String()
-}
-
-// FetchMicrodescriptors fetches microdescriptors for relays and populates their cryptographic keys (SPEC-001)
-// This implements the microdescriptor fetching protocol per dir-spec.txt §3.3
-func (c *Client) FetchMicrodescriptors(ctx context.Context, relays []*Relay) error {
-	// Collect unique microdescriptor digests
-	digestMap := make(map[string][]*Relay)
-	for _, relay := range relays {
-		if relay.MicrodescDigest != "" {
-			digestMap[relay.MicrodescDigest] = append(digestMap[relay.MicrodescDigest], relay)
-		}
-	}
-
-	if len(digestMap) == 0 {
-		c.logger.Warn("No microdescriptor digests found in consensus")
-		return nil
-	}
-
-	c.logger.Info("Fetching microdescriptors", "count", len(digestMap))
-
-	// Build URL with digests (batch fetch up to 92 descriptors per request per spec)
-	digests := make([]string, 0, len(digestMap))
-	for digest := range digestMap {
-		digests = append(digests, digest)
-	}
-
-	// Fetch in batches to avoid URL length limits
-	const batchSize = 90
-	for i := 0; i < len(digests); i += batchSize {
-		end := i + batchSize
-		if end > len(digests) {
-			end = len(digests)
-		}
-		batch := digests[i:end]
-
-		if err := c.fetchMicrodescriptorBatch(ctx, batch, digestMap); err != nil {
-			c.logger.Warn("Failed to fetch microdescriptor batch", "error", err, "batch", i/batchSize)
-			// Continue with next batch instead of failing entirely
-		}
-	}
-
-	return nil
-}
-
-// fetchMicrodescriptorBatch fetches a batch of microdescriptors from directory authorities
-func (c *Client) fetchMicrodescriptorBatch(ctx context.Context, digests []string, digestMap map[string][]*Relay) error {
-	// Build URL: /tor/micro/d/digest1-digest2-digest3
-	digestList := strings.Join(digests, "-")
-	urlPath := "/tor/micro/d/" + digestList
-
-	// Try each authority until one succeeds
-	var lastErr error
-	for _, authority := range c.authorities {
-		// Extract base URL from consensus URL (support both consensus and consensus-microdesc)
-		baseURL := strings.TrimSuffix(authority, "/tor/status-vote/current/consensus-microdesc")
-		baseURL = strings.TrimSuffix(baseURL, "/tor/status-vote/current/consensus")
-		mdURL := baseURL + urlPath
-
-		md, err := c.fetchMicrodescriptorsFromAuthority(ctx, mdURL)
-		if err != nil {
-			c.logger.Debug("Failed to fetch microdescriptors from authority", "authority", baseURL, "error", err)
-			lastErr = err
-			continue
-		}
-
-		// Parse and populate relay keys
-		if err := c.parseMicrodescriptors(md, digestMap); err != nil {
-			c.logger.Warn("Failed to parse microdescriptors", "error", err)
-			lastErr = err
-			continue
-		}
-
-		c.logger.Debug("Successfully fetched microdescriptor batch", "count", len(digests))
-		return nil
-	}
-
-	return fmt.Errorf("failed to fetch microdescriptors from any authority: %w", lastErr)
-}
-
-// fetchMicrodescriptorsFromAuthority fetches microdescriptors from a specific authority
-func (c *Client) fetchMicrodescriptorsFromAuthority(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch microdescriptors: %w", err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			c.logger.Error("Failed to close response body", "function", "fetchMicrodescriptorsFromAuthority", "error", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	// Handle compressed response
-	var reader io.Reader = resp.Body
-	switch resp.Header.Get("Content-Encoding") {
-	case "gzip":
-		gzReader, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
-		}
-		defer func() {
-			if err := gzReader.Close(); err != nil {
-				c.logger.Error("Failed to close gzip reader", "function", "fetchMicrodescriptorsFromAuthority", "error", err)
-			}
-		}()
-		reader = gzReader
-	case "deflate":
-		zlibReader, err := zlib.NewReader(resp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create zlib reader: %w", err)
-		}
-		defer func() {
-			if err := zlibReader.Close(); err != nil {
-				c.logger.Error("Failed to close zlib reader", "function", "fetchMicrodescriptorsFromAuthority", "error", err)
-			}
-		}()
-		reader = zlibReader
-	}
-
-	return io.ReadAll(reader)
-}
-
-// parseMicrodescriptors parses microdescriptor documents and populates relay keys (SPEC-001)
-// Microdescriptor format per dir-spec.txt §3.3:
-//
-//	onion-key (RSA key, not used for ntor)
-//	ntor-onion-key base64(curve25519 key)
-//	id ed25519 base64(32-byte identity key)
-func (c *Client) parseMicrodescriptors(data []byte, digestMap map[string][]*Relay) error {
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
-
-	var currentMD struct {
-		ntorKey     []byte
-		identityKey []byte
-		family      []string
-		lines       []string
-	}
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		currentMD.lines = append(currentMD.lines, line)
-
-		// Parse ntor-onion-key
-		if strings.HasPrefix(line, "ntor-onion-key ") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				key, err := base64.StdEncoding.DecodeString(parts[1])
-				if err != nil {
-					c.logger.Debug("Failed to decode ntor-onion-key", "error", err)
-					continue
-				}
-				if len(key) == 32 {
-					currentMD.ntorKey = key
-				}
-			}
-		}
-
-		// Parse id ed25519
-		if strings.HasPrefix(line, "id ed25519") {
-			// Next line contains base64-encoded identity key
-			if scanner.Scan() {
-				keyLine := scanner.Text()
-				currentMD.lines = append(currentMD.lines, keyLine)
-				key, err := base64.StdEncoding.DecodeString(keyLine)
-				if err != nil {
-					c.logger.Debug("Failed to decode ed25519 identity", "error", err)
-					continue
-				}
-				if len(key) == 32 {
-					currentMD.identityKey = key
-				}
-			}
-		}
-
-		// Parse family line (dir-spec.txt §3.3)
-		// Format: "family" SP nickname SP nickname ...
-		// Family members are identified by fingerprints or nicknames
-		if strings.HasPrefix(line, "family ") {
-			parts := strings.Fields(line)
-			if len(parts) > 1 {
-				// Store family members (excluding the "family" keyword)
-				currentMD.family = parts[1:]
-			}
-		}
-
-		// End of microdescriptor (blank line or start of next)
-		if line == "" || strings.HasPrefix(line, "onion-key") {
-			if len(currentMD.ntorKey) == 32 && len(currentMD.identityKey) == 32 {
-				// Calculate digest and match to relays
-				digest := c.calculateMicrodescriptorDigest(currentMD.lines)
-				if relays, ok := digestMap[digest]; ok {
-					for _, relay := range relays {
-						relay.NtorOnionKey = currentMD.ntorKey
-						relay.IdentityKey = currentMD.identityKey
-						relay.Family = currentMD.family
-					}
-				}
-			}
-
-			// Reset for next microdescriptor
-			currentMD.ntorKey = nil
-			currentMD.identityKey = nil
-			currentMD.family = nil
-			currentMD.lines = nil
-		}
-	}
-
-	// Process last microdescriptor
-	if len(currentMD.ntorKey) == 32 && len(currentMD.identityKey) == 32 {
-		digest := c.calculateMicrodescriptorDigest(currentMD.lines)
-		if relays, ok := digestMap[digest]; ok {
-			for _, relay := range relays {
-				relay.NtorOnionKey = currentMD.ntorKey
-				relay.IdentityKey = currentMD.identityKey
-				relay.Family = currentMD.family
-			}
-		}
-	}
-
-	return scanner.Err()
-}
-
-// calculateMicrodescriptorDigest computes SHA256 digest of microdescriptor for verification
-func (c *Client) calculateMicrodescriptorDigest(lines []string) string {
-	content := strings.Join(lines, "\n")
-	hash := sha256.Sum256([]byte(content))
-	return base64.StdEncoding.EncodeToString(hash[:])
 }

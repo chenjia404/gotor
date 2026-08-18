@@ -384,6 +384,12 @@ func (c *Client) buildCircuitForPool(ctx context.Context) (*circuit.Circuit, err
 		"middle", selectedPath.Middle.Nickname,
 		"exit", selectedPath.Exit.Nickname)
 
+	if err := c.directory.FetchMicrodescriptorsFor(ctx, []*directory.Relay{
+		selectedPath.Guard, selectedPath.Middle, selectedPath.Exit,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to fetch path microdescriptors: %w", err)
+	}
+
 	// Create circuit builder
 	builder := circuit.NewBuilder(c.circuitMgr, c.logger)
 

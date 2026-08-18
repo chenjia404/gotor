@@ -56,6 +56,7 @@ func TestCreateFirstHopNoConnection(t *testing.T) {
 	log := logger.NewDefault()
 	circ := &Circuit{ID: 100}
 	ext := NewExtension(circ, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
@@ -78,6 +79,7 @@ func TestCreateFirstHopSendFailure(t *testing.T) {
 		conn: &failingConnection{sendErr: fmt.Errorf("network error")},
 	}
 	ext := NewExtension(circ, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
@@ -97,6 +99,7 @@ func TestCreateFirstHopReceiveFailure(t *testing.T) {
 		conn: &failingConnection{receiveErr: fmt.Errorf("connection reset")},
 	}
 	ext := NewExtension(circ, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

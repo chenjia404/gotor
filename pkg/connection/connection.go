@@ -442,7 +442,9 @@ func (c *Connection) setState(state State) {
 	// waiters are not blocked forever on failed or closed connections.
 	if state == StateOpen || state == StateClosed || state == StateFailed {
 		c.readyOnce.Do(func() {
-			close(c.readyCh)
+			if c.readyCh != nil {
+				close(c.readyCh)
+			}
 		})
 	}
 

@@ -90,7 +90,7 @@ func TestNtorKeyDerivation_PublicKeyComputation(t *testing.T) {
 // secret_input = EXP(Y,x) | EXP(B,x) | ID | B | X | Y | PROTOID
 func TestNtorKeyDerivation_SecretInputConstruction(t *testing.T) {
 	// Setup test keys
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	rand.Read(serverIdentity)
 
 	var serverNtorPrivate [32]byte
@@ -245,7 +245,7 @@ func TestNtorKeyDerivation_DualDiffieHellman(t *testing.T) {
 // per tor-spec.txt §5.1.4
 func TestNtorKeyDerivation_AUTHComputation(t *testing.T) {
 	t.Run("AUTH is 32 bytes", func(t *testing.T) {
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		rand.Read(serverIdentity)
 
 		var serverNtorPrivate [32]byte
@@ -277,7 +277,7 @@ func TestNtorKeyDerivation_AUTHComputation(t *testing.T) {
 	})
 
 	t.Run("AUTH is non-deterministic across handshakes (uses ephemeral keys)", func(t *testing.T) {
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		rand.Read(serverIdentity)
 
 		var serverNtorPrivate [32]byte
@@ -305,7 +305,7 @@ func TestNtorKeyDerivation_AUTHComputation(t *testing.T) {
 // per tor-spec.txt §5.1.4
 func TestNtorKeyDerivation_AUTHVerification(t *testing.T) {
 	t.Run("Valid AUTH passes verification", func(t *testing.T) {
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		rand.Read(serverIdentity)
 
 		var serverNtorPrivate [32]byte
@@ -338,7 +338,7 @@ func TestNtorKeyDerivation_AUTHVerification(t *testing.T) {
 	})
 
 	t.Run("Invalid AUTH fails verification", func(t *testing.T) {
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		rand.Read(serverIdentity)
 
 		var serverNtorPrivate [32]byte
@@ -363,7 +363,7 @@ func TestNtorKeyDerivation_AUTHVerification(t *testing.T) {
 // TestNtorKeyDerivation_KeyMaterialLength verifies 72-byte key material
 // per tor-spec.txt §5.1.4
 func TestNtorKeyDerivation_KeyMaterialLength(t *testing.T) {
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	rand.Read(serverIdentity)
 
 	var serverNtorPrivate [32]byte
@@ -385,7 +385,7 @@ func TestNtorKeyDerivation_KeyMaterialLength(t *testing.T) {
 // TestNtorKeyDerivation_KeyMaterialStructure verifies the 72-byte layout:
 // Df (20) || Db (20) || Kf (16) || Kb (16)
 func TestNtorKeyDerivation_KeyMaterialStructure(t *testing.T) {
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	rand.Read(serverIdentity)
 
 	var serverNtorPrivate [32]byte
@@ -428,7 +428,7 @@ func TestNtorKeyDerivation_KeyMaterialStructure(t *testing.T) {
 // TestNtorKeyDerivation_DomainSeparation verifies AUTH and key_material
 // use different HKDF info strings
 func TestNtorKeyDerivation_DomainSeparation(t *testing.T) {
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	rand.Read(serverIdentity)
 
 	var serverNtorPrivate [32]byte
@@ -465,7 +465,7 @@ func TestNtorKeyDerivation_ForwardSecrecy(t *testing.T) {
 		// doesn't compromise past sessions. This is achieved by
 		// including ephemeral-ephemeral DH in secret_input.
 
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		rand.Read(serverIdentity)
 
 		var serverNtorPrivate [32]byte
@@ -491,7 +491,7 @@ func TestNtorKeyDerivation_ForwardSecrecy(t *testing.T) {
 // TestNtorKeyDerivation_EphemeralKeyUniqueness verifies unique ephemeral keys
 // per handshake
 func TestNtorKeyDerivation_EphemeralKeyUniqueness(t *testing.T) {
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	rand.Read(serverIdentity)
 
 	var serverNtorPublic [32]byte
@@ -521,7 +521,7 @@ func TestNtorKeyDerivation_EphemeralKeyUniqueness(t *testing.T) {
 // TestNtorKeyDerivation_MutualAuthentication verifies bidirectional authentication
 func TestNtorKeyDerivation_MutualAuthentication(t *testing.T) {
 	t.Run("Server authenticates to client via AUTH", func(t *testing.T) {
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		rand.Read(serverIdentity)
 
 		var serverNtorPrivate [32]byte
@@ -545,7 +545,7 @@ func TestNtorKeyDerivation_MutualAuthentication(t *testing.T) {
 		// 2. Server verifies by computing EXP(X,b) and EXP(X,y)
 		// 3. If client doesn't have x, shared secrets won't match
 
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		rand.Read(serverIdentity)
 
 		var serverNtorPrivate [32]byte
@@ -575,7 +575,7 @@ func TestNtorKeyDerivation_MutualAuthentication(t *testing.T) {
 
 // TestNtorKeyDerivation_KeyIndependence verifies circuit key independence
 func TestNtorKeyDerivation_KeyIndependence(t *testing.T) {
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	rand.Read(serverIdentity)
 
 	var serverNtorPrivate [32]byte
@@ -606,8 +606,8 @@ func TestNtorKeyDerivation_KeyIndependence(t *testing.T) {
 // are cryptographically bound via secret_input
 func TestNtorKeyDerivation_CryptographicBinding(t *testing.T) {
 	t.Run("Changing server identity changes key material", func(t *testing.T) {
-		serverIdentity1 := make([]byte, 32)
-		serverIdentity2 := make([]byte, 32)
+		serverIdentity1 := make([]byte, 20)
+		serverIdentity2 := make([]byte, 20)
 		rand.Read(serverIdentity1)
 		rand.Read(serverIdentity2)
 
@@ -717,7 +717,7 @@ func TestNtorKeyDerivation_WeakKeyProtection(t *testing.T) {
 // TestNtorKeyDerivation_EndToEndHandshake performs complete integration test
 func TestNtorKeyDerivation_EndToEndHandshake(t *testing.T) {
 	// Setup server keys
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	rand.Read(serverIdentity)
 
 	var serverNtorPrivate [32]byte
@@ -804,7 +804,7 @@ func BenchmarkNtorKeyDerivation_KeyGeneration(b *testing.B) {
 }
 
 func BenchmarkNtorKeyDerivation_ClientHandshake(b *testing.B) {
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	serverNtorKey := make([]byte, 32)
 	rand.Read(serverIdentity)
 	rand.Read(serverNtorKey)
@@ -816,7 +816,7 @@ func BenchmarkNtorKeyDerivation_ClientHandshake(b *testing.B) {
 }
 
 func BenchmarkNtorKeyDerivation_ServerHandshake(b *testing.B) {
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	var serverNtorPrivate [32]byte
 	rand.Read(serverIdentity)
 	rand.Read(serverNtorPrivate[:])
@@ -833,7 +833,7 @@ func BenchmarkNtorKeyDerivation_ServerHandshake(b *testing.B) {
 }
 
 func BenchmarkNtorKeyDerivation_CompleteHandshake(b *testing.B) {
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	var serverNtorPrivate [32]byte
 	rand.Read(serverIdentity)
 	rand.Read(serverNtorPrivate[:])

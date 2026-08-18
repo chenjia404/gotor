@@ -357,7 +357,7 @@ func TestGenerateNtorKeyPair(t *testing.T) {
 
 func TestNtorClientHandshake(t *testing.T) {
 	// Generate mock relay keys
-	identityKey := make([]byte, 32)
+	identityKey := make([]byte, 20)
 	ntorOnionKey := make([]byte, 32)
 
 	for i := range identityKey {
@@ -397,7 +397,7 @@ func TestNtorClientHandshake(t *testing.T) {
 	// Test with invalid keys
 	_, _, err = NtorClientHandshake([]byte("short"), ntorOnionKey)
 	if err == nil {
-		t.Error("Expected error with invalid identity key length")
+		t.Error("Expected error with invalid ntor NODEID length")
 	}
 
 	_, _, err = NtorClientHandshake(identityKey, []byte("short"))
@@ -411,7 +411,7 @@ func TestNtorProcessResponse(t *testing.T) {
 	// Test with proper mock data to verify MAC computation
 	clientPrivate := make([]byte, 32)
 	serverNtorKey := make([]byte, 32)
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 
 	// Fill with test data
 	for i := range clientPrivate {

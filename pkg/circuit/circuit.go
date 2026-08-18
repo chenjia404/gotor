@@ -5,6 +5,7 @@ package circuit
 import (
 	"context"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha1" // #nosec G505 - SHA-1 required by Tor protocol (tor-spec.txt §6.1)
 	"crypto/subtle"
 	"encoding/binary"
@@ -77,6 +78,7 @@ type Circuit struct {
 	// AUDIT-MED-4 FIX: Reusable timer to avoid GC pressure from time.After
 	deliverTimer   *time.Timer // Timer for relay cell delivery timeout
 	deliverTimerMu sync.Mutex
+	mux            *CellMux
 }
 
 // Hop represents a single hop in a circuit (one relay)
@@ -224,7 +226,9 @@ func (c *Circuit) Close() {
 
 	c.deliverTimerMu.Lock()
 	defer c.deliverTimerMu.Unlock()
-	stopAndDrainTimer(c.deliverTimer)
+	if c.deliverTimer != nil {
+		stopAndDrainTimer(c.deliverTimer)
+	}
 }
 
 // Manager manages a collection of circuits
@@ -239,8 +243,22 @@ type Manager struct {
 func NewManager() *Manager {
 	return &Manager{
 		circuits: make(map[uint32]*Circuit),
-		nextID:   1, // Circuit ID 0 is reserved
+		nextID:   newClientCircID(), // link proto ≥4：发起方 CircID MSB 必须为 1
 	}
+}
+
+// newClientCircID 从高半区随机选一个非 0 CircID。
+// tor-spec create-created-cells：link protocol v4+ 发起方 MUST set MSB to 1。
+func newClientCircID() uint32 {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0x80000001
+	}
+	id := binary.BigEndian.Uint32(b[:]) | 0x80000000
+	if id == 0x80000000 {
+		return 0x80000001
+	}
+	return id
 }
 
 // CreateCircuit creates a new circuit and returns its ID
@@ -252,25 +270,17 @@ func (m *Manager) CreateCircuit() (*Circuit, error) {
 		return nil, fmt.Errorf("manager is closed")
 	}
 
-	// Find an unused circuit ID
 	id := m.nextID
 	for {
-		if _, exists := m.circuits[id]; !exists {
+		if _, exists := m.circuits[id]; !exists && id != 0 {
 			break
 		}
-		id++
-		if id == 0 {
-			id = 1 // Skip 0
-		}
+		id = newClientCircID()
 		if id == m.nextID {
 			return nil, fmt.Errorf("no available circuit IDs")
 		}
 	}
-
-	m.nextID = id + 1
-	if m.nextID == 0 {
-		m.nextID = 1
-	}
+	m.nextID = newClientCircID()
 
 	circuit := NewCircuit(id)
 	m.circuits[id] = circuit
@@ -581,6 +591,13 @@ func (c *Circuit) SetConnection(conn interface{}) {
 	c.conn = conn
 }
 
+// SetMux 绑定连接级 cell 分发器，CREATE2/EXTEND2 通过它收响应。
+func (c *Circuit) SetMux(mux *CellMux) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.mux = mux
+}
+
 // SetStreamManager sets the stream manager for this circuit
 // mgr should be a *stream.Manager, but we use interface{} to avoid circular imports
 func (c *Circuit) SetStreamManager(mgr interface{}) {
@@ -591,7 +608,7 @@ func (c *Circuit) SetStreamManager(mgr interface{}) {
 
 // encryptForward encrypts a relay cell payload with each hop's forward cipher
 // This implements the onion encryption per tor-spec.txt §6.1
-// The payload is encrypted in ORDER (guard -> middle -> exit) so the exit node decrypts last
+// Onion 加密从 hops 末尾向前：先 Exit、再 Middle、最后 Guard，使 Guard 层在最外。
 func (c *Circuit) encryptForward(payload []byte) []byte {
 	c.mu.RLock()
 	hops := c.Hops
@@ -1073,8 +1090,8 @@ func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
 	hops := c.Hops
 	c.mu.Unlock()
 
-	if state != StateOpen {
-		return fmt.Errorf("circuit not open: state=%s", state)
+	if state != StateOpen && state != StateBuilding {
+		return fmt.Errorf("circuit not usable: state=%s", state)
 	}
 
 	if conn == nil {
@@ -1118,10 +1135,14 @@ func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
 	// Each hop will decrypt one layer
 	encryptedPayload := c.encryptForward(payload)
 
-	// Create a RELAY cell with the encrypted payload
+	// EXTEND2 必须放在 RELAY_EARLY 里（tor-spec create-created-cells）。
+	cmd := cell.CmdRelay
+	if relayCell.Command == cell.RelayExtend2 || relayCell.Command == cell.RelayExtend {
+		cmd = cell.CmdRelayEarly
+	}
 	cellToSend := &cell.Cell{
 		CircID:  c.ID,
-		Command: cell.CmdRelay,
+		Command: cmd,
 		Payload: encryptedPayload,
 	}
 

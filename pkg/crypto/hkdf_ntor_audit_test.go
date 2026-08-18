@@ -14,14 +14,17 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-// TestHKDFNtor_SpecCompliance verifies HKDF usage per tor-spec.txt §5.1.4
-// Specification requirements:
-// 1. HKDF-SHA256 is used for key derivation
-// 2. Two separate derivation contexts: "verify" and "key_extract"
-// 3. secret_input = EXP(X,y) || EXP(X,b) || ID || B || X || Y || PROTOID
-// 4. verify = HKDF(secret_input, t_verify="ntor-curve25519-sha256-1:verify")
-// 5. key_material = HKDF(secret_input, t_key="ntor-curve25519-sha256-1:key_extract")
-// 6. 72 bytes of key material derived
+// TestHKDFNtor_SpecCompliance verifies ntor key derivation per
+// https://spec.torproject.org/tor-spec/create-created-cells.html
+//
+// H(x,t) = HMAC-SHA256(key=t, msg=x)
+// KEY_SEED = H(secret_input, t_key)
+// verify   = H(secret_input, t_verify)
+// AUTH     = H(verify|ID|B|Y|X|PROTOID|"Server", t_mac)
+// key_material = HKDF-SHA256(IKM=KEY_SEED, salt=t_key, info=m_expand) → 72 bytes
+//
+// The standalone HKDF checks below only assert that golang.org/x/crypto/hkdf
+// is available and used for the expand step. AUTH is not HKDF(secret_input).
 func TestHKDFNtor_SpecCompliance(t *testing.T) {
 	t.Run("Uses SHA-256 as HKDF hash function", func(t *testing.T) {
 		secret := make([]byte, 32)
@@ -198,7 +201,8 @@ func TestHKDFNtor_Determinism(t *testing.T) {
 	t.Log("✓ HKDF is deterministic")
 }
 
-// TestHKDFNtor_ClientHandshakeUsesHKDF verifies NtorProcessResponse uses HKDF-SHA256
+// TestHKDFNtor_ClientHandshakeUsesHKDF verifies NtorProcessResponse matches
+// tor-spec ntor: H=HMAC-SHA256, then KDF-RFC5869 expand of KEY_SEED.
 func TestHKDFNtor_ClientHandshakeUsesHKDF(t *testing.T) {
 	// Generate server keys
 	serverNtorKey := make([]byte, 32)
@@ -207,7 +211,7 @@ func TestHKDFNtor_ClientHandshakeUsesHKDF(t *testing.T) {
 	var serverNtorPublic [32]byte
 	curve25519.ScalarBaseMult(&serverNtorPublic, (*[32]byte)(serverNtorKey))
 
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	rand.Read(serverIdentity)
 
 	// Generate client ephemeral key
@@ -229,24 +233,9 @@ func TestHKDFNtor_ClientHandshakeUsesHKDF(t *testing.T) {
 	curve25519.ScalarMult(&sharedXY, (*[32]byte)(serverEphemeralPrivate), &clientPublic)
 	curve25519.ScalarMult(&sharedXB, (*[32]byte)(serverNtorKey), &clientPublic)
 
-	// Build secret_input
-	protoid := []byte("ntor-curve25519-sha256-1")
-	secretInput := make([]byte, 0, 32+32+32+32+32+32+len(protoid))
-	secretInput = append(secretInput, sharedXY[:]...)
-	secretInput = append(secretInput, sharedXB[:]...)
-	secretInput = append(secretInput, serverIdentity...)
-	secretInput = append(secretInput, serverNtorPublic[:]...)
-	secretInput = append(secretInput, clientPublic[:]...)
-	secretInput = append(secretInput, serverEphemeralPublic[:]...)
-	secretInput = append(secretInput, protoid...)
-
-	// Server derives AUTH using HKDF
-	verifyInfo := []byte("ntor-curve25519-sha256-1:verify")
-	hkdfVerify := hkdf.New(sha256.New, secretInput, nil, verifyInfo)
-	auth := make([]byte, 32)
-	if _, err := io.ReadFull(hkdfVerify, auth); err != nil {
-		t.Fatalf("Server HKDF verify failed: %v", err)
-	}
+	secretInput := ntorBuildSecretInput(sharedXY[:], sharedXB[:], serverIdentity, serverNtorPublic[:], clientPublic[:], serverEphemeralPublic[:])
+	keySeed, verify := ntorDerive(secretInput)
+	auth := ntorComputeAuth(verify, serverIdentity, serverNtorPublic[:], serverEphemeralPublic[:], clientPublic[:])
 
 	// Build server response
 	response := make([]byte, 64)
@@ -264,19 +253,16 @@ func TestHKDFNtor_ClientHandshakeUsesHKDF(t *testing.T) {
 		t.Errorf("Key material length = %d, want 72", len(keyMaterial))
 	}
 
-	// Verify client derived same key material as server would
-	keyInfo := []byte("ntor-curve25519-sha256-1:key_extract")
-	hkdfKey := hkdf.New(sha256.New, secretInput, nil, keyInfo)
-	expectedKeyMaterial := make([]byte, 72)
-	if _, err := io.ReadFull(hkdfKey, expectedKeyMaterial); err != nil {
-		t.Fatalf("Server HKDF key failed: %v", err)
+	expectedKeyMaterial, err := ntorExpandKeyMaterial(keySeed)
+	if err != nil {
+		t.Fatalf("Server HKDF expand failed: %v", err)
 	}
 
 	if !bytes.Equal(keyMaterial, expectedKeyMaterial) {
 		t.Error("Client and server derived different key material")
 	}
 
-	t.Log("✓ NtorProcessResponse uses HKDF-SHA256 correctly")
+	t.Log("✓ NtorProcessResponse uses HMAC + HKDF-SHA256 correctly")
 }
 
 // TestHKDFNtor_ServerHandshakeUsesHKDF verifies NtorServerHandshake uses HKDF-SHA256
@@ -285,7 +271,7 @@ func TestHKDFNtor_ServerHandshakeUsesHKDF(t *testing.T) {
 	serverNtorKey := make([]byte, 32)
 	rand.Read(serverNtorKey)
 
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	rand.Read(serverIdentity)
 
 	// Generate client ephemeral key
@@ -295,11 +281,14 @@ func TestHKDFNtor_ServerHandshakeUsesHKDF(t *testing.T) {
 	var clientPublic [32]byte
 	curve25519.ScalarBaseMult(&clientPublic, (*[32]byte)(clientPrivate))
 
-	// Build client handshake
+	var serverNtorPublic [32]byte
+	curve25519.ScalarBaseMult(&serverNtorPublic, (*[32]byte)(serverNtorKey))
+
+	// Build client handshake: NODEID || KEYID(public B) || CLIENT_PK
 	clientHandshake := make([]byte, 84)
-	copy(clientHandshake[0:20], serverIdentity[0:20]) // NODEID
-	copy(clientHandshake[20:52], serverNtorKey)       // KEYID (will be recomputed)
-	copy(clientHandshake[52:84], clientPublic[:])     // CLIENT_PK
+	copy(clientHandshake[0:20], serverIdentity[0:20])
+	copy(clientHandshake[20:52], serverNtorPublic[:])
+	copy(clientHandshake[52:84], clientPublic[:])
 
 	// Server performs handshake
 	response, keyMaterial, err := NtorServerHandshake(clientHandshake, serverNtorKey, serverIdentity)
@@ -331,18 +320,30 @@ func TestHKDFNtor_SecretInputConstruction(t *testing.T) {
 	// This test verifies the structure, not the actual values
 	// (actual values are tested in end-to-end handshake tests)
 
-	// Expected structure:
+	// Expected structure (NODEID is 20-byte RSA fingerprint, not 32-byte Ed25519):
 	// - 32 bytes: EXP(X,y) - ephemeral DH
 	// - 32 bytes: EXP(X,b) - static DH
-	// - 32 bytes: ID - server identity
+	// - 20 bytes: ID - SHA1(DER(KP_relayid_rsa))
 	// - 32 bytes: B - server public ntor key
 	// - 32 bytes: X - client ephemeral public key
 	// - 32 bytes: Y - server ephemeral public key
 	// - 24 bytes: PROTOID - "ntor-curve25519-sha256-1"
 
-	expectedLength := 32 + 32 + 32 + 32 + 32 + 32 + 24
-	if expectedLength != 216 {
-		t.Errorf("Expected secret_input length = %d, got %d", 216, expectedLength)
+	expectedLength := 32 + 32 + NtorNodeIDLen + 32 + 32 + 32 + 24
+	if expectedLength != 204 {
+		t.Errorf("Expected secret_input length = %d, got %d", 204, expectedLength)
+	}
+
+	got := ntorBuildSecretInput(
+		make([]byte, 32),
+		make([]byte, 32),
+		make([]byte, NtorNodeIDLen),
+		make([]byte, 32),
+		make([]byte, 32),
+		make([]byte, 32),
+	)
+	if len(got) != expectedLength {
+		t.Errorf("ntorBuildSecretInput length = %d, want %d", len(got), expectedLength)
 	}
 
 	// Verify PROTOID
@@ -351,10 +352,10 @@ func TestHKDFNtor_SecretInputConstruction(t *testing.T) {
 		t.Errorf("PROTOID length = %d, want 24", len(protoid))
 	}
 
-	t.Log("✓ secret_input structure correct: 216 bytes")
+	t.Log("✓ secret_input structure correct: 204 bytes")
 	t.Log("  - 32 bytes: EXP(X,y)")
 	t.Log("  - 32 bytes: EXP(X,b)")
-	t.Log("  - 32 bytes: ID")
+	t.Log("  - 20 bytes: ID (RSA SHA-1 fingerprint)")
 	t.Log("  - 32 bytes: B")
 	t.Log("  - 32 bytes: X")
 	t.Log("  - 32 bytes: Y")

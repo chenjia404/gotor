@@ -85,6 +85,7 @@ func TestCreateFirstHop(t *testing.T) {
 	circuit.SetConnection(mockConn)
 
 	ext := NewExtension(circuit, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	ctx := context.Background()
 
@@ -119,6 +120,7 @@ func TestCreateFirstHopTAP(t *testing.T) {
 	circuit.SetConnection(mockConn)
 
 	ext := NewExtension(circuit, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	ctx := context.Background()
 
@@ -164,6 +166,7 @@ func TestExtendCircuit(t *testing.T) {
 	log := logger.NewDefault()
 	circuit := NewCircuit(1)
 	ext := NewExtension(circuit, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	// Test that ExtendCircuit validates inputs without actually sending
 	// We can't fully test the async flow without complex mocking
@@ -182,9 +185,9 @@ func TestExtendCircuit(t *testing.T) {
 		t.Errorf("EXTEND2 data too short: %d bytes", len(extend2Data))
 	}
 
-	// Verify NSPEC
-	if extend2Data[0] != 1 {
-		t.Errorf("Expected NSPEC=1, got %d", extend2Data[0])
+	// NSPEC = IPv4 + RSA identity + Ed25519 identity
+	if extend2Data[0] != 3 {
+		t.Errorf("Expected NSPEC=3, got %d", extend2Data[0])
 	}
 }
 
@@ -192,6 +195,7 @@ func TestGenerateHandshakeData(t *testing.T) {
 	log := logger.NewDefault()
 	circuit := NewCircuit(1)
 	ext := NewExtension(circuit, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	tests := []struct {
 		name          string
@@ -231,6 +235,7 @@ func TestBuildExtend2Data(t *testing.T) {
 	log := logger.NewDefault()
 	circuit := NewCircuit(1)
 	ext := NewExtension(circuit, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	handshakeData := make([]byte, 32)
 	data, err := ext.buildExtend2Data("192.0.2.1:9001", HandshakeTypeNTor, handshakeData)
@@ -242,9 +247,9 @@ func TestBuildExtend2Data(t *testing.T) {
 		t.Error("Expected non-empty EXTEND2 data")
 	}
 
-	// Check NSPEC
-	if data[0] != 1 {
-		t.Errorf("Expected NSPEC=1, got %d", data[0])
+	// Check NSPEC: IPv4 + RSA + Ed25519
+	if data[0] != 3 {
+		t.Errorf("Expected NSPEC=3, got %d", data[0])
 	}
 }
 
@@ -252,6 +257,7 @@ func TestBuildExtend2DataTargetParsing(t *testing.T) {
 	log := logger.NewDefault()
 	circuit := NewCircuit(1)
 	ext := NewExtension(circuit, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	handshakeData := make([]byte, 32)
 	rand.Read(handshakeData)
@@ -300,7 +306,7 @@ func TestProcessCreated2Valid(t *testing.T) {
 	}
 
 	// Set up server keys
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	serverNtorKey := make([]byte, 32)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
@@ -392,8 +398,8 @@ func TestProcessExtended2Valid(t *testing.T) {
 		t.Fatalf("Failed to generate ephemeral key: %v", err)
 	}
 
-	// Set up server keys
-	serverIdentity := make([]byte, 32)
+	// Set up server keys (NODEID is 20-byte RSA fingerprint)
+	serverIdentity := make([]byte, 20)
 	serverNtorKey := make([]byte, 32)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
@@ -517,6 +523,7 @@ func TestCreateFirstHopWireProtocol(t *testing.T) {
 	circuit.SetConnection(mockConn)
 
 	ext := NewExtension(circuit, log)
+	ext.SetTargetRelay(newStubRelay())
 	ctx := context.Background()
 
 	// Attempt to create first hop
@@ -659,6 +666,7 @@ func TestBuildExtend2DataStructure(t *testing.T) {
 	log := logger.NewDefault()
 	circuit := NewCircuit(1)
 	ext := NewExtension(circuit, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	// Generate handshake data
 	handshakeData := make([]byte, 84) // NODEID (20) + KEYID (32) + CLIENT_PK (32)
@@ -675,10 +683,10 @@ func TestBuildExtend2DataStructure(t *testing.T) {
 		t.Fatalf("EXTEND2 data too short")
 	}
 
-	// Check NSPEC
+	// Check NSPEC: IPv4 + RSA identity + Ed25519 identity
 	nspec := extend2Data[0]
-	if nspec != 1 {
-		t.Errorf("Expected NSPEC=1, got %d", nspec)
+	if nspec != 3 {
+		t.Errorf("Expected NSPEC=3, got %d", nspec)
 	}
 
 	// Verify minimum length (NSPEC + link spec + handshake type + handshake len + data)
@@ -704,7 +712,7 @@ func TestProcessExtended2Structure(t *testing.T) {
 
 	ext.ephemeralPrivate = make([]byte, 32)
 	copy(ext.ephemeralPrivate, ephemeral.Private[:])
-	ext.serverIdentity = make([]byte, 32)
+	ext.serverIdentity = make([]byte, 20)
 	ext.serverNtorKey = make([]byte, 32)
 	rand.Read(ext.serverIdentity)
 	rand.Read(ext.serverNtorKey)

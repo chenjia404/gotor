@@ -4,8 +4,6 @@ package relay
 
 import (
 	"bytes"
-	"crypto/ed25519"
-	"crypto/rand"
 	"io"
 	"log/slog"
 	"net"
@@ -14,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/curve25519"
+
 	"github.com/opd-ai/go-tor/pkg/cell"
+	"github.com/opd-ai/go-tor/pkg/crypto"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
@@ -440,48 +441,25 @@ func (a *amplificationTracker) SetWriteDeadline(t time.Time) error { return nil 
 
 func generateTestKeys(t *testing.T) *RelayKeys {
 	t.Helper()
-
-	// Generate Ed25519 identity keypair
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	keys, err := GenerateRelayKeys()
 	if err != nil {
-		t.Fatalf("Failed to generate identity: %v", err)
+		t.Fatalf("Failed to generate relay keys: %v", err)
 	}
-
-	keys := &RelayKeys{
-		Ed25519Public:  pub,
-		Ed25519Private: priv,
-	}
-
-	// Set compatibility fields
-	keys.Identity.Public = pub
-	keys.Identity.Private = priv
-
-	ntorKey := make([]byte, 32)
-	if _, err := rand.Read(ntorKey); err != nil {
-		t.Fatalf("Failed to generate ntor key: %v", err)
-	}
-	keys.NtorOnionKey = ntorKey
-
 	return keys
 }
 
 func buildCreate2Cell(t *testing.T, circuitID uint32, keys *RelayKeys) *cell.Cell {
 	t.Helper()
 
-	// Build ntor handshake data (84 bytes)
-	clientPublic := make([]byte, 32)
-	rand.Read(clientPublic)
+	var ntorPriv [32]byte
+	copy(ntorPriv[:], keys.NtorOnionKey)
+	var ntorPub [32]byte
+	curve25519.ScalarBaseMult(&ntorPub, &ntorPriv)
 
-	relayPublic := make([]byte, 32)
-	rand.Read(relayPublic)
-
-	identityHash := make([]byte, 20)
-	rand.Read(identityHash)
-
-	handshakeData := make([]byte, 84)
-	copy(handshakeData[0:32], identityHash)
-	copy(handshakeData[32:64], relayPublic)
-	copy(handshakeData[64:84], clientPublic[:20])
+	handshakeData, _, err := crypto.NtorClientHandshake(keys.RSANodeID(), ntorPub[:])
+	if err != nil {
+		t.Fatalf("NtorClientHandshake: %v", err)
+	}
 
 	// Build CREATE2 payload
 	payload := make([]byte, 4+len(handshakeData))

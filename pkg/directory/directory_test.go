@@ -539,15 +539,13 @@ BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
 		Nickname: "TestRelay",
 	}
 
-	// Calculate expected digest
 	testDigest := client.calculateMicrodescriptorDigest([]string{
 		"onion-key",
 		"-----BEGIN RSA PUBLIC KEY-----",
 		"MIGJAoGBAKrJn...",
 		"-----END RSA PUBLIC KEY-----",
 		"ntor-onion-key hSDwCYkwp1R0i33ctD0CAwEAAaOCAZIwggGOMB0GA1UdDgQWBBSoSmpjBH3duubRObem",
-		"id ed25519",
-		"dGVzdGlkZW50aXR5a2V5MTIzNDU2Nzg5MDEy",
+		"id ed25519 dGVzdGlkZW50aXR5a2V5MTIzNDU2Nzg5MDEy",
 	})
 	digestMap[testDigest] = []*Relay{relay}
 
@@ -573,8 +571,9 @@ func TestRelayHasValidKeys(t *testing.T) {
 		{
 			name: "both_keys_valid",
 			relay: &Relay{
-				IdentityKey:  make([]byte, 32),
-				NtorOnionKey: make([]byte, 32),
+				RSAIdentity:  bytesRepeat(0x01, 20),
+				IdentityKey:  bytesRepeat(0x02, 32),
+				NtorOnionKey: bytesRepeat(0x03, 32),
 			},
 			expected: true,
 		},

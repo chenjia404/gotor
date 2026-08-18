@@ -132,44 +132,70 @@ func (mc *ManagedClient) buildEnvironment() []string {
 
 // performHandshake reads the PT's stdout and parses CMETHOD lines.
 func (mc *ManagedClient) performHandshake(ctx context.Context) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	scanner := bufio.NewScanner(mc.stdout)
-	deadline := time.Now().Add(30 * time.Second)
-
-	for time.Now().Before(deadline) {
+	type scanResult struct {
+		line string
+		err  error
+		eof  bool
+	}
+	ch := make(chan scanResult, 1)
+	go func() {
+		for scanner.Scan() {
+			select {
+			case ch <- scanResult{line: scanner.Text()}:
+			case <-timeoutCtx.Done():
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			select {
+			case ch <- scanResult{err: err}:
+			case <-timeoutCtx.Done():
+			}
+			return
+		}
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		case ch <- scanResult{eof: true}:
+		case <-timeoutCtx.Done():
 		}
+	}()
 
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return err
+	for {
+		select {
+		case <-timeoutCtx.Done():
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-
-		line := scanner.Text()
-		mc.log.Debug("PT stdout", "line", line)
-
-		if strings.HasPrefix(line, "CMETHOD-ERROR") {
-			return fmt.Errorf("PT reported error: %s", line)
-		}
-
-		if strings.HasPrefix(line, "CMETHOD") {
-			if err := mc.parseCMethod(line); err != nil {
-				mc.log.Warn("Failed to parse CMETHOD", "line", line, "error", err)
+			return fmt.Errorf("PT handshake timeout")
+		case r := <-ch:
+			if r.err != nil {
+				return r.err
 			}
-		}
+			if r.eof {
+				return fmt.Errorf("PT handshake timeout")
+			}
+			line := r.line
+			mc.log.Debug("PT stdout", "line", line)
 
-		if strings.HasPrefix(line, "CMETHODS DONE") {
-			mc.log.Info("PT handshake complete", "methods", len(mc.methods))
-			return nil
+			if strings.HasPrefix(line, "CMETHOD-ERROR") {
+				return fmt.Errorf("PT reported error: %s", line)
+			}
+
+			if strings.HasPrefix(line, "CMETHOD") {
+				if err := mc.parseCMethod(line); err != nil {
+					mc.log.Warn("Failed to parse CMETHOD", "line", line, "error", err)
+				}
+			}
+
+			if strings.HasPrefix(line, "CMETHODS DONE") {
+				mc.log.Info("PT handshake complete", "methods", len(mc.methods))
+				return nil
+			}
 		}
 	}
-
-	return fmt.Errorf("PT handshake timeout")
 }
 
 // parseCMethod parses a CMETHOD line: CMETHOD <methodname> socks5 <address>

@@ -244,18 +244,19 @@ func TestDigestVerificationHopTiming(t *testing.T) {
 	for hopIdx := 0; hopIdx < 3; hopIdx++ {
 		hopTimings[hopIdx] = make([]time.Duration, iterations)
 
-		// Set digest for this hop
+		// 每轮重置 digest，并写入与 verifyRelayCellDigest 相同的 post-cell digest。
 		hop := circuit.Hops[hopIdx]
-		digestSum := hop.BackwardDigest.Sum(nil)
-		payload[5] = digestSum[0]
-		payload[6] = digestSum[1]
-		payload[7] = digestSum[2]
-		payload[8] = digestSum[3]
+		_ = hop
 
 		for i := 0; i < iterations; i++ {
 			// Reset digest state for each iteration
 			circuit.Hops[hopIdx].BackwardDigest = sha1.New() // #nosec G401
-			digestSum = circuit.Hops[hopIdx].BackwardDigest.Sum(nil)
+			cellCopy := make([]byte, len(payload))
+			copy(cellCopy, payload)
+			cellCopy[5], cellCopy[6], cellCopy[7], cellCopy[8] = 0, 0, 0, 0
+			h := sha1.New() // #nosec G401
+			_, _ = h.Write(cellCopy)
+			digestSum := h.Sum(nil)
 			payload[5] = digestSum[0]
 			payload[6] = digestSum[1]
 			payload[7] = digestSum[2]

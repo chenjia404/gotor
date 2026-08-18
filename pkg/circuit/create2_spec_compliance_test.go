@@ -37,6 +37,7 @@ func TestCREATE2CellFormat(t *testing.T) {
 			mockConn := newMockExtensionConnection()
 			circuit.SetConnection(mockConn)
 			ext := NewExtension(circuit, log)
+			ext.SetTargetRelay(newStubRelay())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -90,6 +91,7 @@ func TestCREATE2HandshakeDataGeneration(t *testing.T) {
 	log := logger.NewDefault()
 	circuit := NewCircuit(1)
 	ext := NewExtension(circuit, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	tests := []struct {
 		name          string
@@ -147,7 +149,7 @@ func TestCREATED2CellFormat(t *testing.T) {
 			hlen:         0,
 			hdata:        []byte{},
 			expectError:  true,
-			errorContain: "invalid response length",
+			errorContain: "invalid ntor response length",
 		},
 		{
 			name:         "CREATED2 HLEN mismatch",
@@ -178,7 +180,7 @@ func TestCREATED2CellFormat(t *testing.T) {
 			// Set ephemeral keys for processing (even though we'll fail verification)
 			ext.ephemeralPrivate = make([]byte, 32)
 			ext.serverNtorKey = make([]byte, 32)
-			ext.serverIdentity = make([]byte, 32) // Ed25519 identity is 32 bytes
+			ext.serverIdentity = make([]byte, 20)
 
 			err := ext.ProcessCreated2(created2Cell)
 
@@ -204,7 +206,7 @@ func TestCREATED2Processing(t *testing.T) {
 	// Set up dummy ntor keys
 	ext.ephemeralPrivate = make([]byte, 32)
 	ext.serverNtorKey = make([]byte, 32)
-	ext.serverIdentity = make([]byte, 32)
+	ext.serverIdentity = make([]byte, 20)
 
 	// Fill with test data
 	copy(ext.serverIdentity, []byte("test_server_identity_32bytes1234"))
@@ -273,6 +275,7 @@ func TestCREATE2CircuitIDMatch(t *testing.T) {
 	mockConn := newMockExtensionConnection()
 	circuit.SetConnection(mockConn)
 	ext := NewExtension(circuit, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -304,6 +307,7 @@ func TestCREATE2Timeout(t *testing.T) {
 	mockConn := &mockTimeoutConnection{}
 	circuit.SetConnection(mockConn)
 	ext := NewExtension(circuit, log)
+	ext.SetTargetRelay(newStubRelay())
 
 	// Use short timeout for test
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -354,7 +358,7 @@ func TestCREATED2InsufficientKeyMaterial(t *testing.T) {
 	// Set dummy keys to get past initial checks
 	ext.ephemeralPrivate = make([]byte, 32)
 	ext.serverNtorKey = make([]byte, 32)
-	ext.serverIdentity = make([]byte, 32) // Ed25519 identity is 32 bytes
+	ext.serverIdentity = make([]byte, 20) // Ed25519 identity is 32 bytes
 
 	// Create CREATED2 with valid format but will fail ntor verification
 	// (which would produce insufficient key material)

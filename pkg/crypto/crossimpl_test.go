@@ -353,8 +353,12 @@ func runNtorVectors(t *testing.T, path string) {
 				copy(handshakeData[20:52], serverBPublic)
 				copy(handshakeData[52:84], clientXPublic)
 			}
+			id := nodeID
+			if len(id) != 20 && len(serverIdentity) == 20 {
+				id = serverIdentity
+			}
 			gotServerResp, serverKeyMat, err := ntorServerHandshakeWithKeys(
-				handshakeData, serverBPrivate, serverIdentity, serverYPrivate,
+				handshakeData, serverBPrivate, id, serverYPrivate,
 			)
 			if err != nil {
 				t.Fatalf("ntorServerHandshakeWithKeys: %v", err)
@@ -370,7 +374,7 @@ func runNtorVectors(t *testing.T, path string) {
 
 			// Test client-side key material via NtorProcessResponse
 			clientKeyMat, err := NtorProcessResponse(
-				wantServerResponse, clientXPrivate, serverBPublic, serverIdentity,
+				wantServerResponse, clientXPrivate, serverBPublic, id,
 			)
 			if err != nil {
 				t.Fatalf("NtorProcessResponse: %v", err)

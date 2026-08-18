@@ -600,7 +600,7 @@ func TestCipherStreamConstantTime(t *testing.T) {
 // TestNtorConstantTime verifies ntor handshake operations are constant-time
 func TestNtorConstantTime(t *testing.T) {
 	t.Run("Client handshake produces consistent output", func(t *testing.T) {
-		identityKey := make([]byte, 32)
+		identityKey := make([]byte, 20)
 		ntorKey := make([]byte, 32)
 		rand.Read(identityKey)
 		rand.Read(ntorKey)
@@ -637,7 +637,7 @@ func TestNtorConstantTime(t *testing.T) {
 		serverNtorKey := make([]byte, 32)
 		rand.Read(serverNtorKey)
 
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		rand.Read(serverIdentity)
 
 		// This will fail AUTH verification (random data), but should not panic
@@ -646,8 +646,10 @@ func TestNtorConstantTime(t *testing.T) {
 			t.Error("Random AUTH should fail verification")
 		}
 
-		// Error message should not leak timing information
-		if err.Error() != "auth MAC verification failed: server authentication invalid" {
+		// Error message should not leak timing information or key material.
+		// Prefix includes "ntor" so callers can distinguish handshake AUTH
+		// from other AUTH failures; the rest is a generic invalid-auth string.
+		if err.Error() != "ntor AUTH verification failed: server authentication invalid" {
 			t.Errorf("Unexpected error message: %v", err)
 		}
 	})

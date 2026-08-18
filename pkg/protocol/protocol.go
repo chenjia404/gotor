@@ -229,6 +229,17 @@ func (h *Handshake) receiveNetinfo(ctx context.Context) error {
 		return err
 	}
 
+	for receivedCell.Command == cell.CmdAuthChallenge || receivedCell.Command == cell.CmdPadding || receivedCell.Command == cell.CmdVPadding {
+		h.logger.Debug("Skipping cell while waiting for NETINFO", "command", receivedCell.Command)
+		receivedCell, err = h.conn.ReceiveCellWithContext(ctx)
+		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("timeout waiting for NETINFO response")
+			}
+			return err
+		}
+	}
+
 	if receivedCell.Command != cell.CmdNetinfo {
 		return fmt.Errorf("expected NETINFO cell, got %s", receivedCell.Command)
 	}

@@ -300,8 +300,8 @@ func TestErrorMessagesDoNotLeakKeys(t *testing.T) {
 	})
 
 	t.Run("NtorHandshake_ErrorMessages", func(t *testing.T) {
-		// Generate server keys
-		serverIdentity, _, err := ed25519.GenerateKey(nil)
+		// NODEID is the 20-byte RSA SHA-1 fingerprint (tor-spec ntor).
+		serverIdentity, err := GenerateRandomBytes(20)
 		if err != nil {
 			t.Fatalf("Failed to generate server identity: %v", err)
 		}

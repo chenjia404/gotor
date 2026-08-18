@@ -11,6 +11,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/path"
+	"github.com/opd-ai/go-tor/pkg/protocol"
 	"github.com/opd-ai/go-tor/pkg/ratelimit"
 )
 
@@ -102,6 +103,19 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 	buildCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	if !p.Guard.HasNtorKeys() {
+		circuit.SetState(StateFailed)
+		return nil, fmt.Errorf("guard %s missing ntor keys (no zero-key fallback)", p.Guard.Nickname)
+	}
+	if !p.Middle.HasExtendKeys() {
+		circuit.SetState(StateFailed)
+		return nil, fmt.Errorf("middle %s missing extend keys", p.Middle.Nickname)
+	}
+	if !p.Exit.HasExtendKeys() {
+		circuit.SetState(StateFailed)
+		return nil, fmt.Errorf("exit %s missing extend keys", p.Exit.Nickname)
+	}
+
 	// Connect to guard with certificate pinning
 	guardAddr := fmt.Sprintf("%s:%d", p.Guard.Address, p.Guard.ORPort)
 	guardConn, err := b.connectToRelay(buildCtx, guardAddr, p.Guard)
@@ -110,21 +124,20 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 		return nil, fmt.Errorf("failed to connect to guard: %w", err)
 	}
 
-	// Store connection in circuit for cell I/O
-	circuit.SetConnection(guardConn)
-
-	// Add guard hop structure
-	if err := circuit.AddHop(&Hop{
-		Fingerprint: p.Guard.Fingerprint,
-		Address:     guardAddr,
-		IsGuard:     true,
-		IsExit:      false,
-	}); err != nil {
+	hs := protocol.NewHandshake(guardConn, b.logger)
+	if err := hs.PerformHandshake(buildCtx); err != nil {
 		circuit.SetState(StateFailed)
-		return nil, fmt.Errorf("failed to add guard hop: %w", err)
+		_ = guardConn.Close()
+		return nil, fmt.Errorf("link handshake with guard %s failed: %w", p.Guard.Nickname, err)
 	}
 
-	b.logger.Info("Connected to guard", "guard", p.Guard.Nickname)
+	circuit.SetConnection(guardConn)
+	mux := NewCellMux(guardConn, b.logger)
+	circuit.SetMux(mux)
+	mux.RegisterCircuit(circuit)
+	mux.Start()
+
+	b.logger.Info("Connected to guard", "guard", p.Guard.Nickname, "link_version", hs.NegotiatedVersion())
 
 	// Create extension handler for this circuit
 	ext := NewExtension(circuit, b.logger)
@@ -195,9 +208,8 @@ func (b *Builder) connectToRelay(ctx context.Context, address string, relay *dir
 				"fingerprint", relay.Fingerprint)
 		}
 
-		// Set expected RSA fingerprint from consensus
-		if relay.Fingerprint != "" {
-			cfg.ExpectedFingerprint = relay.Fingerprint
+		if hex := relay.GetFingerprintHex(); hex != "" && len(hex) == 40 {
+			cfg.ExpectedFingerprint = hex
 		}
 
 		// Enable strict CERTS validation mode for defense-in-depth

@@ -28,7 +28,7 @@ func TestNtorHandshakeEndToEnd(t *testing.T) {
 	t.Log("Testing complete ntor handshake flow")
 
 	// Generate server keys
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
 	}
@@ -51,8 +51,7 @@ func TestNtorHandshakeEndToEnd(t *testing.T) {
 		t.Fatalf("Invalid handshake data length: %d, expected 84", len(handshakeData))
 	}
 
-	// Verify NODEID
-	if !bytes.Equal(handshakeData[0:20], serverIdentity[0:20]) {
+	if !bytes.Equal(handshakeData[0:20], serverIdentity) {
 		t.Error("NODEID mismatch in handshake")
 	}
 
@@ -114,7 +113,7 @@ func TestNtorHandshakeEndToEnd(t *testing.T) {
 // when using the same ephemeral keys
 func TestNtorHandshakeWithMatchingKeys(t *testing.T) {
 	// Setup: Generate all keys
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
 	}
@@ -140,49 +139,18 @@ func TestNtorHandshakeWithMatchingKeys(t *testing.T) {
 	if _, err := rand.Read(serverEphemeralPrivate[:]); err != nil {
 		t.Fatalf("Failed to generate server ephemeral private: %v", err)
 	}
-	var serverEphemeralPublic [32]byte
-	curve25519.ScalarBaseMult(&serverEphemeralPublic, &serverEphemeralPrivate)
+	handshake := make([]byte, NtorHandshakeLen)
+	copy(handshake[0:20], serverIdentity)
+	copy(handshake[20:52], serverNtorPublic[:])
+	copy(handshake[52:84], clientEphemeralPublic[:])
 
-	// Protocol constant
-	protoid := []byte("ntor-curve25519-sha256-1")
-
-	// SERVER SIDE: Compute secret_input and keys
-	var serverSharedXY [32]byte
-	var serverSharedXB [32]byte
-	curve25519.ScalarMult(&serverSharedXY, &serverEphemeralPrivate, &clientEphemeralPublic)
-	curve25519.ScalarMult(&serverSharedXB, &serverNtorPrivate, &clientEphemeralPublic)
-
-	serverSecretInput := make([]byte, 0, 32+32+32+32+32+32+len(protoid))
-	serverSecretInput = append(serverSecretInput, serverSharedXY[:]...)
-	serverSecretInput = append(serverSecretInput, serverSharedXB[:]...)
-	serverSecretInput = append(serverSecretInput, serverIdentity...)
-	serverSecretInput = append(serverSecretInput, serverNtorPublic[:]...)
-	serverSecretInput = append(serverSecretInput, clientEphemeralPublic[:]...)
-	serverSecretInput = append(serverSecretInput, serverEphemeralPublic[:]...)
-	serverSecretInput = append(serverSecretInput, protoid...)
-
-	// Derive AUTH
-	verify := []byte("ntor-curve25519-sha256-1:verify")
-	hkdfVerify := hkdf.New(sha256.New, serverSecretInput, nil, verify)
-	auth := make([]byte, 32)
-	if _, err := io.ReadFull(hkdfVerify, auth); err != nil {
-		t.Fatalf("Server HKDF verify failed: %v", err)
+	serverResponse, serverKeyMaterial, err := ntorServerHandshakeWithKeys(
+		handshake, serverNtorPrivate[:], serverIdentity, serverEphemeralPrivate[:],
+	)
+	if err != nil {
+		t.Fatalf("server handshake failed: %v", err)
 	}
 
-	// Derive server key material
-	keyInfo := []byte("ntor-curve25519-sha256-1:key_extract")
-	hkdfKey := hkdf.New(sha256.New, serverSecretInput, nil, keyInfo)
-	serverKeyMaterial := make([]byte, 72)
-	if _, err := io.ReadFull(hkdfKey, serverKeyMaterial); err != nil {
-		t.Fatalf("Server HKDF key failed: %v", err)
-	}
-
-	// Build server response
-	serverResponse := make([]byte, 64)
-	copy(serverResponse[0:32], serverEphemeralPublic[:])
-	copy(serverResponse[32:64], auth)
-
-	// CLIENT SIDE: Process response using our implementation
 	clientKeyMaterial, err := NtorProcessResponse(
 		serverResponse,
 		clientEphemeralPrivate[:],
@@ -243,7 +211,7 @@ func TestNtorHandshakeWithMatchingKeys(t *testing.T) {
 
 // TestNtorAuthFailure tests that invalid AUTH values are rejected
 func TestNtorAuthFailure(t *testing.T) {
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	serverNtorKey := make([]byte, 32)
 	clientPrivate := make([]byte, 32)
 
@@ -268,14 +236,14 @@ func TestNtorAuthFailure(t *testing.T) {
 	if err == nil {
 		t.Error("Expected auth verification failure with random response")
 	}
-	if err != nil && !bytes.Contains([]byte(err.Error()), []byte("auth MAC verification failed")) {
+	if err != nil && !bytes.Contains([]byte(err.Error()), []byte("AUTH verification failed")) {
 		t.Errorf("Expected auth MAC error, got: %v", err)
 	}
 }
 
 // TestNtorInvalidResponseLength tests response length validation
 func TestNtorInvalidResponseLength(t *testing.T) {
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	serverNtorKey := make([]byte, 32)
 	clientPrivate := make([]byte, 32)
 
@@ -406,7 +374,7 @@ func TestNtorConstantTimeComparison(t *testing.T) {
 
 // BenchmarkNtorHandshake benchmarks the complete ntor handshake
 func BenchmarkNtorHandshake(b *testing.B) {
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	serverNtorKey := make([]byte, 32)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		b.Fatal(err)
@@ -427,7 +395,7 @@ func BenchmarkNtorHandshake(b *testing.B) {
 // BenchmarkNtorProcessResponse benchmarks response processing
 func BenchmarkNtorProcessResponse(b *testing.B) {
 	// Setup
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	serverNtorKey := make([]byte, 32)
 	clientPrivate := make([]byte, 32)
 	response := make([]byte, 64)

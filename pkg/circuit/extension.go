@@ -181,40 +181,19 @@ func (e *Extension) generateHandshakeData(handshakeType HandshakeType) ([]byte, 
 		// 3. Relay descriptor contains ntor-onion-key and identity key
 		// 4. Keys passed via SetTargetRelay() or extracted from descriptor
 
-		relayIdentity, relayNtorKey, err := e.getRelayKeys()
+		nodeID, relayNtorKey, err := e.getRelayKeys()
 		if err != nil {
-			// Fall back to test keys only for testing/demo scenarios
-			// Production deployments must provide valid relay keys
-			e.logger.Warn("Using placeholder keys - not suitable for production", "error", err)
-			relayIdentity = make([]byte, 32)
-			relayNtorKey = make([]byte, 32)
+			return nil, fmt.Errorf("refusing ntor handshake without real relay keys: %w", err)
 		}
 
-		// AUDIT-001 FIX: Store server keys for later verification
-		e.serverIdentity = make([]byte, 32)
-		copy(e.serverIdentity, relayIdentity)
-		e.serverNtorKey = make([]byte, 32)
-		copy(e.serverNtorKey, relayNtorKey)
+		e.serverIdentity = append([]byte(nil), nodeID...)
+		e.serverNtorKey = append([]byte(nil), relayNtorKey...)
 
-		// Generate ephemeral key pair (x, X) per tor-spec.txt 5.1.4
-		ephemeral, err := crypto.GenerateNtorKeyPair()
+		handshakeData, ephemeralPrivate, err := crypto.NtorClientHandshake(nodeID, relayNtorKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to generate ephemeral key: %w", err)
+			return nil, fmt.Errorf("failed to generate ntor handshake: %w", err)
 		}
-
-		// AUDIT-001 FIX: Store ephemeral private key for processing server response
-		e.ephemeralPrivate = make([]byte, 32)
-		copy(e.ephemeralPrivate, ephemeral.Private[:])
-
-		// Build handshake data: NODEID || KEYID || CLIENT_PK
-		// NODEID (20 bytes): relay identity fingerprint (first 20 bytes of Ed25519 key)
-		// KEYID (32 bytes): relay's ntor onion key
-		// CLIENT_PK (32 bytes): client's ephemeral public key X
-		handshakeData := make([]byte, 20+32+32)
-		copy(handshakeData[0:20], relayIdentity[0:20])  // NODEID
-		copy(handshakeData[20:52], relayNtorKey)        // KEYID
-		copy(handshakeData[52:84], ephemeral.Public[:]) // CLIENT_PK
-
+		e.ephemeralPrivate = ephemeralPrivate
 		return handshakeData, nil
 
 	case HandshakeTypeTAP:
@@ -266,29 +245,43 @@ func (e *Extension) buildExtend2Data(target string, handshakeType HandshakeType,
 		return nil, fmt.Errorf("target must be an IP address (hostnames require DNS resolution which is not supported in EXTEND2), got %q", host)
 	}
 
-	// NSPEC: 1 link specifier
-	data = append(data, 1)
-
-	// Determine if IPv4 or IPv6 and build appropriate link specifier
+	// 顺序按 spec：IPv4 [00]、legacy identity [02]、Ed25519 [03]、IPv6 [01]
+	var specs [][]byte
 	ipv4 := ip.To4()
 	if ipv4 != nil {
-		// Link specifier type 0 (TLS-over-TCP, IPv4)
-		// Type (1 byte) | Length (1 byte) | IPv4 (4 bytes) | Port (2 bytes)
-		data = append(data, 0) // Type: IPv4
-		data = append(data, 6) // Length: 4 (IPv4) + 2 (port)
-		data = append(data, ipv4...)
+		spec := []byte{0, 6}
+		spec = append(spec, ipv4...)
 		portBytes := make([]byte, 2)
 		binary.BigEndian.PutUint16(portBytes, uint16(port))
-		data = append(data, portBytes...)
+		spec = append(spec, portBytes...)
+		specs = append(specs, spec)
 	} else {
-		// Link specifier type 1 (TLS-over-TCP, IPv6)
-		// Type (1 byte) | Length (1 byte) | IPv6 (16 bytes) | Port (2 bytes)
-		data = append(data, 1)  // Type: IPv6
-		data = append(data, 18) // Length: 16 (IPv6) + 2 (port)
-		data = append(data, ip.To16()...)
+		spec := []byte{1, 18}
+		spec = append(spec, ip.To16()...)
 		portBytes := make([]byte, 2)
 		binary.BigEndian.PutUint16(portBytes, uint16(port))
-		data = append(data, portBytes...)
+		spec = append(spec, portBytes...)
+		specs = append(specs, spec)
+	}
+
+	if rsaID, edID, err := e.getRelayIdentities(); err == nil {
+		if len(rsaID) == 20 {
+			spec := []byte{2, 20}
+			spec = append(spec, rsaID...)
+			specs = append(specs, spec)
+		}
+		if len(edID) == 32 {
+			spec := []byte{3, 32}
+			spec = append(spec, edID...)
+			specs = append(specs, spec)
+		}
+	} else {
+		return nil, fmt.Errorf("EXTEND2 requires target identity keys: %w", err)
+	}
+
+	data = append(data, byte(len(specs)))
+	for _, spec := range specs {
+		data = append(data, spec...)
 	}
 
 	// HTYPE
@@ -317,82 +310,65 @@ func (e *Extension) SetTargetRelay(relay interface{}) {
 	e.targetRelay = relay
 }
 
-// getRelayKeys extracts identity and ntor onion keys from the target relay (SPEC-001)
-// Returns the keys if available from a directory.Relay descriptor
-func (e *Extension) getRelayKeys() (identityKey, ntorKey []byte, err error) {
+type relayNtorKeys interface {
+	HasNtorKeys() bool
+	GetNtorOnionKey() []byte
+}
+
+type relayRSAIdentity interface {
+	RSAIdentityBytes() []byte
+}
+
+type relayEdIdentity interface {
+	GetIdentityKey() []byte
+}
+
+// getRelayKeys 返回 ntor NODEID（20 字节 RSA digest）和 ntor onion key。
+func (e *Extension) getRelayKeys() (nodeID, ntorKey []byte, err error) {
 	if e.targetRelay == nil {
 		return nil, nil, fmt.Errorf("no target relay set")
 	}
 
-	// Type assertion to check if it's a directory.Relay with keys
-	type RelayWithKeys interface {
-		GetIdentityKey() []byte
-		GetNtorOnionKey() []byte
-	}
-
-	// Try direct field access for testing/simple cases
-	if relay, ok := e.targetRelay.(struct {
-		IdentityKey  []byte
-		NtorOnionKey []byte
-	}); ok {
-		if len(relay.IdentityKey) != 32 {
-			return nil, nil, fmt.Errorf("invalid identity key length: %d", len(relay.IdentityKey))
+	if relay, ok := e.targetRelay.(relayNtorKeys); ok {
+		if !relay.HasNtorKeys() {
+			return nil, nil, fmt.Errorf("target relay missing ntor keys")
 		}
-		if len(relay.NtorOnionKey) != 32 {
-			return nil, nil, fmt.Errorf("invalid ntor key length: %d", len(relay.NtorOnionKey))
-		}
-		return relay.IdentityKey, relay.NtorOnionKey, nil
-	}
-
-	// Try interface method access
-	if relay, ok := e.targetRelay.(RelayWithKeys); ok {
-		identityKey = relay.GetIdentityKey()
 		ntorKey = relay.GetNtorOnionKey()
-		if len(identityKey) != 32 {
-			return nil, nil, fmt.Errorf("invalid identity key length: %d", len(identityKey))
-		}
-		if len(ntorKey) != 32 {
-			return nil, nil, fmt.Errorf("invalid ntor key length: %d", len(ntorKey))
-		}
-		return identityKey, ntorKey, nil
 	}
 
-	return nil, nil, fmt.Errorf("target relay does not provide required keys")
+	if relay, ok := e.targetRelay.(relayRSAIdentity); ok {
+		nodeID = relay.RSAIdentityBytes()
+	}
+
+	if len(nodeID) != 20 || len(ntorKey) != 32 {
+		return nil, nil, fmt.Errorf("target relay does not provide NODEID(20) and ntor key(32): nodeID=%d ntor=%d", len(nodeID), len(ntorKey))
+	}
+	if allZeroBytes(nodeID) || allZeroBytes(ntorKey) {
+		return nil, nil, fmt.Errorf("target relay keys are all zeros")
+	}
+	return nodeID, ntorKey, nil
 }
 
-// getRelayKeys is a placeholder function showing how relay keys should be obtained
-// from the directory service in a production implementation.
-//
-// Production implementation should:
-// 1. Accept a relay descriptor from the directory service
-// 2. Extract the Ed25519 identity key (32 bytes)
-// 3. Extract the Curve25519 ntor onion key (32 bytes)
-// 4. Validate key formats and lengths
-// 5. Return the keys for use in circuit creation
-//
-// Integration with directory service requires:
-// - Extending directory.Relay to include: IdentityKey []byte, NtorOnionKey []byte
-// - Parsing "identity-ed25519" from relay descriptors
-// - Parsing "ntor-onion-key" from relay descriptors
-// - Storing keys in the Relay structure during consensus parsing
-//
-// Example implementation:
-//
-//	func getRelayKeys(relay *directory.Relay) (identityKey, ntorKey []byte, err error) {
-//	    if len(relay.IdentityKey) != 32 {
-//	        return nil, nil, fmt.Errorf("invalid identity key length")
-//	    }
-//	    if len(relay.NtorOnionKey) != 32 {
-//	        return nil, nil, fmt.Errorf("invalid ntor key length")
-//	    }
-//	    return relay.IdentityKey, relay.NtorOnionKey, nil
-//	}
-//
-// This function is currently unused but documents the required integration.
-func getRelayKeys(relay interface{}) (identityKey, ntorKey []byte, err error) {
-	// Placeholder implementation
-	// In production, this would extract keys from relay descriptor
-	return nil, nil, fmt.Errorf("not implemented: relay key extraction requires directory service integration")
+func (e *Extension) getRelayIdentities() (rsaID, edID []byte, err error) {
+	rsaID, _, err = e.getRelayKeys()
+	if err != nil {
+		return nil, nil, err
+	}
+	if relay, ok := e.targetRelay.(relayEdIdentity); ok {
+		edID = relay.GetIdentityKey()
+	}
+	if len(edID) != 32 || allZeroBytes(edID) {
+		return nil, nil, fmt.Errorf("target relay missing Ed25519 identity")
+	}
+	return rsaID, edID, nil
+}
+
+func allZeroBytes(b []byte) bool {
+	var acc byte
+	for _, v := range b {
+		acc |= v
+	}
+	return acc == 0
 }
 
 // ProcessCreated2 processes a CREATED2 response from the first hop
@@ -591,12 +567,17 @@ func (e *Extension) deriveHopFromKeyMaterial(keyMaterial []byte) (*Hop, error) {
 	backwardDigest := sha1.New() // #nosec G401 - SHA-1 required by Tor spec
 	backwardDigest.Write(dbKey)  // #nosec G104 - hash.Hash.Write never fails
 
-	// Create hop with cryptographic state
 	hop := &Hop{
 		ForwardCipher:  forwardCipher,
 		BackwardCipher: backwardCipher,
 		ForwardDigest:  forwardDigest,
 		BackwardDigest: backwardDigest,
+	}
+	if relay, ok := e.targetRelay.(interface{ String() string }); ok {
+		hop.Address = relay.String()
+	}
+	if relay, ok := e.targetRelay.(interface{ GetFingerprintHex() string }); ok {
+		hop.Fingerprint = relay.GetFingerprintHex()
 	}
 
 	e.logger.Debug("Derived hop cryptographic state from key material",
@@ -664,35 +645,51 @@ func (e *Extension) receiveCreated2(ctx context.Context, conn CellConnection) (*
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Receive cells until we get CREATED2 or timeout
-	for {
-		select {
-		case <-timeoutCtx.Done():
-			return nil, fmt.Errorf("timeout waiting for CREATED2: %w", timeoutCtx.Err())
-		default:
+	e.circuit.mu.RLock()
+	mux := e.circuit.mux
+	e.circuit.mu.RUnlock()
+	if mux != nil {
+		return mux.WaitCreated2(timeoutCtx, e.circuit.ID)
+	}
+
+	// ReceiveCell 是阻塞调用；必须放到 goroutine，否则 timeout/ctx 无法打断。
+	type recvResult struct {
+		c   *cell.Cell
+		err error
+	}
+	ch := make(chan recvResult, 1)
+	go func() {
+		for {
 			receivedCell, err := conn.ReceiveCell()
 			if err != nil {
-				return nil, fmt.Errorf("failed to receive cell: %w", err)
+				ch <- recvResult{err: fmt.Errorf("failed to receive cell: %w", err)}
+				return
 			}
-
-			// Check if it's the CREATED2 we're waiting for
 			if receivedCell.CircID != e.circuit.ID {
 				e.logger.Debug("Received cell for different circuit",
 					"expected_circuit", e.circuit.ID,
 					"received_circuit", receivedCell.CircID)
 				continue
 			}
-
 			if receivedCell.Command == cell.CmdCreated2 {
-				e.logger.Debug("Received CREATED2 cell", "circuit_id", receivedCell.CircID)
-				return receivedCell, nil
+				ch <- recvResult{c: receivedCell}
+				return
 			}
-
-			// Log unexpected cells
 			e.logger.Warn("Received unexpected cell while waiting for CREATED2",
 				"command", receivedCell.Command,
 				"circuit_id", receivedCell.CircID)
 		}
+	}()
+
+	select {
+	case <-timeoutCtx.Done():
+		return nil, fmt.Errorf("timeout waiting for CREATED2: %w", timeoutCtx.Err())
+	case r := <-ch:
+		if r.err != nil {
+			return nil, r.err
+		}
+		e.logger.Debug("Received CREATED2 cell", "circuit_id", r.c.CircID)
+		return r.c, nil
 	}
 }
 

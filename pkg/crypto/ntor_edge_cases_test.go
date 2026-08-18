@@ -33,11 +33,11 @@ func TestNtorClientHandshakeEdgeCases(t *testing.T) {
 			identityKey:  nil,
 			ntorOnionKey: make([]byte, 32),
 			wantErr:      true,
-			errContains:  "invalid identity key length",
+			errContains:  "invalid ntor NODEID length",
 		},
 		{
 			name:         "nil ntor onion key",
-			identityKey:  make([]byte, 32),
+			identityKey:  make([]byte, 20),
 			ntorOnionKey: nil,
 			wantErr:      true,
 			errContains:  "invalid ntor onion key length",
@@ -47,11 +47,11 @@ func TestNtorClientHandshakeEdgeCases(t *testing.T) {
 			identityKey:  []byte{},
 			ntorOnionKey: make([]byte, 32),
 			wantErr:      true,
-			errContains:  "invalid identity key length",
+			errContains:  "invalid ntor NODEID length",
 		},
 		{
 			name:         "empty ntor onion key",
-			identityKey:  make([]byte, 32),
+			identityKey:  make([]byte, 20),
 			ntorOnionKey: []byte{},
 			wantErr:      true,
 			errContains:  "invalid ntor onion key length",
@@ -61,25 +61,25 @@ func TestNtorClientHandshakeEdgeCases(t *testing.T) {
 			identityKey:  make([]byte, 31),
 			ntorOnionKey: make([]byte, 32),
 			wantErr:      true,
-			errContains:  "invalid identity key length",
+			errContains:  "invalid ntor NODEID length",
 		},
 		{
 			name:         "identity key too long (33 bytes)",
 			identityKey:  make([]byte, 33),
 			ntorOnionKey: make([]byte, 32),
 			wantErr:      true,
-			errContains:  "invalid identity key length",
+			errContains:  "invalid ntor NODEID length",
 		},
 		{
 			name:         "ntor key too short (31 bytes)",
-			identityKey:  make([]byte, 32),
+			identityKey:  make([]byte, 20),
 			ntorOnionKey: make([]byte, 31),
 			wantErr:      true,
 			errContains:  "invalid ntor onion key length",
 		},
 		{
 			name:         "ntor key too long (33 bytes)",
-			identityKey:  make([]byte, 32),
+			identityKey:  make([]byte, 20),
 			ntorOnionKey: make([]byte, 33),
 			wantErr:      true,
 			errContains:  "invalid ntor onion key length",
@@ -92,13 +92,14 @@ func TestNtorClientHandshakeEdgeCases(t *testing.T) {
 		},
 		{
 			name:         "all-zero identity key (valid length)",
-			identityKey:  make([]byte, 32),
-			ntorOnionKey: make([]byte, 32),
-			wantErr:      false,
+			identityKey:  make([]byte, 20),
+			ntorOnionKey: bytes.Repeat([]byte{0x01}, 32),
+			wantErr:      true,
+			errContains:  "all zeros",
 		},
 		{
 			name:         "all-ones keys",
-			identityKey:  bytes.Repeat([]byte{0xFF}, 32),
+			identityKey:  bytes.Repeat([]byte{0xFF}, 20),
 			ntorOnionKey: bytes.Repeat([]byte{0xFF}, 32),
 			wantErr:      false,
 		},
@@ -107,14 +108,14 @@ func TestNtorClientHandshakeEdgeCases(t *testing.T) {
 			identityKey:  []byte{0x01},
 			ntorOnionKey: make([]byte, 32),
 			wantErr:      true,
-			errContains:  "invalid identity key length",
+			errContains:  "invalid ntor NODEID length",
 		},
 		{
 			name:         "very large identity key",
 			identityKey:  make([]byte, 1024),
 			ntorOnionKey: make([]byte, 32),
 			wantErr:      true,
-			errContains:  "invalid identity key length",
+			errContains:  "invalid ntor NODEID length",
 		},
 	}
 
@@ -153,10 +154,10 @@ func TestNtorClientHandshakeEdgeCases(t *testing.T) {
 // TestNtorClientHandshakeDataFormat verifies the structure of handshake
 // data matches tor-spec.txt §5.1.4 format.
 func TestNtorClientHandshakeDataFormat(t *testing.T) {
-	identity := make([]byte, 32)
+	identity := make([]byte, 20)
 	ntorKey := make([]byte, 32)
 	for i := range identity {
-		identity[i] = byte(i)
+		identity[i] = byte(i + 1)
 	}
 	for i := range ntorKey {
 		ntorKey[i] = byte(i + 100)
@@ -167,10 +168,9 @@ func TestNtorClientHandshakeDataFormat(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// NODEID = first 20 bytes of identity key
 	nodeid := handshake[0:20]
-	if !bytes.Equal(nodeid, identity[0:20]) {
-		t.Error("NODEID does not match first 20 bytes of identity key")
+	if !bytes.Equal(nodeid, identity) {
+		t.Error("NODEID does not match 20-byte RSA digest")
 	}
 
 	// KEYID = ntor onion key (32 bytes)
@@ -191,7 +191,7 @@ func TestNtorClientHandshakeDataFormat(t *testing.T) {
 func TestNtorProcessResponseEdgeCases(t *testing.T) {
 	validPrivate := make([]byte, 32)
 	validNtorKey := make([]byte, 32)
-	validIdentity := make([]byte, 32)
+	validIdentity := make([]byte, 20)
 	_, _ = rand.Read(validPrivate)
 	_, _ = rand.Read(validNtorKey)
 	_, _ = rand.Read(validIdentity)
@@ -212,7 +212,7 @@ func TestNtorProcessResponseEdgeCases(t *testing.T) {
 			serverNtorKey:  validNtorKey,
 			serverIdentity: validIdentity,
 			wantErr:        true,
-			errContains:    "invalid response length",
+			errContains:    "invalid ntor response length",
 		},
 		{
 			name:           "empty response",
@@ -221,7 +221,7 @@ func TestNtorProcessResponseEdgeCases(t *testing.T) {
 			serverNtorKey:  validNtorKey,
 			serverIdentity: validIdentity,
 			wantErr:        true,
-			errContains:    "invalid response length",
+			errContains:    "invalid ntor response length",
 		},
 		{
 			name:           "response too short (63 bytes)",
@@ -230,7 +230,7 @@ func TestNtorProcessResponseEdgeCases(t *testing.T) {
 			serverNtorKey:  validNtorKey,
 			serverIdentity: validIdentity,
 			wantErr:        true,
-			errContains:    "invalid response length",
+			errContains:    "invalid ntor response length",
 		},
 		{
 			name:           "response too long (65 bytes)",
@@ -239,7 +239,7 @@ func TestNtorProcessResponseEdgeCases(t *testing.T) {
 			serverNtorKey:  validNtorKey,
 			serverIdentity: validIdentity,
 			wantErr:        true,
-			errContains:    "invalid response length",
+			errContains:    "invalid ntor response length",
 		},
 		{
 			name:           "response single byte",
@@ -248,16 +248,16 @@ func TestNtorProcessResponseEdgeCases(t *testing.T) {
 			serverNtorKey:  validNtorKey,
 			serverIdentity: validIdentity,
 			wantErr:        true,
-			errContains:    "invalid response length",
+			errContains:    "invalid ntor response length",
 		},
 		{
-			name:           "all-zero response (valid length, fails auth)",
+			name:           "all-zero response (valid length, identity point Y)",
 			response:       make([]byte, 64),
 			clientPrivate:  validPrivate,
 			serverNtorKey:  validNtorKey,
 			serverIdentity: validIdentity,
 			wantErr:        true,
-			errContains:    "auth MAC verification failed",
+			errContains:    "identity point",
 		},
 		{
 			name:           "random response (valid length, fails auth)",
@@ -266,7 +266,7 @@ func TestNtorProcessResponseEdgeCases(t *testing.T) {
 			serverNtorKey:  validNtorKey,
 			serverIdentity: validIdentity,
 			wantErr:        true,
-			errContains:    "auth MAC verification failed",
+			errContains:    "AUTH verification failed",
 		},
 	}
 
@@ -298,12 +298,17 @@ func TestNtorProcessResponseEdgeCases(t *testing.T) {
 // TestNtorServerHandshakeEdgeCases tests NtorServerHandshake with
 // malformed and boundary-condition inputs.
 func TestNtorServerHandshakeEdgeCases(t *testing.T) {
-	validHandshake := make([]byte, 84)
-	validNtorKey := make([]byte, 32)
-	validIdentity := make([]byte, 32)
-	_, _ = rand.Read(validHandshake)
-	_, _ = rand.Read(validNtorKey)
+	validIdentity := make([]byte, 20)
 	_, _ = rand.Read(validIdentity)
+	serverKP, err := GenerateNtorKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	validNtorKey := serverKP.Private[:]
+	validHandshake, _, err := NtorClientHandshake(validIdentity, serverKP.Public[:])
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name            string
@@ -359,7 +364,7 @@ func TestNtorServerHandshakeEdgeCases(t *testing.T) {
 			serverNtorKey:   validNtorKey,
 			serverIdentity:  nil,
 			wantErr:         true,
-			errContains:     "invalid server identity length",
+			errContains:     "invalid ntor NODEID length",
 		},
 		{
 			name:            "server ntor key too short (31 bytes)",
@@ -375,7 +380,7 @@ func TestNtorServerHandshakeEdgeCases(t *testing.T) {
 			serverNtorKey:   validNtorKey,
 			serverIdentity:  make([]byte, 31),
 			wantErr:         true,
-			errContains:     "invalid server identity length",
+			errContains:     "invalid ntor NODEID length",
 		},
 		{
 			name:            "valid inputs (should succeed)",
@@ -417,7 +422,7 @@ func TestNtorServerHandshakeEdgeCases(t *testing.T) {
 // client→server→client handshake round-trip produces matching keys.
 func TestNtorHandshakeRoundTripWithServerSide(t *testing.T) {
 	// Generate server long-term keys
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	_, _ = rand.Read(serverIdentity)
 
 	var serverNtorPrivate [32]byte
@@ -471,7 +476,7 @@ func TestNtorLowOrderPointHandling(t *testing.T) {
 		},
 	}
 
-	identity := make([]byte, 32)
+	identity := make([]byte, 20)
 	_, _ = rand.Read(identity)
 
 	for i, point := range lowOrderPoints {
@@ -526,7 +531,7 @@ func TestNtorKeyPairGeneration(t *testing.T) {
 // to the AUTH value in a response causes rejection.
 func TestNtorProcessResponseTamperedAuth(t *testing.T) {
 	// Set up valid handshake
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	_, _ = rand.Read(serverIdentity)
 
 	var serverNtorPrivate [32]byte

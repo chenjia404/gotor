@@ -1,5 +1,11 @@
 # Ntor Handshake Implementation
 
+> **警告（2026-08）：本文后半部分仍混有过期描述。**
+> 正确行为以 [docs/interop/ntor.md](interop/ntor.md) 和 `pkg/crypto/ntor.go` 为准：
+> `NODEID` 是 **20 字节 RSA SHA-1 fingerprint**，`H(x,t)=HMAC-SHA256(key=t,msg=x)`，
+> `AUTH=H(verify|ID|B|Y|X|PROTOID|"Server", t_mac)`，电路密钥是 HKDF-Expand(KEY_SEED)。
+> 下文若写 “ID = Ed25519 32 字节” 或 “H = HKDF(secret_input)” 则是错误的旧实现，已废弃。
+
 This document describes the ntor (New Onion Router) handshake implementation in go-tor, following the Tor protocol specification in tor-spec.txt section 5.1.4.
 
 ## Overview
