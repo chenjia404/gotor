@@ -6,18 +6,19 @@
 - `NODEID = SHA1(DER(KP_relayid_rsa))`，**20 字节**
 - `H(x,t) = HMAC-SHA256(key=t, msg=x)`
 - `AUTH = H(verify | ID | B | Y | X | PROTOID | "Server", t_mac)`
-- 电路密钥：`KDF-RFC5869(IKM=KEY_SEED, salt=t_key, info=m_expand)` → 72 字节
+- 电路密钥：`KDF-RFC5869(IKM=secret_input, salt=t_key, info=m_expand)` → 72 字节
+- 等价于 `HKDF-Expand(PRK=KEY_SEED, info=m_expand)`。**不能**再把 KEY_SEED 当 IKM 做第二次 Extract。
 
 ## C Tor
 
 - `src/core/crypto/onion_ntor.c`
 - `ID` 为 `DIGEST_LEN`（20）
-- `crypto_hmac_sha256` + `crypto_expand_key_material_rfc5869_sha256(key_seed, t_key, m_expand)`
+- `crypto_hmac_sha256` + `crypto_expand_key_material_rfc5869_sha256(secret_input, t_key, m_expand)`
 
 ## Arti
 
 - `crates/tor-proto/src/crypto/handshake/ntor.rs`
-- 同样使用 20-byte RSA digest 与 HMAC-SHA256，再 HKDF expand
+- `NtorHkdfKeyGenerator` 的 seed 是 `secret_input`，再 `Ntor1Kdf(t_key, m_expand)`
 
 ## gotor 原行为（错误）
 

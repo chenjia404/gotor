@@ -7,11 +7,11 @@
 Guard CREATE2 / ntor / CREATED2 在真实 Tor Network 成功（72 字节密钥）。
 Link handshake（VERSIONS v5 + CERTS 验签 + NETINFO）成功。
 
-## 当前失败
+## 当前失败（历史）
 
 发送 EXTEND2（RELAY_EARLY）后，Guard 立即 `DESTROY reason=1`（TORPROTOCOL）。
 
-不是超时、不是连接失败。约 90ms 内本地协议拒绝。
+RELAY_DROP 探测证明：**digest/AES 与 Guard 不一致**，不是 EXTEND2 specifier 语义。根因是 ntor 电路密钥对 KEY_SEED 做了第二次 HKDF-Extract。
 
 ## Tor Spec
 

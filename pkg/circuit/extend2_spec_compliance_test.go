@@ -5,6 +5,8 @@ package circuit
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
@@ -469,6 +471,43 @@ func TestEXTEND2StreamID(t *testing.T) {
 		// which creates RelayCell with StreamID: 0 (line 133 in extension.go)
 		t.Log("EXTEND2 cells should use stream ID 0 per tor-spec.txt §5.3")
 	})
+}
+
+func TestDescribeExtend2AndRejectPreviousHop(t *testing.T) {
+	circuit := NewCircuit(1)
+	ext := NewExtension(circuit, logger.NewDefault())
+	relay := newStubRelay()
+	ext.SetTargetRelay(relay)
+
+	handshakeData := make([]byte, 84)
+	copy(handshakeData[:20], relay.rsa)
+	rand.Read(handshakeData[20:])
+
+	data, err := ext.buildExtend2Data("198.51.100.7:9001", HandshakeTypeNTor, handshakeData)
+	if err != nil {
+		t.Fatalf("buildExtend2Data: %v", err)
+	}
+	dump := DescribeExtend2(data)
+	if !strings.Contains(dump, "[00] 198.51.100.7:9001") {
+		t.Fatalf("dump missing IPv4: %s", dump)
+	}
+	if !strings.Contains(dump, "[02] rsa=") {
+		t.Fatalf("dump missing RSA: %s", dump)
+	}
+	if !strings.Contains(dump, "[03] ed=") {
+		t.Fatalf("dump missing Ed25519: %s", dump)
+	}
+	if !strings.Contains(dump, "htype=0x0002") || !strings.Contains(dump, "hlen=84") {
+		t.Fatalf("dump missing handshake: %s", dump)
+	}
+
+	hop := &Hop{Fingerprint: strings.ToUpper(hex.EncodeToString(relay.rsa))}
+	if err := circuit.AddHop(hop); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ext.buildExtend2Data("198.51.100.7:9001", HandshakeTypeNTor, handshakeData); err == nil {
+		t.Fatal("expected reject when extending to previous hop RSA identity")
+	}
 }
 
 // Helper function to check if string contains substring

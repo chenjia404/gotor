@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-18  
-**分支**：`cursor/real-tor-interop-0ece`  
+**分支**：`cursor/extend2-torprotocol-0ece`  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -28,7 +28,7 @@
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
 | VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | PARTIAL | VERSIONS CircID=2 已修；CERTS ExtLen/type4 验签已按 spec+Arti 修正；AUTH_CHALLENGE 仅跳过；真实握手待 E2E |
 | CREATE2 / ntor / CREATED2 | WORKING | 真实 Guard CREATE2/CREATED2 已成功（72 字节密钥） |
-| EXTEND2 / EXTENDED2 | BROKEN | Guard 立即 DESTROY reason=1（TORPROTOCOL）；见 docs/interop/extend2.md |
+| EXTEND2 / EXTENDED2 | UNVERIFIED | DESTROY 1 的根因是 ntor 密钥二次 Extract；修复后待真实网络复测 |
 | Circuit crypto / digest | PARTIAL | 有单元测试与 layered encrypt；缺 C Tor/Arti 官方 cell 向量与真实流量对照 |
 | RELAY_BEGIN/CONNECTED/DATA/END | PARTIAL | 实现存在；未用真实 exit 流证明 |
 | SENDME / flow control | PARTIAL | 有 window 计数；SENDME 认证与 1MB+ soak 未完成 |
@@ -106,7 +106,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 
 实现见 `pkg/crypto/ntor.go`、`docs/interop/ntor.md`。
 
-**仍 UNVERIFIED：** 真实 Guard CREATE2、Middle/Exit EXTEND2。ntor-v3 未实现（经典 ntor `0x0002` 仍应被 relay 接受）。
+**仍 UNVERIFIED：** Middle/Exit EXTEND2 与 3-hop。真实 Guard CREATE2 已成功。ntor-v3 未实现（经典 ntor `0x0002` 仍应被 relay 接受）。
 
 ### Circuit crypto / Relay cell — PARTIAL
 
@@ -159,6 +159,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 | 9 | VERSIONS 超时 | CircID 用 4 字节，对端当成 PADDING | negotiating-channels CIRCID_LEN(v=0)=2 |
 | 10 | CERTS type 4 验签失败 | ExtLen 被当成含 type+flags；identity 误用 signing key | cert-spec；Arti `tor-cert` encode.rs |
 | 11 | EXTEND2 超时 | RELAY cell `Length` 未设，Encode 写出 0，Guard 无法解析 EXTEND2 | tor-spec relay-cells |
+| 12 | EXTEND2 DESTROY reason=1 | ntor 电路密钥对 KEY_SEED 二次 HKDF-Extract；AUTH 仍过，AES/digest 与 Guard 不一致 | C Tor onion_ntor.c IKM=secret_input；setting-circuit-keys |
 
 ---
 

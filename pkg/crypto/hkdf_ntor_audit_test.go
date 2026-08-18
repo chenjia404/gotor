@@ -21,7 +21,7 @@ import (
 // KEY_SEED = H(secret_input, t_key)
 // verify   = H(secret_input, t_verify)
 // AUTH     = H(verify|ID|B|Y|X|PROTOID|"Server", t_mac)
-// key_material = HKDF-SHA256(IKM=KEY_SEED, salt=t_key, info=m_expand) → 72 bytes
+// key_material = HKDF-SHA256(IKM=secret_input, salt=t_key, info=m_expand) → 72 bytes
 //
 // The standalone HKDF checks below only assert that golang.org/x/crypto/hkdf
 // is available and used for the expand step. AUTH is not HKDF(secret_input).
@@ -202,7 +202,7 @@ func TestHKDFNtor_Determinism(t *testing.T) {
 }
 
 // TestHKDFNtor_ClientHandshakeUsesHKDF verifies NtorProcessResponse matches
-// tor-spec ntor: H=HMAC-SHA256, then KDF-RFC5869 expand of KEY_SEED.
+// C Tor/Arti: H=HMAC-SHA256 for AUTH, then KDF-RFC5869(IKM=secret_input).
 func TestHKDFNtor_ClientHandshakeUsesHKDF(t *testing.T) {
 	// Generate server keys
 	serverNtorKey := make([]byte, 32)
@@ -234,7 +234,7 @@ func TestHKDFNtor_ClientHandshakeUsesHKDF(t *testing.T) {
 	curve25519.ScalarMult(&sharedXB, (*[32]byte)(serverNtorKey), &clientPublic)
 
 	secretInput := ntorBuildSecretInput(sharedXY[:], sharedXB[:], serverIdentity, serverNtorPublic[:], clientPublic[:], serverEphemeralPublic[:])
-	keySeed, verify := ntorDerive(secretInput)
+	_, verify := ntorDerive(secretInput)
 	auth := ntorComputeAuth(verify, serverIdentity, serverNtorPublic[:], serverEphemeralPublic[:], clientPublic[:])
 
 	// Build server response
@@ -253,7 +253,7 @@ func TestHKDFNtor_ClientHandshakeUsesHKDF(t *testing.T) {
 		t.Errorf("Key material length = %d, want 72", len(keyMaterial))
 	}
 
-	expectedKeyMaterial, err := ntorExpandKeyMaterial(keySeed)
+	expectedKeyMaterial, err := ntorExpandKeyMaterial(secretInput)
 	if err != nil {
 		t.Fatalf("Server HKDF expand failed: %v", err)
 	}
