@@ -345,13 +345,16 @@ func (c *Client) circuitBuilderFunc() pool.CircuitBuilder {
 	}
 }
 
+// generalPurposeExitPort 是预建电路的默认出口端口。
+// HTTPS（含 check.torproject.org）走 443；只看 Exit flag / 按 80 选路会误选只放行 80 的 exit。
+const generalPurposeExitPort = 443
+const maxCircuitPathAttempts = 5
+
 // buildInitialCircuits builds a pool of circuits for use
 func (c *Client) buildInitialCircuits(ctx context.Context) error {
-	// If circuit prebuilding is enabled, the circuit pool will handle initial circuits
+	// 预建由 circuit pool 后台立即开始；这里不再 sleep 1s 后谎称已建好。
 	if c.config.EnableCircuitPrebuilding && c.circuitPool != nil {
-		c.logger.Info("Circuit pool will handle prebuilding, waiting for initial circuits...")
-		// Give the pool a moment to prebuild circuits
-		time.Sleep(1 * time.Second)
+		c.logger.Info("Circuit pool is prebuilding circuits in the background")
 		return nil
 	}
 
@@ -373,21 +376,39 @@ func (c *Client) buildInitialCircuits(ctx context.Context) error {
 
 // buildCircuitForPool builds a single circuit and returns it for pool management
 func (c *Client) buildCircuitForPool(ctx context.Context) (*circuit.Circuit, error) {
-	// Select path (port 80 for general web traffic)
-	selectedPath, err := c.pathSelector.SelectPath(80)
-	if err != nil {
-		return nil, fmt.Errorf("failed to select path: %w", err)
-	}
+	var selectedPath *path.Path
+	var err error
+	for attempt := 1; attempt <= maxCircuitPathAttempts; attempt++ {
+		selectedPath, err = c.pathSelector.SelectPath(generalPurposeExitPort)
+		if err != nil {
+			return nil, fmt.Errorf("failed to select path: %w", err)
+		}
 
-	c.logger.Info("Building circuit",
-		"guard", selectedPath.Guard.Nickname,
-		"middle", selectedPath.Middle.Nickname,
-		"exit", selectedPath.Exit.Nickname)
+		c.logger.Info("Building circuit",
+			"guard", selectedPath.Guard.Nickname,
+			"middle", selectedPath.Middle.Nickname,
+			"exit", selectedPath.Exit.Nickname,
+			"exit_port", generalPurposeExitPort,
+			"attempt", attempt)
 
-	if err := c.directory.FetchMicrodescriptorsFor(ctx, []*directory.Relay{
-		selectedPath.Guard, selectedPath.Middle, selectedPath.Exit,
-	}); err != nil {
-		return nil, fmt.Errorf("failed to fetch path microdescriptors: %w", err)
+		if err := c.directory.FetchMicrodescriptorsFor(ctx, []*directory.Relay{
+			selectedPath.Guard, selectedPath.Middle, selectedPath.Exit,
+		}); err != nil {
+			return nil, fmt.Errorf("failed to fetch path microdescriptors: %w", err)
+		}
+
+		// microdesc 的 p 行补齐后，丢掉不允许 443 的 exit 并重选（同一 Relay 指针会留下 policy）。
+		if selectedPath.Exit.HasParsedPolicy() && !selectedPath.Exit.CanExitToPort(generalPurposeExitPort) {
+			c.logger.Warn("Exit policy rejects target port, selecting another path",
+				"exit", selectedPath.Exit.Nickname,
+				"port", generalPurposeExitPort,
+				"attempt", attempt)
+			if attempt == maxCircuitPathAttempts {
+				return nil, fmt.Errorf("no exit allows port %d after %d attempts", generalPurposeExitPort, maxCircuitPathAttempts)
+			}
+			continue
+		}
+		break
 	}
 
 	// Create circuit builder

@@ -167,7 +167,7 @@ func TestRealThreeHopCircuit(t *testing.T) {
 
 func TestRealCheckTorProject(t *testing.T) {
 	requireRealTor(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 
 	tor, err := client.ConnectWithContext(ctx)
@@ -184,31 +184,52 @@ func TestRealCheckTorProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	httpClient.Timeout = 90 * time.Second
-	resp, err := httpClient.Get("https://check.torproject.org/api/ip")
-	if err != nil {
-		t.Fatalf("check.torproject.org: %v", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("check.torproject.org/api/ip raw=%s", body)
 
-	var out struct {
-		IsTor bool   `json:"IsTor"`
-		IP    string `json:"IP"`
+	// Exit DNS / RESOLVEFAILED 是对端偶发，不是协议错误；最多试 3 次。
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, err := httpClient.Get("https://check.torproject.org/api/ip")
+		if err != nil {
+			lastErr = fmt.Errorf("attempt %d GET: %w", attempt, err)
+			t.Logf("%v", lastErr)
+			continue
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("attempt %d read: %w", attempt, err)
+			t.Logf("%v", lastErr)
+			continue
+		}
+		t.Logf("attempt %d check.torproject.org/api/ip status=%d raw=%s", attempt, resp.StatusCode, body)
+		if resp.StatusCode != 200 {
+			lastErr = fmt.Errorf("attempt %d HTTP %d", attempt, resp.StatusCode)
+			continue
+		}
+
+		var out struct {
+			IsTor bool   `json:"IsTor"`
+			IP    string `json:"IP"`
+		}
+		if err := json.Unmarshal(body, &out); err != nil {
+			lastErr = fmt.Errorf("attempt %d json: %w", attempt, err)
+			t.Logf("%v", lastErr)
+			continue
+		}
+		if !out.IsTor {
+			lastErr = fmt.Errorf("attempt %d IsTor=false IP=%s", attempt, out.IP)
+			t.Logf("%v", lastErr)
+			continue
+		}
+		if out.IP == "" {
+			lastErr = fmt.Errorf("attempt %d empty exit IP", attempt)
+			continue
+		}
+		t.Logf("IsTor=true ExitIP=%s", out.IP)
+		return
 	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		t.Fatalf("json: %v", err)
-	}
-	if !out.IsTor {
-		t.Fatalf("IsTor=false IP=%s", out.IP)
-	}
-	if out.IP == "" {
-		t.Fatal("empty exit IP")
-	}
-	t.Logf("IsTor=true ExitIP=%s", out.IP)
+	t.Fatalf("check.torproject.org failed after %d attempts: %v", maxAttempts, lastErr)
 }
 
 func buildLiveCircuit(t *testing.T) (*circuit.Circuit, *path.Path) {

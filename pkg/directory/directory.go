@@ -133,8 +133,9 @@ type Relay struct {
 	IdentityKey     []byte   // Ed25519 identity key (32 bytes)
 	NtorOnionKey    []byte   // Curve25519 ntor onion key (32 bytes)
 	MicrodescDigest string   // SHA256 digest of microdescriptor (base64, no padding)
-	Family          []string // Relay family members (fingerprints) - Path Selection Enhancement
-	Bandwidth       uint64   // Advertised bandwidth in bytes/sec (from "w" line) - path-spec.txt §2.2
+	Family          []string           // Relay family members (fingerprints) - Path Selection Enhancement
+	Bandwidth       uint64             // Advertised bandwidth in bytes/sec (from "w" line) - path-spec.txt §2.2
+	ExitPolicy      *ExitPolicySummary // 共识或 microdescriptor 的 p 行摘要
 }
 
 // Client provides directory protocol operations
@@ -501,6 +502,15 @@ func (c *Client) parseConsensusWithMetadata(r io.Reader) ([]*Relay, *ConsensusMe
 					}
 					break
 				}
+			}
+		}
+
+		// Parse "p" lines (IPv4 exit policy summary) — ns consensus; microdesc 共识通常把 p 放在 microdescriptor。
+		if strings.HasPrefix(line, "p ") && currentRelay != nil {
+			if pol, err := ParseExitPolicySummary(line); err == nil {
+				currentRelay.ExitPolicy = pol
+			} else {
+				c.logger.Debug("Failed to parse exit policy summary", "error", err, "line", line)
 			}
 		}
 	}

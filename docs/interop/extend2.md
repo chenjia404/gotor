@@ -1,23 +1,39 @@
-# EXTEND2 互操作（进行中）
+# EXTEND2 互操作
 
 **日期**：2026-08-18
 
-## 已验证
+## 已验证（真实 Tor Network）
 
-Guard CREATE2 / ntor / CREATED2 在真实 Tor Network 成功（72 字节密钥）。
-Link handshake（VERSIONS v5 + CERTS 验签 + NETINFO）成功。
+- Guard CREATE2 / ntor / CREATED2（72 字节密钥）
+- Link handshake（VERSIONS v5 + CERTS 验签 + NETINFO）
+- RELAY_DROP 不再触发 DESTROY（digest / AES-CTR 与 Guard 一致）
+- Guard → Middle EXTEND2 / EXTENDED2
+- Middle → Exit EXTEND2 / EXTENDED2
+- 3-hop circuit READY
+- SOCKS5 → `https://check.torproject.org/api/ip` 返回 `IsTor=true`
 
-## 当前失败（历史）
+## 曾失败的根因
 
-发送 EXTEND2（RELAY_EARLY）后，Guard 立即 `DESTROY reason=1`（TORPROTOCOL）。
+发送第一个 RELAY（EXTEND2 或 RELAY_DROP）后，Guard 立即 `DESTROY reason=1`。
 
-RELAY_DROP 探测证明：**digest/AES 与 Guard 不一致**，不是 EXTEND2 specifier 语义。根因是 ntor 电路密钥对 KEY_SEED 做了第二次 HKDF-Extract。
+不是 EXTEND2 specifier 语义，而是电路密钥错误：
 
-## Tor Spec
+`pkg/crypto/ntor.go` 曾对已经 Extract 过的 `KEY_SEED` 再做一次 HKDF-Extract。
 
-https://spec.torproject.org/tor-spec/create-created-cells.html
+- AUTH 只走 HMAC，CREATE2 仍能过
+- Df/Db/Kf/Kb 与 Guard 不一致，RELAY 无法 recognized
+- 无下一跳 → DESTROY reason=1
 
-EXTEND2 必须放在 RELAY_EARLY，StreamID=0：
+对照：
+
+- Spec：https://spec.torproject.org/tor-spec/setting-circuit-keys.html （IKM == secret_input）
+- C Tor：`crypto_expand_key_material_rfc5869_sha256(secret_input, t_key, m_expand)`
+- Arti：`Ntor1Kdf.derive(secret_input)`
+
+正确：`HKDF-SHA256(IKM=secret_input, salt=t_key, info=m_expand)`  
+等价于 `HKDF-Expand(PRK=KEY_SEED, info=m_expand)`。
+
+## EXTEND2 格式（已对照 spec）
 
 ```
 NSPEC [1]
@@ -27,36 +43,5 @@ HLEN  [2]
 HDATA [HLEN]  = NODEID(20) || KEYID(32) || CLIENT_PK(32)
 ```
 
-建议 specifier 顺序：`[00]` IPv4、`[02]` RSA 20、`[03]` Ed25519 32、`[01]` IPv6。
-
-RELAY cell Length 必须等于 Data 长度。
-
-## C Tor
-
-`src/feature/relay/circuitbuild_relay.c`：`circuit_extend()`
-
-校验失败会 `circuit_mark_for_close(..., END_CIRC_REASON_TORPROTOCOL)`：
-
-- `extend_cell` 解析失败
-- RSA / Ed25519 identity 无效或与 nodelist 不一致
-- 无有效 IPv4/IPv6 ORPort
-- 要求连回上一跳（RSA 或 Ed25519 相同）
-- 电路状态不允许再 extend
-
-连接下一跳失败一般是 `CONNECTFAILED`（reason 6），不是 1。
-
-## Arti
-
-`crates/tor-cell` / `crates/tor-proto`：`LinkSpec` 编码为 type+len+body；ntor HDATA 84 字节。
-
-## gotor 当前行为
-
-- RELAY Length 已按 `len(Data)` 写出（曾为 0，Length 修复后才出现 DESTROY 1，说明 Guard 已识别为 EXTEND2）
-- 使用 RELAY_EARLY、StreamID=0、HTYPE=0x0002、HDATA=84
-- specifier：IPv4 + RSA + Ed25519
-
-## 下一轮要查
-
-1. 对照 C Tor `extend_cell` 解析，抓一份真实 EXTEND2 hex（不含私钥）
-2. Guard nodelist 中的 middle Ed25519 是否与 microdesc `id ed25519` 一致
-3. digest / recognized 已能让 Guard 识别命令，重点在 payload 语义
+specifier 顺序：`[00]` IPv4、`[02]` RSA 20、`[03]` Ed25519 32。
+RELAY_EARLY、StreamID=0、Length = Data 长度。

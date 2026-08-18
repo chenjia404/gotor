@@ -26,16 +26,16 @@
 | Microdescriptor fetch/parse | PARTIAL | 解析与 digest 已按 spec 修正，真实网络可填充密钥；缺长期 fixture 回归 |
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
-| VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | PARTIAL | VERSIONS CircID=2 已修；CERTS ExtLen/type4 验签已按 spec+Arti 修正；AUTH_CHALLENGE 仅跳过；真实握手待 E2E |
+| VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | WORKING | VERSIONS CircID=2、CERTS type4 验签、NETINFO 已在真实 Guard 握手通过；AUTH_CHALLENGE 客户端路径按 spec 跳过 |
 | CREATE2 / ntor / CREATED2 | WORKING | 真实 Guard CREATE2/CREATED2 已成功（72 字节密钥） |
-| EXTEND2 / EXTENDED2 | UNVERIFIED | DESTROY 1 的根因是 ntor 密钥二次 Extract；修复后待真实网络复测 |
-| Circuit crypto / digest | PARTIAL | 有单元测试与 layered encrypt；缺 C Tor/Arti 官方 cell 向量与真实流量对照 |
-| RELAY_BEGIN/CONNECTED/DATA/END | PARTIAL | 实现存在；未用真实 exit 流证明 |
+| EXTEND2 / EXTENDED2 | WORKING | 真实 Guard→Middle / Middle→Exit EXTEND2 已成功 |
+| Circuit crypto / digest | WORKING | 真实 RELAY_DROP / EXTEND2 / BEGIN / DATA 已证明 AES-CTR + SHA-1 digest 与 Guard 一致；仍缺官方 cell 向量 |
+| RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
 | SENDME / flow control | PARTIAL | 有 window 计数；SENDME 认证与 1MB+ soak 未完成 |
-| SOCKS5 | PARTIAL | CONNECT + 域名；`socks5h` 路径存在；E2E 未过 |
+| SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | PARTIAL | 有 Resolve API；未证明无本地泄漏 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功 |
-| Exit policy | PARTIAL | 解析/过滤有代码；未对照真实 exit 策略做互操作证明 |
+| Exit policy | PARTIAL | 已解析共识/microdesc `p` 行并按端口过滤；预建电路改选 443；完整策略与 IPv6 `p6` 未做 |
 | Onion Service v3 | BROKEN / MISSING | 本轮不实现；hs-ntor 未做；旧代码误用 circuit ntor |
 | Relay / Bridge | BROKEN / UNVERIFIED | 本轮不优先；服务端 ntor 仍可能用错 NODEID |
 | Control Protocol | PARTIAL | 框架存在，非本轮验收 |
@@ -84,7 +84,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 - `InsecureSkipVerify` 仍可能出现在 TLS 配置（Tor 用自签名 + CERTS）。须靠 CERTS/fingerprint，而不是关闭校验后宣称已验证。
 - 真实握手测试：`integration/link_test.go`（`TOR_INTEGRATION_TEST=1`）。
 
-### ntor / CREATE2 / EXTEND2 — UNVERIFIED（本轮已修算法 blocker）
+### ntor / CREATE2 / EXTEND2 — WORKING（经典 ntor `0x0002`）
 
 **曾经 BROKEN（无法与 C Tor / Arti 互操作）：**
 
@@ -106,30 +106,32 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 
 实现见 `pkg/crypto/ntor.go`、`docs/interop/ntor.md`。
 
-**仍 UNVERIFIED：** Middle/Exit EXTEND2 与 3-hop。真实 Guard CREATE2 已成功。ntor-v3 未实现（经典 ntor `0x0002` 仍应被 relay 接受）。
+**本轮已用真实网络验证：** Guard CREATE2、Middle/Exit EXTEND2、3-hop READY、SOCKS5 `IsTor=true`。ntor-v3 未实现（经典 ntor `0x0002` 仍被 relay 接受）。
 
-### Circuit crypto / Relay cell — PARTIAL
+### Circuit crypto / Relay cell — WORKING（主路径）
 
 - 加解密顺序：发送先 Exit 再 Middle 再 Guard；接收反向逐层 decrypt。有本地 roundtrip 测试。
 - digest / recognized / stream ID / length 有实现。
-- **缺口**：缺官方 C Tor/Arti relay-cell 向量；缺真实流量对照；cell tracer（`pkg/debug`，`GOTOR_CELL_TRACE=1`）默认关闭且不记用户 payload。
+- 真实 RELAY_DROP 不再触发 DESTROY；EXTEND2 / BEGIN / DATA 已跑通。
+- **缺口**：缺官方 C Tor/Arti relay-cell 向量；cell tracer（`pkg/debug`，`GOTOR_CELL_TRACE=1`）默认关闭且不记用户 payload。
 
 ### SENDME / Flow control — PARTIAL
 
 - circuit/stream window 初始值与 +100 逻辑存在。
 - SENDME authentication、大流量（1MB–100MB）soak、无 hang/leak 证明：未完成。
 
-### SOCKS5 / DNS — PARTIAL
+### SOCKS5 / DNS — WORKING（CONNECT） / PARTIAL（RESOLVE）
 
 - SOCKS5 CONNECT：域名 / IPv4 / IPv6。
-- 域名应走 Exit 解析（`socks5h` / RELAY_BEGIN hostname）。
-- RELAY_RESOLVE / RESOLVED 有代码。
-- **未**用 `curl --proxy socks5h://127.0.0.1:9050 https://check.torproject.org/api/ip` 证明 `IsTor=true`。
+- 域名走 Exit 解析（`socks5h` / RELAY_BEGIN hostname）。
+- 真实 `https://check.torproject.org/api/ip` 已返回 `IsTor=true`。
+- RELAY_RESOLVE / RESOLVED 有代码，独立 DNS 泄漏证明未做。
 
 ### Guard / Path / Exit policy — PARTIAL
 
 - Guard 管理与带宽加权选路存在。
 - 选路不保证已有 microdesc key；client 在 build 前 `FetchMicrodescriptorsFor`，缺 key 则失败。
+- 预建电路按端口 443 选 exit；`p` 行摘要允许则过滤，禁止再把非 Exit 当 fallback。
 
 ### Onion Service — BROKEN / MISSING（本轮不做）
 
@@ -160,6 +162,8 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 | 10 | CERTS type 4 验签失败 | ExtLen 被当成含 type+flags；identity 误用 signing key | cert-spec；Arti `tor-cert` encode.rs |
 | 11 | EXTEND2 超时 | RELAY cell `Length` 未设，Encode 写出 0，Guard 无法解析 EXTEND2 | tor-spec relay-cells |
 | 12 | EXTEND2 DESTROY reason=1 | ntor 电路密钥对 KEY_SEED 二次 HKDF-Extract；AUTH 仍过，AES/digest 与 Guard 不一致 | C Tor onion_ntor.c IKM=secret_input；setting-circuit-keys |
+| 13 | 预建电路假就绪 | `buildInitialCircuits` sleep 1s 后宣称已建好；pool 要等 30s ticker 才动手 | Start 与 WaitUntilReady 分离；pool 立即 prebuild |
+| 14 | HTTPS 选到只放行 80 的 exit | `SelectPath(80)` 且只看 Exit flag | 预建用 443；解析 `p` 行摘要 |
 
 ---
 
@@ -186,7 +190,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 
 ---
 
-## 第一轮完成标准（尚未达到）
+## 第一轮完成标准（已达到：经典 ntor / AES-CTR-SHA1）
 
 只有同时满足以下全部条件，才能把 **Tor Client basic interoperability** 标为 WORKING：
 
@@ -197,4 +201,5 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-当前：协议主链路 blocker（含 CERTS ExtLen）已按 spec 修复；**真实网络验收仍为 UNVERIFIED**，须跑 `TOR_INTEGRATION_TEST=1`。
+当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 CREATE2、EXTEND2、3-hop、`IsTor=true`（ExitIP ≠ 本机）。  
+**Tor Client basic interoperability 可标 WORKING（经典 ntor / AES-CTR-SHA1 路径）**。ntor-v3、SENDME 认证、大流量 soak 仍未做。

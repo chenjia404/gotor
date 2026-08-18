@@ -309,25 +309,14 @@ func (s *Selector) selectExit(port int, avoid *directory.Relay) (*directory.Rela
 			}
 		}
 
-		// Prefer exits with Exit flag
-		if relay.IsExit() {
+		// 有 p 行时按端口过滤；否则退回 Exit flag（path-spec §2.2）
+		if relay.CanExitToPort(port) {
 			exits = append(exits, relay)
 		}
 	}
 
-	// Fallback: any relay that's not the guard and doesn't share family/subnet
 	if len(exits) == 0 {
-		for _, relay := range s.relays {
-			if avoid == nil || (relay.Fingerprint != avoid.Fingerprint &&
-				!relay.InSameFamily(avoid) &&
-				!relay.InSameSubnet(avoid)) {
-				exits = append(exits, relay)
-			}
-		}
-	}
-
-	if len(exits) == 0 {
-		return nil, fmt.Errorf("no suitable exit relays available (family/subnet constraints)")
+		return nil, fmt.Errorf("no suitable exit relays available for port %d (family/subnet/policy constraints)", port)
 	}
 
 	idx, err := weightedRandomIndex(exits)

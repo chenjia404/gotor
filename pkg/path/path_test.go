@@ -243,6 +243,60 @@ func TestSelectExit(t *testing.T) {
 	}
 }
 
+func TestSelectExitRespectsPolicy(t *testing.T) {
+	log := logger.NewDefault()
+	httpOnly, err := directory.ParseExitPolicySummary("p accept 80")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpsOK, err := directory.ParseExitPolicySummary("p accept 80,443")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	guard := &directory.Relay{
+		Nickname:    "Guard",
+		Fingerprint: "GUARD1",
+		Address:     "10.0.1.1",
+		ORPort:      9001,
+		Flags:       []string{"Running", "Valid", "Guard"},
+	}
+	httpExit := &directory.Relay{
+		Nickname:    "HTTPOnly",
+		Fingerprint: "EXIT80",
+		Address:     "192.168.3.1",
+		ORPort:      9001,
+		Flags:       []string{"Running", "Valid", "Exit"},
+		ExitPolicy:  httpOnly,
+	}
+	httpsExit := &directory.Relay{
+		Nickname:    "HTTPS",
+		Fingerprint: "EXIT443",
+		Address:     "192.169.3.2",
+		ORPort:      9001,
+		Flags:       []string{"Running", "Valid", "Exit"},
+		ExitPolicy:  httpsOK,
+	}
+
+	selector := NewSelector(directory.NewClient(log), log)
+	selector.relays = []*directory.Relay{guard, httpExit, httpsExit}
+
+	for i := 0; i < 20; i++ {
+		exit, err := selector.selectExit(443, guard)
+		if err != nil {
+			t.Fatalf("selectExit(443): %v", err)
+		}
+		if exit.Fingerprint != httpsExit.Fingerprint {
+			t.Fatalf("trial %d: expected HTTPS exit, got %s", i, exit.Nickname)
+		}
+	}
+
+	_, err = selector.selectExit(22, guard)
+	if err == nil {
+		t.Fatal("expected error when no exit allows port 22")
+	}
+}
+
 func TestSelectMiddle(t *testing.T) {
 	log := logger.NewDefault()
 	mockDir := newMockDirectoryClient()
