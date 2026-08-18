@@ -118,6 +118,7 @@ func TestCERTSValidation_StrictModeIdentity(t *testing.T) {
 				CertType:    CertTypeEd25519Signing,
 				Ed25519Cert: ed25519Cert,
 			},
+			type7IdentityCertificate(pubKey),
 		},
 	}
 

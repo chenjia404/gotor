@@ -17,7 +17,7 @@ import (
 // - KEYID: 32 bytes (relay's ntor onion key)
 // - CLIENT_PK: 32 bytes (client's ephemeral public key X)
 func TestNtorSpecCompliance_HandshakeFormat(t *testing.T) {
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	serverNtorKey := make([]byte, 32)
 
 	if _, err := rand.Read(serverIdentity); err != nil {
@@ -94,7 +94,7 @@ func TestNtorSpecCompliance_HandshakeFormat(t *testing.T) {
 func TestNtorSpecCompliance_ServerResponse(t *testing.T) {
 	t.Run("Server response is exactly 64 bytes", func(t *testing.T) {
 		// Setup test keys
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		var serverNtorPrivate [32]byte
 		if _, err := rand.Read(serverIdentity); err != nil {
 			t.Fatal(err)
@@ -129,7 +129,7 @@ func TestNtorSpecCompliance_ServerResponse(t *testing.T) {
 
 	t.Run("SERVER_PK is valid Curve25519 public key", func(t *testing.T) {
 		// Setup
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		var serverNtorPrivate [32]byte
 		if _, err := rand.Read(serverIdentity); err != nil {
 			t.Fatal(err)
@@ -165,7 +165,7 @@ func TestNtorSpecCompliance_ServerResponse(t *testing.T) {
 
 	t.Run("AUTH is 32-byte HMAC", func(t *testing.T) {
 		// Setup
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		var serverNtorPrivate [32]byte
 		if _, err := rand.Read(serverIdentity); err != nil {
 			t.Fatal(err)
@@ -214,7 +214,7 @@ func TestNtorSpecCompliance_ServerResponse(t *testing.T) {
 func TestNtorSpecCompliance_KeyDerivation(t *testing.T) {
 	t.Run("Key material is exactly 72 bytes", func(t *testing.T) {
 		// Setup complete handshake
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		var serverNtorPrivate [32]byte
 		if _, err := rand.Read(serverIdentity); err != nil {
 			t.Fatal(err)
@@ -267,7 +267,7 @@ func TestNtorSpecCompliance_KeyDerivation(t *testing.T) {
 
 	t.Run("Forward and backward keys are different", func(t *testing.T) {
 		// Setup
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		var serverNtorPrivate [32]byte
 		if _, err := rand.Read(serverIdentity); err != nil {
 			t.Fatal(err)
@@ -320,7 +320,7 @@ func TestNtorSpecCompliance_KeyDerivation(t *testing.T) {
 
 	t.Run("Keys are non-zero", func(t *testing.T) {
 		// Setup
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		var serverNtorPrivate [32]byte
 		if _, err := rand.Read(serverIdentity); err != nil {
 			t.Fatal(err)
@@ -394,7 +394,7 @@ func TestNtorSpecCompliance_ProtocolID(t *testing.T) {
 
 	t.Run("Protocol ID constant is correct", func(t *testing.T) {
 		// Setup minimal handshake to verify protocol works
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		var serverNtorPrivate [32]byte
 		if _, err := rand.Read(serverIdentity); err != nil {
 			t.Fatal(err)
@@ -474,13 +474,13 @@ func TestNtorSpecCompliance_CryptoOperations(t *testing.T) {
 
 // TestNtorSpecCompliance_InputValidation verifies error handling per tor-spec.txt §5.1.4
 func TestNtorSpecCompliance_InputValidation(t *testing.T) {
-	t.Run("Client rejects invalid identity key length", func(t *testing.T) {
+	t.Run("Client rejects invalid ntor NODEID length", func(t *testing.T) {
 		invalidIdentity := make([]byte, 31) // Wrong length
 		validNtorKey := make([]byte, 32)
 
 		_, _, err := NtorClientHandshake(invalidIdentity, validNtorKey)
 		if err == nil {
-			t.Error("Expected error for invalid identity key length")
+			t.Error("Expected error for invalid ntor NODEID length")
 		}
 	})
 
@@ -497,7 +497,7 @@ func TestNtorSpecCompliance_InputValidation(t *testing.T) {
 	t.Run("Response processing rejects invalid response length", func(t *testing.T) {
 		clientPrivate := make([]byte, 32)
 		serverNtorKey := make([]byte, 32)
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 
 		testCases := []int{0, 32, 63, 65, 128}
 		for _, length := range testCases {
@@ -513,7 +513,7 @@ func TestNtorSpecCompliance_InputValidation(t *testing.T) {
 		// Create response with random (invalid) AUTH
 		clientPrivate := make([]byte, 32)
 		serverNtorKey := make([]byte, 32)
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		invalidResponse := make([]byte, 64)
 
 		if _, err := rand.Read(clientPrivate); err != nil {
@@ -533,8 +533,8 @@ func TestNtorSpecCompliance_InputValidation(t *testing.T) {
 		if err == nil {
 			t.Error("Expected AUTH verification failure")
 		}
-		if err != nil && !bytes.Contains([]byte(err.Error()), []byte("auth MAC verification")) {
-			t.Errorf("Expected auth MAC error, got: %v", err)
+		if err != nil && !bytes.Contains([]byte(err.Error()), []byte("AUTH verification failed")) {
+			t.Errorf("Expected AUTH verification error, got: %v", err)
 		}
 	})
 }
@@ -543,7 +543,7 @@ func TestNtorSpecCompliance_InputValidation(t *testing.T) {
 func TestNtorSpecCompliance_EndToEnd(t *testing.T) {
 	t.Run("Client and server derive identical keys", func(t *testing.T) {
 		// Server setup
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		var serverNtorPrivate [32]byte
 		if _, err := rand.Read(serverIdentity); err != nil {
 			t.Fatal(err)
@@ -592,7 +592,7 @@ func TestNtorSpecCompliance_EndToEnd(t *testing.T) {
 
 	t.Run("Multiple handshakes produce different keys", func(t *testing.T) {
 		// Setup
-		serverIdentity := make([]byte, 32)
+		serverIdentity := make([]byte, 20)
 		var serverNtorPrivate [32]byte
 		if _, err := rand.Read(serverIdentity); err != nil {
 			t.Fatal(err)

@@ -11,6 +11,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/path"
+	"github.com/opd-ai/go-tor/pkg/protocol"
 	"github.com/opd-ai/go-tor/pkg/ratelimit"
 )
 
@@ -102,43 +103,24 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 	buildCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Connect to guard with certificate pinning
-	guardAddr := fmt.Sprintf("%s:%d", p.Guard.Address, p.Guard.ORPort)
-	guardConn, err := b.connectToRelay(buildCtx, guardAddr, p.Guard)
+	if !p.Guard.HasNtorKeys() {
+		circuit.SetState(StateFailed)
+		return nil, fmt.Errorf("guard %s missing ntor keys (no zero-key fallback)", p.Guard.Nickname)
+	}
+	if !p.Middle.HasExtendKeys() {
+		circuit.SetState(StateFailed)
+		return nil, fmt.Errorf("middle %s missing extend keys", p.Middle.Nickname)
+	}
+	if !p.Exit.HasExtendKeys() {
+		circuit.SetState(StateFailed)
+		return nil, fmt.Errorf("exit %s missing extend keys", p.Exit.Nickname)
+	}
+
+	ext, err := b.handshakeAndCreateGuard(buildCtx, circuit, p.Guard)
 	if err != nil {
 		circuit.SetState(StateFailed)
-		return nil, fmt.Errorf("failed to connect to guard: %w", err)
+		return nil, err
 	}
-
-	// Store connection in circuit for cell I/O
-	circuit.SetConnection(guardConn)
-
-	// Add guard hop structure
-	if err := circuit.AddHop(&Hop{
-		Fingerprint: p.Guard.Fingerprint,
-		Address:     guardAddr,
-		IsGuard:     true,
-		IsExit:      false,
-	}); err != nil {
-		circuit.SetState(StateFailed)
-		return nil, fmt.Errorf("failed to add guard hop: %w", err)
-	}
-
-	b.logger.Info("Connected to guard", "guard", p.Guard.Nickname)
-
-	// Create extension handler for this circuit
-	ext := NewExtension(circuit, b.logger)
-
-	// Set relay keys from guard for first hop (SPEC-001)
-	ext.SetTargetRelay(p.Guard)
-
-	// Create first hop using CREATE2 protocol
-	if err := ext.CreateFirstHop(buildCtx, HandshakeTypeNTor); err != nil {
-		circuit.SetState(StateFailed)
-		return nil, fmt.Errorf("failed to create first hop: %w", err)
-	}
-
-	b.logger.Info("First hop created with ntor handshake", "guard", p.Guard.Nickname)
 
 	// Extend to middle relay using EXTEND2 protocol
 	ext.SetTargetRelay(p.Middle)
@@ -168,6 +150,59 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 	return circuit, nil
 }
 
+// BuildFirstHop 只做 TLS + link handshake + Guard CREATE2/ntor。
+// 用于真实网络验收 CREATE2，不继续 EXTEND2。
+func (b *Builder) BuildFirstHop(ctx context.Context, guard *directory.Relay, timeout time.Duration) (*Circuit, error) {
+	if guard == nil || !guard.HasNtorKeys() {
+		return nil, fmt.Errorf("guard missing ntor keys (no zero-key fallback)")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	circuit, err := b.manager.CreateCircuit()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create circuit: %w", err)
+	}
+	buildCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	if _, err := b.handshakeAndCreateGuard(buildCtx, circuit, guard); err != nil {
+		circuit.SetState(StateFailed)
+		return nil, err
+	}
+	return circuit, nil
+}
+
+func (b *Builder) handshakeAndCreateGuard(ctx context.Context, circuit *Circuit, guard *directory.Relay) (*Extension, error) {
+	guardAddr := fmt.Sprintf("%s:%d", guard.Address, guard.ORPort)
+	guardConn, err := b.connectToRelay(ctx, guardAddr, guard)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to guard: %w", err)
+	}
+
+	hs := protocol.NewHandshake(guardConn, b.logger)
+	if err := hs.PerformHandshake(ctx); err != nil {
+		_ = guardConn.Close()
+		return nil, fmt.Errorf("link handshake with guard %s failed: %w", guard.Nickname, err)
+	}
+
+	circuit.SetConnection(guardConn)
+	mux := NewCellMux(guardConn, b.logger)
+	circuit.SetMux(mux)
+	mux.RegisterCircuit(circuit)
+	mux.Start()
+
+	b.logger.Info("Connected to guard", "guard", guard.Nickname, "link_version", hs.NegotiatedVersion())
+
+	ext := NewExtension(circuit, b.logger)
+	ext.SetTargetRelay(guard)
+	if err := ext.CreateFirstHop(ctx, HandshakeTypeNTor); err != nil {
+		return nil, fmt.Errorf("failed to create first hop: %w", err)
+	}
+	b.logger.Info("First hop created with ntor handshake", "guard", guard.Nickname)
+	return ext, nil
+}
+
 // connectToRelay establishes a connection to a relay with certificate pinning.
 // This implements enhanced certificate validation per tor-spec.txt §2 by:
 // 1. Setting expected Ed25519 identity from directory consensus
@@ -195,9 +230,8 @@ func (b *Builder) connectToRelay(ctx context.Context, address string, relay *dir
 				"fingerprint", relay.Fingerprint)
 		}
 
-		// Set expected RSA fingerprint from consensus
-		if relay.Fingerprint != "" {
-			cfg.ExpectedFingerprint = relay.Fingerprint
+		if hex := relay.GetFingerprintHex(); hex != "" && len(hex) == 40 {
+			cfg.ExpectedFingerprint = hex
 		}
 
 		// Enable strict CERTS validation mode for defense-in-depth

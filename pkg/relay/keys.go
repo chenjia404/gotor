@@ -42,20 +42,27 @@ type RelayKeys struct {
 	}
 }
 
+// RSANodeID 返回 ntor NODEID：SHA-1(PKCS#1 DER(RSA identity))，20 字节。
+func (k *RelayKeys) RSANodeID() []byte {
+	if k.RSAPrivate == nil {
+		return nil
+	}
+	pubDER := x509.MarshalPKCS1PublicKey(&k.RSAPrivate.PublicKey)
+	h := sha1.Sum(pubDER) // #nosec G401
+	out := make([]byte, 20)
+	copy(out, h[:])
+	return out
+}
+
 // Fingerprint returns the relay's RSA identity fingerprint (SHA-1 of RSA public key)
 // This is the 40-character hex string used to identify relays in Tor.
 // #nosec G401 - SHA1 required by Tor specification for fingerprints
 func (k *RelayKeys) Fingerprint() string {
-	if k.RSAPrivate == nil {
+	id := k.RSANodeID()
+	if id == nil {
 		return ""
 	}
-
-	// Encode RSA public key to PKCS#1 DER format
-	pubDER := x509.MarshalPKCS1PublicKey(&k.RSAPrivate.PublicKey)
-
-	// Compute SHA-1 hash (Tor fingerprint format)
-	h := sha1.Sum(pubDER) // #nosec G401
-	return hex.EncodeToString(h[:])
+	return hex.EncodeToString(id)
 }
 
 // Ed25519Fingerprint returns the base64-encoded Ed25519 identity key

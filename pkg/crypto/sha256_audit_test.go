@@ -106,15 +106,15 @@ func TestSHA256_NtorServerHandshake(t *testing.T) {
 	var clientEphemeralPublic [32]byte
 	curve25519.ScalarBaseMult(&clientEphemeralPublic, (*[32]byte)(clientEphemeralPrivate))
 
-	// Generate relay identity (Ed25519 fingerprint would be 32 bytes)
-	relayIdentity := make([]byte, 32)
+	// NODEID is the 20-byte RSA SHA-1 fingerprint (not Ed25519).
+	relayIdentity := make([]byte, 20)
 	if _, err := rand.Read(relayIdentity); err != nil {
 		t.Fatalf("Failed to generate relay identity: %v", err)
 	}
 
 	// Build client handshake: NODEID (20 bytes) || KEYID (32 bytes) || CLIENT_PK (32 bytes) = 84 bytes
 	clientHandshake := make([]byte, 84)
-	copy(clientHandshake[0:20], relayIdentity[:20])        // NODEID (first 20 bytes of identity)
+	copy(clientHandshake[0:20], relayIdentity)             // NODEID
 	copy(clientHandshake[20:52], relayPublicKey[:])        // KEYID (relay's public key)
 	copy(clientHandshake[52:84], clientEphemeralPublic[:]) // CLIENT_PK
 
@@ -239,8 +239,8 @@ func TestSHA256_NtorClientHandshake(t *testing.T) {
 	var relayPublicKey [32]byte
 	curve25519.ScalarBaseMult(&relayPublicKey, (*[32]byte)(relayPrivateKey))
 
-	// Generate relay identity
-	relayIdentity := make([]byte, 32)
+	// NODEID is the 20-byte RSA SHA-1 fingerprint.
+	relayIdentity := make([]byte, 20)
 	if _, err := rand.Read(relayIdentity); err != nil {
 		t.Fatalf("Failed to generate relay identity: %v", err)
 	}

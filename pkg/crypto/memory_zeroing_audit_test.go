@@ -35,7 +35,7 @@ func TestMemoryZeroingAfterKeyUsage(t *testing.T) {
 		}
 		defer security.SecureZeroMemory(serverKP.Private[:])
 
-		identityKey := make([]byte, 32)
+		identityKey := make([]byte, 20)
 		for i := range identityKey {
 			identityKey[i] = byte(i)
 		}
@@ -294,7 +294,7 @@ func TestMemoryZeroingAfterKeyUsage(t *testing.T) {
 			t.Fatalf("Failed to generate server key: %v", err)
 		}
 
-		identityKey := make([]byte, 32)
+		identityKey := make([]byte, 20)
 
 		// Invalid response (too short) - should trigger error path
 		invalidResponse := make([]byte, 32) // Only 32 bytes instead of 64

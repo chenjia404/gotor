@@ -69,6 +69,7 @@ type Connection struct {
 	expectedFingerprint string        // Expected relay RSA fingerprint - for CERTS validation
 	requireCERTS        bool          // If true, fail handshake on CERTS validation failure
 	readyCh             chan struct{} // AUDIT-MED-3 FIX: Channel closed when the connection reaches a terminal state
+	circIDLen           int           // 2 before VERSIONS；协商到 v≥4 后为 4
 }
 
 // Config holds connection configuration
@@ -271,7 +272,8 @@ func New(cfg *Config, log *logger.Logger) *Connection {
 		expectedIdentity:    cfg.ExpectedIdentity,
 		expectedFingerprint: cfg.ExpectedFingerprint,
 		requireCERTS:        cfg.RequireCERTS,
-		readyCh:             make(chan struct{}), // AUDIT-MED-3 FIX: Channel for readiness/terminal-state signaling
+		readyCh:             make(chan struct{}),
+		circIDLen:           2, // VERSIONS 按 v=0，CIRCID_LEN=2
 	}
 }
 
@@ -339,7 +341,7 @@ func (c *Connection) SendCell(cell *cell.Cell) error {
 	default:
 	}
 
-	if err := cell.Encode(c.tlsConn); err != nil {
+	if err := cell.EncodeLink(c.tlsConn, c.circIDWidth()); err != nil {
 		c.logger.Error("Failed to send cell", "error", err, "command", cell.Command)
 		return fmt.Errorf("failed to send cell: %w", err)
 	}
@@ -377,7 +379,7 @@ func (c *Connection) ReceiveCellWithContext(ctx context.Context) (*cell.Cell, er
 	resultCh := make(chan result, 1)
 
 	go func() {
-		receivedCell, err := cell.DecodeCell(c.tlsConn)
+		receivedCell, err := cell.DecodeCellLink(c.tlsConn, c.circIDWidth())
 		resultCh <- result{cell: receivedCell, err: err}
 	}()
 
@@ -433,6 +435,24 @@ func (c *Connection) Address() string {
 	return c.address
 }
 
+func (c *Connection) circIDWidth() int {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	if c.circIDLen == 0 {
+		return 2
+	}
+	return c.circIDLen
+}
+
+// SetCircIDLen 在 VERSIONS 协商后切换 CircID 宽度。v≥4 为 4，否则为 2。
+func (c *Connection) SetCircIDLen(n int) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if n == 2 || n == 4 {
+		c.circIDLen = n
+	}
+}
+
 // setState sets the connection state
 func (c *Connection) setState(state State) {
 	c.stateMu.Lock()
@@ -442,7 +462,9 @@ func (c *Connection) setState(state State) {
 	// waiters are not blocked forever on failed or closed connections.
 	if state == StateOpen || state == StateClosed || state == StateFailed {
 		c.readyOnce.Do(func() {
-			close(c.readyCh)
+			if c.readyCh != nil {
+				close(c.readyCh)
+			}
 		})
 	}
 

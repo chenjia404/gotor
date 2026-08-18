@@ -129,7 +129,7 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 	response, keyMaterial, err := crypto.NtorServerHandshake(
 		handshakeData,
 		h.keys.NtorOnionKey,
-		h.keys.Identity.Public,
+		h.keys.RSANodeID(),
 	)
 	if err != nil {
 		h.logger.Error("Ntor handshake failed", "error", err)

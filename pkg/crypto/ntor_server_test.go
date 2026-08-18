@@ -16,7 +16,7 @@ func TestNtorServerHandshake(t *testing.T) {
 		t.Fatalf("Failed to generate server ntor key: %v", err)
 	}
 
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestNtorServerHandshakeInvalidInput(t *testing.T) {
 			clientHandshake:   make([]byte, 84),
 			serverNtorKey:     make([]byte, 32),
 			serverIdentity:    make([]byte, 16),
-			expectedErrPrefix: "invalid server identity length",
+			expectedErrPrefix: "invalid ntor NODEID length",
 		},
 	}
 
@@ -113,7 +113,7 @@ func TestNtorServerHandshakeKeyDerivation(t *testing.T) {
 		t.Fatalf("Failed to generate server ntor key: %v", err)
 	}
 
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestNtorServerHandshakeMultipleClients(t *testing.T) {
 		t.Fatalf("Failed to generate server ntor key: %v", err)
 	}
 
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestNtorServerHandshakeDeterminism(t *testing.T) {
 		t.Fatalf("Failed to generate server ntor key: %v", err)
 	}
 
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
 	}

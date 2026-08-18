@@ -285,8 +285,8 @@ func TestRSAOAEP_UsesCSPRNG(t *testing.T) {
 
 // TestNtorHandshake_UsesCSPRNG verifies ntor handshake uses crypto/rand
 func TestNtorHandshake_UsesCSPRNG(t *testing.T) {
-	// Generate relay keys
-	relayIdentity := make([]byte, 32)
+	// Generate relay keys (NODEID is the 20-byte RSA fingerprint)
+	relayIdentity := make([]byte, 20)
 	relayNtorKey := make([]byte, 32)
 	if _, err := rand.Read(relayIdentity); err != nil {
 		t.Fatalf("Failed to generate relay identity: %v", err)

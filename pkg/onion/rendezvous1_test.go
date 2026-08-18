@@ -43,7 +43,7 @@ func TestBuildRendezvous1CellV2(t *testing.T) {
 		t.Fatalf("Failed to generate server ntor key: %v", err)
 	}
 
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestSendRendezvous1V2(t *testing.T) {
 		t.Fatalf("Failed to generate server ntor key: %v", err)
 	}
 
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestSendRendezvous1V2(t *testing.T) {
 
 // TestSendRendezvous1NilCircuit tests error handling with nil circuit
 func TestSendRendezvous1NilCircuit(t *testing.T) {
-	_, err := SendRendezvous1(nil, 1, make([]byte, 20), make([]byte, 84), make([]byte, 32), make([]byte, 32))
+	_, err := SendRendezvous1(nil, 1, make([]byte, 20), make([]byte, 84), make([]byte, 32), make([]byte, 20))
 	if err == nil {
 		t.Error("Expected error for nil circuit, got nil")
 	}
@@ -265,7 +265,7 @@ func TestSendRendezvous1CircuitError(t *testing.T) {
 		t.Fatalf("Failed to generate server ntor key: %v", err)
 	}
 
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestRendezvous1EndToEnd(t *testing.T) {
 		t.Fatalf("Failed to generate server ntor key: %v", err)
 	}
 
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestRendezvous1KeyMaterialFormat(t *testing.T) {
 		t.Fatalf("Failed to generate server ntor key: %v", err)
 	}
 
-	serverIdentity := make([]byte, 32)
+	serverIdentity := make([]byte, 20)
 	if _, err := rand.Read(serverIdentity); err != nil {
 		t.Fatalf("Failed to generate server identity: %v", err)
 	}

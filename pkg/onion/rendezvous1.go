@@ -26,7 +26,8 @@ type Rendezvous1Cell struct {
 //   - rendezvousCookie: The 20-byte cookie from INTRODUCE2 cell
 //   - clientHandshake: The client's ntor handshake data from INTRODUCE2
 //   - serverNtorKey: The onion service's ntor key (private, 32 bytes)
-//   - serverIdentity: The onion service's identity key (public, 32 bytes)
+//   - serverIdentity: circuit ntor NODEID（20 字节 RSA fingerprint）。
+//     注意：真实 onion service 应使用 hs-ntor，本函数尚未实现 hs-ntor。
 //
 // Returns:
 //   - cell: The constructed RENDEZVOUS1 relay cell
@@ -48,8 +49,8 @@ func BuildRendezvous1Cell(rendezvousCookie, clientHandshake, serverNtorKey, serv
 		return nil, nil, fmt.Errorf("invalid server ntor key length: %d", len(serverNtorKey))
 	}
 
-	if len(serverIdentity) != 32 {
-		return nil, nil, fmt.Errorf("invalid server identity length: %d", len(serverIdentity))
+	if len(serverIdentity) != 20 {
+		return nil, nil, fmt.Errorf("invalid server identity length: %d, expected 20 (circuit ntor NODEID; hs-ntor 尚未实现)", len(serverIdentity))
 	}
 
 	// Perform server-side ntor handshake
@@ -84,7 +85,7 @@ func BuildRendezvous1Cell(rendezvousCookie, clientHandshake, serverNtorKey, serv
 //   - rendezvousCookie: The 20-byte cookie from INTRODUCE2
 //   - clientHandshake: The client's ntor handshake (84 bytes from INTRODUCE2)
 //   - serverNtorKey: The service's ntor private key (32 bytes)
-//   - serverIdentity: The service's identity public key (32 bytes)
+//   - serverIdentity: circuit ntor NODEID（20 字节；hs-ntor 尚未实现）
 //
 // Returns:
 //   - keyMaterial: The derived encryption keys for the stream (72 bytes)

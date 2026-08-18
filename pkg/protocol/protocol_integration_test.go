@@ -48,7 +48,7 @@ func (m *mockRelay) serve() {
 			return
 		}
 
-		versionsCell, err := cell.DecodeCell(bytes.NewReader(buf[:n]))
+		versionsCell, err := cell.DecodeCellLink(bytes.NewReader(buf[:n]), 2)
 		if err != nil {
 			m.logger.Debug("Failed to decode VERSIONS", "error", err)
 			return
@@ -63,7 +63,7 @@ func (m *mockRelay) serve() {
 		responseCell := cell.NewCell(0, cell.CmdVersions)
 		responseCell.Payload = []byte{0x00, 0x04} // Version 4
 		var encBuf bytes.Buffer
-		if err := responseCell.Encode(&encBuf); err != nil {
+		if err := responseCell.EncodeLink(&encBuf, 2); err != nil {
 			m.logger.Debug("Failed to encode VERSIONS response", "error", err)
 			return
 		}

@@ -101,6 +101,12 @@ func (rc *RelayCell) Encode() ([]byte, error) {
 	// Create payload buffer
 	payload := make([]byte, PayloadLen)
 
+	length, err := security.SafeLenToUint16(rc.Data)
+	if err != nil {
+		return nil, fmt.Errorf("relay cell data too large: %w", err)
+	}
+	rc.Length = length
+
 	// Write header
 	payload[0] = rc.Command
 	binary.BigEndian.PutUint16(payload[1:3], rc.Recognized)

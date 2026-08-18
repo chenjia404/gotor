@@ -77,6 +77,13 @@ func (h *Handshake) PerformHandshake(ctx context.Context) error {
 		return fmt.Errorf("failed to receive VERSIONS: %w", err)
 	}
 
+	// VERSIONS 使用 CIRCID_LEN(0)=2；此后 CERTS/NETINFO 使用协商版本的宽度。
+	if h.negotiatedVersion >= 4 {
+		h.conn.SetCircIDLen(4)
+	} else {
+		h.conn.SetCircIDLen(2)
+	}
+
 	// Receive CERTS cell (mandatory for link protocol v3+, per tor-spec.txt §4.2)
 	if err := h.receiveCERTS(ctx); err != nil {
 		// For link protocol v3+, CERTS exchange is mandatory
@@ -227,6 +234,17 @@ func (h *Handshake) receiveNetinfo(ctx context.Context) error {
 			return fmt.Errorf("timeout waiting for NETINFO response")
 		}
 		return err
+	}
+
+	for receivedCell.Command == cell.CmdAuthChallenge || receivedCell.Command == cell.CmdPadding || receivedCell.Command == cell.CmdVPadding {
+		h.logger.Debug("Skipping cell while waiting for NETINFO", "command", receivedCell.Command)
+		receivedCell, err = h.conn.ReceiveCellWithContext(ctx)
+		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("timeout waiting for NETINFO response")
+			}
+			return err
+		}
 	}
 
 	if receivedCell.Command != cell.CmdNetinfo {

@@ -346,7 +346,7 @@ func testValidEd25519IdentityMatch(t *testing.T) {
 		Ed25519Cert: ed25519Cert,
 	}
 	certsCell := &CERTSCell{
-		Certificates: []*Certificate{cert},
+		Certificates: []*Certificate{cert, type7IdentityCertificate(identityPub)},
 	}
 
 	// Validate - should succeed
@@ -376,7 +376,7 @@ func testInvalidEd25519IdentityMismatch(t *testing.T) {
 		Ed25519Cert: ed25519Cert,
 	}
 	certsCell := &CERTSCell{
-		Certificates: []*Certificate{cert},
+		Certificates: []*Certificate{cert, type7IdentityCertificate(identityPub)},
 	}
 
 	// Validate with wrong key - should fail
@@ -418,7 +418,7 @@ func testInvalidEd25519KeyLength(t *testing.T) {
 	}
 
 	cert := &Certificate{
-		CertType:    CertTypeEd25519Signing,
+		CertType:    CertTypeEd25519Identity,
 		Ed25519Cert: ed25519Cert,
 	}
 	certsCell := &CERTSCell{
@@ -470,7 +470,7 @@ func testEd25519IdentityByteByByte(t *testing.T) {
 		Ed25519Cert: ed25519Cert,
 	}
 	certsCell := &CERTSCell{
-		Certificates: []*Certificate{cert},
+		Certificates: []*Certificate{cert, type7IdentityCertificate(identityPub)},
 	}
 
 	// Test each byte position
@@ -527,6 +527,7 @@ func testBothRSAAndEd25519Valid(t *testing.T) {
 		Certificates: []*Certificate{
 			{CertType: CertTypeRSAID, CertBody: rsaCertDER, X509Cert: rsaX509Cert},
 			{CertType: CertTypeEd25519Signing, Ed25519Cert: ed25519Cert},
+			type7IdentityCertificate(ed25519Pub),
 		},
 	}
 
@@ -582,6 +583,7 @@ func testRSAValidEd25519Invalid(t *testing.T) {
 		Certificates: []*Certificate{
 			{CertType: CertTypeRSAID, CertBody: rsaCertDER, X509Cert: rsaX509Cert},
 			{CertType: CertTypeEd25519Signing, Ed25519Cert: ed25519Cert},
+			type7IdentityCertificate(correctEd25519),
 		},
 	}
 
@@ -777,6 +779,7 @@ func testCertificateChainManipulation(t *testing.T) {
 		Certificates: []*Certificate{
 			{CertType: CertTypeEd25519Signing, Ed25519Cert: cert1},
 			{CertType: CertTypeEd25519Signing, Ed25519Cert: cert2},
+			type7IdentityCertificate(identity1),
 		},
 	}
 
@@ -807,7 +810,7 @@ func testTimingAttackResistance(t *testing.T) {
 		Ed25519Cert: ed25519Cert,
 	}
 	certsCell := &CERTSCell{
-		Certificates: []*Certificate{cert},
+		Certificates: []*Certificate{cert, type7IdentityCertificate(identityPub)},
 	}
 
 	// Measure timing for correct vs incorrect identities
@@ -965,6 +968,7 @@ func testMultipleIdentityCertificates(t *testing.T) {
 		Certificates: []*Certificate{
 			{CertType: CertTypeEd25519Signing, Ed25519Cert: cert1},
 			{CertType: CertTypeEd25519Signing, Ed25519Cert: cert2},
+			type7IdentityCertificate(identity1),
 		},
 	}
 
@@ -985,7 +989,7 @@ func testZeroByteIdentity(t *testing.T) {
 		Ed25519Cert: ed25519Cert,
 	}
 	certsCell := &CERTSCell{
-		Certificates: []*Certificate{cert},
+		Certificates: []*Certificate{cert, type7IdentityCertificate(zeroIdentity)},
 	}
 
 	// Should validate successfully with all-zero identity
@@ -1186,9 +1190,17 @@ func TestRelayIdentityIntegration(t *testing.T) {
 	ed25519Pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	ed25519Cert := createAuditTestEd25519Cert(ed25519Pub)
 
+	// type 7：RSA→Ed25519 cross-cert，身份公钥在前 32 字节
+	type7Body := make([]byte, 0, 38)
+	type7Body = append(type7Body, ed25519Pub...)
+	exp := make([]byte, 4)
+	binary.BigEndian.PutUint32(exp, uint32(time.Now().Add(24*time.Hour).Unix()/3600))
+	type7Body = append(type7Body, exp...)
+	type7Body = append(type7Body, 1, 0) // SIGLEN=1 + dummy
+
 	// Create cell payload
 	payload := make([]byte, 0, 1024)
-	payload = append(payload, 2) // 2 certificates
+	payload = append(payload, 3) // 3 certificates
 
 	// RSA certificate
 	payload = append(payload, byte(CertTypeRSAID))
@@ -1196,6 +1208,12 @@ func TestRelayIdentityIntegration(t *testing.T) {
 	binary.BigEndian.PutUint16(rsaCertLen, uint16(len(rsaCertDER)))
 	payload = append(payload, rsaCertLen...)
 	payload = append(payload, rsaCertDER...)
+
+	payload = append(payload, byte(CertTypeEd25519Identity))
+	type7Len := make([]byte, 2)
+	binary.BigEndian.PutUint16(type7Len, uint16(len(type7Body)))
+	payload = append(payload, type7Len...)
+	payload = append(payload, type7Body...)
 
 	// Ed25519 certificate (encode it)
 	ed25519Bytes := encodeEd25519Cert(ed25519Cert)
@@ -1240,9 +1258,8 @@ func encodeEd25519Cert(cert *Ed25519Certificate) []byte {
 
 	data = append(data, byte(len(cert.Extensions)))
 	for _, ext := range cert.Extensions {
-		extLen := uint16(2 + len(ext.ExtData))
 		extLenBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(extLenBytes, extLen)
+		binary.BigEndian.PutUint16(extLenBytes, uint16(len(ext.ExtData)))
 		data = append(data, extLenBytes...)
 		data = append(data, ext.ExtType)
 		data = append(data, ext.Flags)

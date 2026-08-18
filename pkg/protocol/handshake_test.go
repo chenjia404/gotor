@@ -13,6 +13,14 @@ import (
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
+func encodeVersionsCell(c *cell.Cell) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := c.EncodeLink(&buf, 2); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // Test certificate and key for mock TLS server
 const testCert = `-----BEGIN CERTIFICATE-----
 MIIBhTCCASugAwIBAgIQIRi6zePL6mKjOipn+dNuaTAKBggqhkjOPQQDAjASMRAw
@@ -86,7 +94,7 @@ func (m *mockTLSRelay) handleHandshake(conn net.Conn) {
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
 	// Read VERSIONS cell
-	versionsCell, err := cell.DecodeCell(conn)
+	versionsCell, err := cell.DecodeCellLink(conn, 2)
 	if err != nil {
 		m.logger.Debug("Failed to decode VERSIONS cell", "error", err)
 		return
@@ -101,7 +109,7 @@ func (m *mockTLSRelay) handleHandshake(conn net.Conn) {
 	responseCell := cell.NewCell(0, cell.CmdVersions)
 	responseCell.Payload = []byte{0x00, 0x04} // Version 4
 	var encBuf bytes.Buffer
-	if err := responseCell.Encode(&encBuf); err != nil {
+	if err := responseCell.EncodeLink(&encBuf, 2); err != nil {
 		m.logger.Debug("Failed to encode VERSIONS response", "error", err)
 		return
 	}
@@ -177,7 +185,7 @@ func (m *mockTLSRelay) handleHandshakePaddingBeforeCERTS(conn net.Conn) {
 
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
-	versionsCell, err := cell.DecodeCell(conn)
+	versionsCell, err := cell.DecodeCellLink(conn, 2)
 	if err != nil {
 		m.logger.Debug("Failed to decode VERSIONS cell", "error", err)
 		return
@@ -190,7 +198,7 @@ func (m *mockTLSRelay) handleHandshakePaddingBeforeCERTS(conn net.Conn) {
 	responseCell := cell.NewCell(0, cell.CmdVersions)
 	responseCell.Payload = []byte{0x00, 0x04}
 	var encBuf bytes.Buffer
-	if err := responseCell.Encode(&encBuf); err != nil {
+	if err := responseCell.EncodeLink(&encBuf, 2); err != nil {
 		m.logger.Debug("Failed to encode VERSIONS response", "error", err)
 		return
 	}
@@ -547,7 +555,7 @@ func (m *mockTLSRelayIncompatibleVersion) serve() {
 				responseCell := cell.NewCell(0, cell.CmdVersions)
 				responseCell.Payload = []byte{0x00, 0x01, 0x00, 0x02} // Versions 1 and 2
 				var buf bytes.Buffer
-				if err := responseCell.Encode(&buf); err != nil {
+				if err := responseCell.EncodeLink(&buf, 2); err != nil {
 					return
 				}
 				if _, err := c.Write(buf.Bytes()); err != nil {
@@ -651,7 +659,7 @@ func (m *mockTLSRelayInvalidPayload) serve() {
 				responseCell := cell.NewCell(0, cell.CmdVersions)
 				responseCell.Payload = []byte{0x00, 0x04, 0x00} // 3 bytes - odd length
 				var buf bytes.Buffer
-				if err := responseCell.Encode(&buf); err != nil {
+				if err := responseCell.EncodeLink(&buf, 2); err != nil {
 					return
 				}
 				if _, err := c.Write(buf.Bytes()); err != nil {
@@ -755,7 +763,7 @@ func (m *mockTLSRelayWrongNetinfo) serve() {
 				versionsCell := cell.NewCell(0, cell.CmdVersions)
 				versionsCell.Payload = []byte{0x00, 0x04}
 				var buf bytes.Buffer
-				if err := versionsCell.Encode(&buf); err != nil {
+				if err := versionsCell.EncodeLink(&buf, 2); err != nil {
 					return
 				}
 				if _, err := c.Write(buf.Bytes()); err != nil {

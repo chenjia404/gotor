@@ -205,7 +205,7 @@ func TestProcessCreated2_IntegrationWithAddHop(t *testing.T) {
 	// Set up test data for ntor handshake
 	ext.ephemeralPrivate = make([]byte, 32)
 	ext.serverNtorKey = make([]byte, 32)
-	ext.serverIdentity = make([]byte, 32)
+	ext.serverIdentity = make([]byte, 20)
 
 	// Note: This test will fail ntor verification with random keys,
 	// but we can verify the error happens at the right stage
@@ -240,7 +240,7 @@ func TestProcessExtended2_IntegrationWithAddHop(t *testing.T) {
 	// Set up test data for ntor handshake
 	ext.ephemeralPrivate = make([]byte, 32)
 	ext.serverNtorKey = make([]byte, 32)
-	ext.serverIdentity = make([]byte, 32)
+	ext.serverIdentity = make([]byte, 20)
 
 	// Create an EXTENDED2 relay cell with invalid handshake data
 	extended2Cell := &cell.RelayCell{

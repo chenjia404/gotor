@@ -16,9 +16,9 @@ import (
 func TestNoKeyReuseAcrossCircuits(t *testing.T) {
 	// Simulate two circuits to the same relay with same long-term keys
 	// but different ephemeral keys
-	relayIdentity := make([]byte, 32)
+	relayIdentity := make([]byte, 20)
 	relayNtorKey := make([]byte, 32)
-	copy(relayIdentity, []byte("test-relay-identity-key-12345678"))
+	copy(relayIdentity, []byte("test-relay-rsa-id-20b"))
 	copy(relayNtorKey, []byte("test-relay-ntor-key-123456789012"))
 
 	// Circuit 1: Generate handshake with unique ephemeral key
@@ -65,17 +65,17 @@ func TestNoKeyReuseBetweenHops(t *testing.T) {
 	}{
 		{
 			name:     "Guard",
-			identity: bytes.Repeat([]byte{0x01}, 32),
+			identity: bytes.Repeat([]byte{0x01}, 20),
 			ntorKey:  bytes.Repeat([]byte{0x11}, 32),
 		},
 		{
 			name:     "Middle",
-			identity: bytes.Repeat([]byte{0x02}, 32),
+			identity: bytes.Repeat([]byte{0x02}, 20),
 			ntorKey:  bytes.Repeat([]byte{0x22}, 32),
 		},
 		{
 			name:     "Exit",
-			identity: bytes.Repeat([]byte{0x03}, 32),
+			identity: bytes.Repeat([]byte{0x03}, 20),
 			ntorKey:  bytes.Repeat([]byte{0x33}, 32),
 		},
 	}

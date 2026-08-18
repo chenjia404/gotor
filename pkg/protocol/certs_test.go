@@ -17,12 +17,12 @@ import (
 // TestParseCERTSCell tests basic CERTS cell parsing
 func TestParseCERTSCell(t *testing.T) {
 	// Create a minimal CERTS cell with 1 certificate
-	payload := make([]byte, 100)
+	payload := make([]byte, 200)
 	payload[0] = 1                               // Number of certificates
-	payload[1] = byte(CertTypeEd25519Signing)    // Cert type
-	binary.BigEndian.PutUint16(payload[2:4], 40) // Cert length (minimal Ed25519 cert)
+	payload[1] = byte(CertTypeEd25519Signing)     // Cert type
+	binary.BigEndian.PutUint16(payload[2:4], 104) // Version+type+exp+keytype+key+n_ext+sig
 
-	// Minimal Ed25519 cert: version(1) + certType(1) + expiration(4) + keyType(1) + key(32) + numExt(1) = 40 bytes
+	// Minimal Ed25519 cert: 40 bytes header + 64-byte signature
 	offset := 4
 	payload[offset] = 1 // Version
 	offset++
@@ -40,9 +40,11 @@ func TestParseCERTSCell(t *testing.T) {
 	}
 	offset += 32
 	payload[offset] = 0 // No extensions
+	offset++
+	offset += 64 // dummy signature
 
 	cellData := cell.NewCell(0, cell.CmdCerts)
-	cellData.Payload = payload[:offset+1]
+	cellData.Payload = payload[:offset]
 
 	certs, err := ParseCERTSCell(cellData)
 	if err != nil {
@@ -198,20 +200,20 @@ func TestParseEd25519Certificate_WithExtensions(t *testing.T) {
 	data[offset] = 2
 	offset++
 
-	// Extension 1: 10 bytes total (2 for type+flags + 8 data)
-	binary.BigEndian.PutUint16(data[offset:offset+2], 10)
+	// Extension 1: ExtLen = len(ExtData) = 8（不含 ExtType/ExtFlags）
+	binary.BigEndian.PutUint16(data[offset:offset+2], 8)
 	offset += 2
 	data[offset] = 1 // ExtType
 	offset++
 	data[offset] = 0 // Flags
 	offset++
-	for i := 0; i < 8; i++ { // 10 total - 2 (type+flags) = 8 bytes data
+	for i := 0; i < 8; i++ {
 		data[offset+i] = byte(i)
 	}
 	offset += 8
 
-	// Extension 2: 5 bytes total (2 for type+flags + 3 data)
-	binary.BigEndian.PutUint16(data[offset:offset+2], 5)
+	// Extension 2: ExtLen = 3
+	binary.BigEndian.PutUint16(data[offset:offset+2], 3)
 	offset += 2
 	data[offset] = 2 // ExtType
 	offset++
@@ -401,6 +403,7 @@ func TestValidateRelayIdentity_Ed25519(t *testing.T) {
 				CertBody:    data,
 				Ed25519Cert: ed25519Cert,
 			},
+			type7IdentityCertificate(expectedIdentity),
 		},
 	}
 
