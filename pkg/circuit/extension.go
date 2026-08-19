@@ -221,7 +221,7 @@ func (e *Extension) generateHandshakeData(handshakeType HandshakeType) ([]byte, 
 		if e.requestCC {
 			cm = crypto.EncodeCCRequest()
 		}
-		skin, st, err := crypto.NtorV3ClientHandshake(edID, ntorKey, nil, cm)
+		skin, st, err := crypto.NtorV3ClientHandshake(edID, ntorKey, crypto.NtorV3CircuitVerification, cm)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate ntor-v3 handshake: %w", err)
 		}
@@ -616,7 +616,7 @@ func (e *Extension) finishHandshake(handshakeResponse []byte) error {
 		if e.ntorv3State == nil {
 			return fmt.Errorf("no ntor-v3 state stored")
 		}
-		keyMaterial, serverMsg, err = crypto.NtorV3ProcessResponse(handshakeResponse, e.ntorv3State, nil)
+		keyMaterial, serverMsg, err = crypto.NtorV3ProcessResponse(handshakeResponse, e.ntorv3State, crypto.NtorV3CircuitVerification)
 		e.ntorv3State.Wipe()
 		e.ntorv3State = nil
 		if err != nil {

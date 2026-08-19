@@ -31,7 +31,7 @@ Relay 宣告 `Relay=4` 才接受 ntor-v3。`FlowCtrl=2` 才协商拥塞控制。
 
 - C Tor：`src/core/crypto/onion_ntor_v3.c`（Tor 0.5.x 仍用此路径）
 - Arti：`crates/tor-proto/src/crypto/handshake/ntor_v3.rs`
-- 普通电路扩展的 verification 字符串为空
+- 普通电路扩展的 verification 必须是 `"circuit extend"`（14 字节，无 NUL）。空串会导致服务端 MAC 失败并 DESTROY reason=1。
 - 官方向量来自 proposal 332 X.2（已在 `TestNtorV3OfficialVector` 对齐）
 
 ## gotor 行为

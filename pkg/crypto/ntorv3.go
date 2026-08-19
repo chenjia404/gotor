@@ -49,6 +49,10 @@ const (
 	NtorV3KeyMaterialLen = 72
 )
 
+// NtorV3CircuitVerification 是电路 CREATE2/EXTEND2 的 verification。
+// C Tor onion_crypto.c / Arti ntor_v3.rs：`NTOR3_CIRC_VERIFICATION = "circuit extend"`。
+var NtorV3CircuitVerification = []byte("circuit extend")
+
 // NtorV3ExtType 是握手加密附加数据里的扩展类型。
 const (
 	NtorV3ExtCCRequest  uint8 = 1
@@ -193,7 +197,8 @@ func ParseCCSendmeInc(serverMsg []byte) (inc int, ok bool, err error) {
 
 // NtorV3ClientHandshake 构造 CREATE2/EXTEND2 的 ntor-v3 onion skin。
 //
-// edID 必须是 32 字节 Ed25519 主身份。verification 在普通电路扩展中为空。
+// edID 必须是 32 字节 Ed25519 主身份。
+// 普通电路扩展的 verification 必须是 NtorV3CircuitVerification。
 // clientMsg 是加密前的 CM（含 N_EXTENSIONS）。
 func NtorV3ClientHandshake(edID, onionKey, verification, clientMsg []byte) ([]byte, *NtorV3ClientState, error) {
 	kp, err := GenerateNtorKeyPair()

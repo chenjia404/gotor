@@ -141,6 +141,13 @@ func TestNtorV3ExtensionsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNtorV3CircuitVerificationLength(t *testing.T) {
+	if string(NtorV3CircuitVerification) != "circuit extend" || len(NtorV3CircuitVerification) != 14 {
+		t.Fatalf("circuit verification must be 14-byte %q without NUL, got %q (%d)",
+			"circuit extend", NtorV3CircuitVerification, len(NtorV3CircuitVerification))
+	}
+}
+
 func TestNtorV3RejectsZeroKeys(t *testing.T) {
 	id := bytes.Repeat([]byte{1}, 32)
 	onion := bytes.Repeat([]byte{2}, 32)
