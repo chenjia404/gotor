@@ -90,6 +90,7 @@ func TestNtorHKDFUsesSecretInputNotKeySeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	correct = correct[:NtorKeyMaterialLen]
 	if !bytes.Equal(correct, want) {
 		t.Fatal("canonical expand(secret_input) must match handshake keys")
 	}

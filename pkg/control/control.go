@@ -492,7 +492,7 @@ func (s *Server) handleAuthenticate(conn *connection, args []string) {
 func (s *Server) handleProtocolInfo(conn *connection, args []string) {
 	methods := []string{}
 	if s.cookieAuth {
-		methods = append(methods, "COOKIE", "SAFECOOKIE")
+		methods = append(methods, "COOKIE") // 未实现 AUTHCHALLENGE 前不宣告 SAFECOOKIE
 	}
 	if s.hashedPass != "" {
 		methods = append(methods, "HASHEDPASSWORD")

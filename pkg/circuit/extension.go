@@ -677,7 +677,7 @@ func (e *Extension) ProcessExtended2(extended2Cell *cell.RelayCell) error {
 }
 
 func (e *Extension) finishHandshake(handshakeResponse []byte) error {
-	var keyMaterial, serverMsg []byte
+	var keyMaterial, serverMsg, circNonce []byte
 	var err error
 	switch e.handshakeType {
 	case HandshakeTypeNtorV3:
@@ -685,6 +685,9 @@ func (e *Extension) finishHandshake(handshakeResponse []byte) error {
 			return fmt.Errorf("no ntor-v3 state stored")
 		}
 		keyMaterial, serverMsg, err = crypto.NtorV3ProcessResponse(handshakeResponse, e.ntorv3State, crypto.NtorV3CircuitVerification)
+		if err == nil && len(e.ntorv3State.CircNonce) == crypto.NtorCircNonceLen {
+			circNonce = append([]byte(nil), e.ntorv3State.CircNonce...)
+		}
 		e.ntorv3State.Wipe()
 		e.ntorv3State = nil
 		if err != nil {
@@ -694,7 +697,7 @@ func (e *Extension) finishHandshake(handshakeResponse []byte) error {
 		if e.ephemeralPrivate == nil {
 			return fmt.Errorf("no ephemeral private key stored - handshake not initiated properly")
 		}
-		keyMaterial, err = crypto.NtorProcessResponse(
+		keyMaterial, circNonce, err = crypto.NtorProcessResponseWithNonce(
 			handshakeResponse,
 			e.ephemeralPrivate,
 			e.serverNtorKey,
@@ -716,6 +719,9 @@ func (e *Extension) finishHandshake(handshakeResponse []byte) error {
 	hop, err := e.deriveHopFromKeyMaterial(keyMaterial)
 	if err != nil {
 		return fmt.Errorf("failed to derive hop crypto state: %w", err)
+	}
+	if len(circNonce) == crypto.NtorCircNonceLen {
+		hop.RendCircNonce = circNonce
 	}
 	if err := e.circuit.AddHop(hop); err != nil {
 		return fmt.Errorf("failed to add hop to circuit: %w", err)

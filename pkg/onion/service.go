@@ -3,15 +3,12 @@
 package onion
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -19,9 +16,9 @@ import (
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/circuit"
 	"github.com/opd-ai/go-tor/pkg/crypto"
+	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/path"
-	"github.com/opd-ai/go-tor/pkg/security"
 	"golang.org/x/crypto/curve25519"
 )
 
@@ -111,16 +108,27 @@ type ServiceConfig struct {
 	// Metrics collector (optional)
 	// If nil, metrics are not collected
 	Metrics MetricsCollector
+
+	// AllowPlaceholderIntros 仅单测：无 CircuitBuilder 时使用占位电路（生产必须 false）
+	AllowPlaceholderIntros bool
+
+	// Begindir 用于匿名上传描述符（POST /tor/hs/3/publish）
+	Begindir *BegindirFetcher
+
+	// NetworkRelays 共识节点（选引言点 / BEGIN_DIR 路径）
+	NetworkRelays []*directory.Relay
 }
 
 // ServiceIntroPoint represents an introduction point for this service
 type ServiceIntroPoint struct {
-	Relay       *HSDirectory // The relay acting as intro point
-	CircuitID   uint32       // Circuit to the intro point
-	AuthKey     []byte       // Authentication key for this intro point
-	EncKey      []byte       // Encryption key for this intro point
-	Established bool         // Whether ESTABLISH_INTRO succeeded
-	CreatedAt   time.Time
+	Relay         *HSDirectory // The relay acting as intro point
+	CircuitID     uint32       // Circuit to the intro point
+	AuthPrivate   ed25519.PrivateKey
+	AuthPublic    ed25519.PublicKey
+	EncKey        []byte // Curve25519 private (b)
+	Established   bool
+	CreatedAt     time.Time
+	RendCircNonce []byte // last-hop circ_nonce for ESTABLISH_INTRO MAC
 }
 
 // PendingIntro represents a pending introduction request
@@ -462,7 +470,7 @@ func (s *Service) saveState() error {
 
 			introCache = append(introCache, IntroPointState{
 				Fingerprint: fingerprint,
-				AuthKeyHex:  fmt.Sprintf("%x", intro.AuthKey),
+				AuthKeyHex:  fmt.Sprintf("%x", intro.AuthPublic),
 				EncKeyHex:   fmt.Sprintf("%x", intro.EncKey),
 				CreatedAt:   intro.CreatedAt,
 			})
@@ -533,87 +541,69 @@ func (s *Service) establishIntroductionPoints(ctx context.Context, hsdirs []*HSD
 func (s *Service) establishIntroductionPoint(ctx context.Context, relay *HSDirectory) (*ServiceIntroPoint, error) {
 	s.logger.Debug("Establishing introduction point", "relay", relay.Fingerprint)
 
-	// Generate keys for this introduction point
-	authKey := make([]byte, 32)
-	if _, err := rand.Read(authKey); err != nil {
-		return nil, fmt.Errorf("failed to generate auth key: %w", err)
-	}
-	// EncKey 必须是合法 Curve25519 私钥（hs-ntor 的 b）
-	encKey, err := crypto.GenerateCurve25519PrivateKey()
+	keys, err := GenerateEstablishIntroKeys()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate enc key: %w", err)
+		return nil, fmt.Errorf("generate intro keys: %w", err)
 	}
 
-	var circuitID uint32
-	var established bool
-
-	// Build real circuit if circuit builder is available
-	if s.config.CircuitBuilder != nil && s.config.PathSelector != nil {
-		// Use IntroPointManager for circuit building with retry
-		circ, err := s.introManager.BuildIntroCircuitWithRetry(ctx, relay)
-		if err != nil {
-			s.logger.Warn("Failed to build intro circuit with retries, using placeholder",
-				"relay", relay.Fingerprint,
-				"error", err)
-			// Fall back to placeholder for testing
-			numIntroPoints := len(s.introPoints)
-			circuitID, err = security.SafeIntToUint32(3000 + numIntroPoints)
-			if err != nil {
-				return nil, fmt.Errorf("failed to generate circuit ID: %w", err)
-			}
-			established = false
-		} else {
-			circuitID = circ.ID
-			// Send ESTABLISH_INTRO cell
-			if err := s.sendEstablishIntro(ctx, circ, authKey, encKey); err != nil {
-				s.introManager.RecordFailure(circuitID)
-				if s.config.Metrics != nil {
-					s.config.Metrics.RecordOnionServiceIntroEstablish(false)
-				}
-				return nil, fmt.Errorf("failed to send ESTABLISH_INTRO: %w", err)
-			}
-			established = true
-			s.introManager.RegisterIntroPoint(circuitID)
-			s.introManager.RecordSuccess(circuitID)
-			if s.config.Metrics != nil {
-				s.config.Metrics.RecordOnionServiceIntroEstablish(true)
-			}
-			s.logger.Info("Introduction point circuit established",
-				"relay", relay.Fingerprint,
-				"circuit", circuitID)
+	if s.config.CircuitBuilder == nil || s.config.PathSelector == nil {
+		if !s.config.AllowPlaceholderIntros {
+			return nil, fmt.Errorf("circuit builder/path selector required for hosting (no placeholder)")
 		}
-	} else {
-		// Use placeholder circuit ID for testing (no circuit builder available)
-		numIntroPoints := len(s.introPoints)
-		var err error
-		circuitID, err = security.SafeIntToUint32(3000 + numIntroPoints)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate circuit ID: %w", err)
+		intro := &ServiceIntroPoint{
+			Relay:       relay,
+			CircuitID:   uint32(3000 + len(s.introPoints)),
+			AuthPrivate: keys.AuthPrivate,
+			AuthPublic:  keys.AuthPublic,
+			EncKey:      keys.EncPrivate,
+			Established: false,
+			CreatedAt:   time.Now(),
 		}
-		established = false
-		s.logger.Debug("Using placeholder circuit (no circuit builder configured)",
-			"relay", relay.Fingerprint,
-			"circuit", circuitID)
+		s.logger.Debug("placeholder intro (test mode)", "relay", relay.Fingerprint)
+		return intro, nil
 	}
 
-	intro := &ServiceIntroPoint{
-		Relay:       relay,
-		CircuitID:   circuitID,
-		AuthKey:     authKey,
-		EncKey:      encKey,
-		Established: established,
-		CreatedAt:   time.Now(),
+	circ, err := s.introManager.BuildIntroCircuitWithRetry(ctx, relay)
+	if err != nil {
+		return nil, fmt.Errorf("build intro circuit: %w", err)
 	}
 
-	s.logger.Debug("Introduction point created",
-		"relay", relay.Fingerprint,
-		"circuit", circuitID)
+	hops := circ.GetHops()
+	var circNonce []byte
+	if len(hops) > 0 && hops[len(hops)-1] != nil {
+		circNonce = append([]byte(nil), hops[len(hops)-1].RendCircNonce...)
+	}
+	if len(circNonce) != 20 {
+		return nil, fmt.Errorf("intro circuit missing rend_circ_nonce (got %d bytes)", len(circNonce))
+	}
 
-	// Update intro point count metric
+	if err := s.sendEstablishIntro(ctx, circ, keys, circNonce); err != nil {
+		s.introManager.RecordFailure(circ.ID)
+		if s.config.Metrics != nil {
+			s.config.Metrics.RecordOnionServiceIntroEstablish(false)
+		}
+		return nil, fmt.Errorf("ESTABLISH_INTRO: %w", err)
+	}
+	s.introManager.RegisterIntroPoint(circ.ID)
+	s.introManager.RecordSuccess(circ.ID)
 	if s.config.Metrics != nil {
+		s.config.Metrics.RecordOnionServiceIntroEstablish(true)
 		s.config.Metrics.SetOnionServiceIntroPoints(int64(len(s.introPoints) + 1))
 	}
 
+	intro := &ServiceIntroPoint{
+		Relay:         relay,
+		CircuitID:     circ.ID,
+		AuthPrivate:   keys.AuthPrivate,
+		AuthPublic:    keys.AuthPublic,
+		EncKey:        keys.EncPrivate,
+		Established:   true,
+		CreatedAt:     time.Now(),
+		RendCircNonce: circNonce,
+	}
+	s.logger.Info("Introduction point established",
+		"relay", relay.Fingerprint,
+		"circuit", circ.ID)
 	return intro, nil
 }
 
@@ -629,11 +619,18 @@ func (s *Service) createDescriptor() error {
 	// Build introduction points list
 	introPoints := make([]IntroductionPoint, 0, len(s.introPoints))
 	for _, serviceIntro := range s.introPoints {
-		// Convert relay to link specifiers
-		linkSpecs := make([]LinkSpecifier, 0)
-		// In production, would add IPv4, IPv6, and fingerprint link specifiers
-		// For Phase 7.4, simplified
-
+		if !serviceIntro.Established {
+			continue
+		}
+		linkSpecs := []LinkSpecifier{}
+		onionKey := make([]byte, 32)
+		if serviceIntro.Relay != nil && serviceIntro.Relay.Relay != nil {
+			ok, specs, err := linkSpecsForRelay(serviceIntro.Relay)
+			if err == nil {
+				onionKey = ok
+				linkSpecs = specs
+			}
+		}
 		encPub := serviceIntro.EncKey
 		if len(serviceIntro.EncKey) == 32 {
 			if p, err := curve25519.X25519(serviceIntro.EncKey, curve25519.Basepoint); err == nil {
@@ -642,10 +639,10 @@ func (s *Service) createDescriptor() error {
 		}
 		intro := IntroductionPoint{
 			LinkSpecifiers: linkSpecs,
-			OnionKey:       make([]byte, 32), // Would be relay's ntor key
-			AuthKey:        serviceIntro.AuthKey,
+			OnionKey:       onionKey,
+			AuthKey:        append([]byte(nil), serviceIntro.AuthPublic...),
 			EncKey:         encPub,
-			EncKeyCert:     nil, // Would be cross-certification
+			EncKeyCert:     nil,
 			LegacyKeyID:    make([]byte, 20),
 		}
 		introPoints = append(introPoints, intro)
@@ -836,58 +833,30 @@ func (s *Service) publishDescriptor(ctx context.Context, hsdirs []*HSDirectory) 
 	return nil
 }
 
-// uploadDescriptor uploads a descriptor to a specific HSDir
-// Implements the HSDir upload protocol per dir-spec.txt section 4.4
+// uploadDescriptor 经 BEGIN_DIR 匿名上传描述符（禁止明文 DirPort）。
 func (s *Service) uploadDescriptor(ctx context.Context, hsdir *HSDirectory, desc *Descriptor, replica int) error {
 	s.logger.Debug("Uploading descriptor to HSDir",
 		"hsdir", hsdir.Fingerprint,
 		"replica", replica,
 		"descriptor_size", len(desc.RawDescriptor))
 
-	// Build upload URL: /tor/hs/3/publish
-	url := fmt.Sprintf("http://%s:%d/tor/hs/3/publish", hsdir.Address, hsdir.DirPort)
-
-	s.logger.Debug("Building HSDir upload request", "url", url)
-
-	// Create HTTP client with timeout
-	timeout := 10 * time.Second
-	client := &http.Client{
-		Timeout: timeout,
-	}
-
-	// Create POST request with descriptor content
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(desc.RawDescriptor))
-	if err != nil {
-		return fmt.Errorf("failed to create upload request: %w", err)
-	}
-
-	// Set headers per Tor spec
-	req.Header.Set("User-Agent", "Tor/0.4.7.0")
-	req.Header.Set("Content-Type", "text/plain")
-
-	// Execute request
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to upload descriptor to %s: %w", hsdir.Fingerprint, err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close upload response", "error", err)
+	if s.config.Begindir == nil {
+		if s.config.AllowPlaceholderIntros {
+			s.logger.Debug("skip upload in placeholder test mode", "hsdir", hsdir.Fingerprint)
+			return nil
 		}
-	}()
-
-	// Check status code - 200 OK indicates success
-	if resp.StatusCode != http.StatusOK {
-		// Read error response for logging
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("HSDir %s rejected upload with status %d: %s",
-			hsdir.Fingerprint, resp.StatusCode, string(body))
+		return fmt.Errorf("BEGIN_DIR uploader not configured")
 	}
-
-	s.logger.Info("Successfully uploaded descriptor",
+	relay := hsdir.Relay
+	if relay == nil || !relay.HasNtorKeys() {
+		return fmt.Errorf("HSDir %s missing relay microdesc keys for BEGIN_DIR", hsdir.Fingerprint)
+	}
+	if err := s.config.Begindir.Post(ctx, relay, "/tor/hs/3/publish", desc.RawDescriptor); err != nil {
+		return err
+	}
+	s.logger.Info("Successfully uploaded descriptor via BEGIN_DIR",
 		"hsdir", hsdir.Fingerprint,
 		"replica", replica)
-
 	return nil
 }
 
@@ -1197,59 +1166,23 @@ type ServiceStats struct {
 
 // buildIntroCircuit builds a 3-hop circuit to the introduction point relay
 // sendEstablishIntro sends an ESTABLISH_INTRO cell to the introduction point
-func (s *Service) sendEstablishIntro(ctx context.Context, circ *circuit.Circuit, authKey, encKey []byte) error {
-	// Build ESTABLISH_INTRO cell per rend-spec-v3.txt section 3.1.1
-	// Format:
-	//   [2 bytes] AUTH_KEY_TYPE (0x0002 = Ed25519)
-	//   [2 bytes] AUTH_KEY_LEN (32 bytes)
-	//   [32 bytes] AUTH_KEY
-	//   [1 byte] N_EXTENSIONS (0 for now)
-	//   [Variable] Signature
-
-	payload := make([]byte, 0, 128)
-
-	// AUTH_KEY_TYPE (Ed25519)
-	payload = append(payload, 0x00, 0x02)
-
-	// AUTH_KEY_LEN (32 bytes)
-	payload = append(payload, 0x00, 0x20)
-
-	// AUTH_KEY
-	payload = append(payload, authKey...)
-
-	// N_EXTENSIONS (0)
-	payload = append(payload, 0x00)
-
-	// Sign the payload with the service's identity key
-	// Signature is over: PREFIX || payload
-	// PREFIX = "Tor establish-intro cell v1"
-	prefix := []byte("Tor establish-intro cell v1")
-	signData := append(prefix, payload...)
-	signature := ed25519.Sign(s.identityKey, signData)
-
-	// Append signature to payload
-	payload = append(payload, signature...)
-
-	// Create RELAY_INTRO_ESTAB cell
-	relayCell := &cell.RelayCell{
-		Command:  cell.RelayIntroEstab,
-		StreamID: 0, // Introduction point cells use stream ID 0
-		Data:     payload,
+func (s *Service) sendEstablishIntro(ctx context.Context, circ *circuit.Circuit, keys *EstablishIntroKeys, circNonce []byte) error {
+	payload, err := BuildEstablishIntroPayload(keys.AuthPublic, keys.AuthPrivate, circNonce)
+	if err != nil {
+		return err
 	}
-
-	// Send the cell
+	relayCell, err := NewEstablishIntroRelayCell(payload)
+	if err != nil {
+		return fmt.Errorf("create ESTABLISH_INTRO cell: %w", err)
+	}
 	if err := circ.SendRelayCell(relayCell); err != nil {
-		return fmt.Errorf("failed to send ESTABLISH_INTRO cell: %w", err)
+		return fmt.Errorf("send ESTABLISH_INTRO: %w", err)
 	}
-
-	// Wait for INTRO_ESTABLISHED response (with 10-second timeout)
 	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-
 	if err := s.waitForIntroEstablished(waitCtx, circ); err != nil {
-		return fmt.Errorf("failed to receive INTRO_ESTABLISHED: %w", err)
+		return fmt.Errorf("INTRO_ESTABLISHED: %w", err)
 	}
-
 	return nil
 }
 

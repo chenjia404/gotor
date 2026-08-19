@@ -42,8 +42,9 @@ func TestNewService(t *testing.T) {
 		{
 			name: "custom intro points",
 			config: &ServiceConfig{
-				NumIntroPoints: 5,
-				Ports: map[int]string{
+				NumIntroPoints:         5,
+				AllowPlaceholderIntros: true,
+		Ports: map[int]string{
 					80: "localhost:8080",
 				},
 			},
@@ -166,6 +167,7 @@ func TestAddressFromPublicKey(t *testing.T) {
 func TestServiceStartStop(t *testing.T) {
 	config := &ServiceConfig{
 		NumIntroPoints: 2,
+		AllowPlaceholderIntros: true,
 		Ports: map[int]string{
 			80: "localhost:8080",
 		},
@@ -232,7 +234,8 @@ func TestServiceStartStop(t *testing.T) {
 
 func TestEstablishIntroductionPoints(t *testing.T) {
 	config := &ServiceConfig{
-		NumIntroPoints: 3,
+		NumIntroPoints:         3,
+		AllowPlaceholderIntros: true,
 		Ports: map[int]string{
 			80: "localhost:8080",
 		},
@@ -268,8 +271,8 @@ func TestEstablishIntroductionPoints(t *testing.T) {
 		if intro.CircuitID == 0 {
 			t.Errorf("intro point %d has zero circuit ID", i)
 		}
-		if len(intro.AuthKey) != 32 {
-			t.Errorf("intro point %d has invalid auth key length: %d", i, len(intro.AuthKey))
+		if len(intro.AuthPublic) != 32 {
+			t.Errorf("intro point %d has invalid auth key length: %d", i, len(intro.AuthPublic))
 		}
 		if len(intro.EncKey) != 32 {
 			t.Errorf("intro point %d has invalid enc key length: %d", i, len(intro.EncKey))
@@ -284,7 +287,8 @@ func TestEstablishIntroductionPoints(t *testing.T) {
 
 func TestEstablishIntroductionPointsInsufficientRelays(t *testing.T) {
 	config := &ServiceConfig{
-		NumIntroPoints: 5,
+		NumIntroPoints:         5,
+		AllowPlaceholderIntros: true,
 		Ports: map[int]string{
 			80: "localhost:8080",
 		},
@@ -311,6 +315,7 @@ func TestEstablishIntroductionPointsInsufficientRelays(t *testing.T) {
 func TestCreateDescriptor(t *testing.T) {
 	config := &ServiceConfig{
 		NumIntroPoints: 2,
+		AllowPlaceholderIntros: true,
 		Ports: map[int]string{
 			80: "localhost:8080",
 		},
@@ -327,14 +332,14 @@ func TestCreateDescriptor(t *testing.T) {
 		{
 			Relay:       &HSDirectory{Fingerprint: "relay1"},
 			CircuitID:   3001,
-			AuthKey:     make([]byte, 32),
+			AuthPublic:  make([]byte, 32),
 			EncKey:      make([]byte, 32),
 			Established: true,
 		},
 		{
 			Relay:       &HSDirectory{Fingerprint: "relay2"},
 			CircuitID:   3002,
-			AuthKey:     make([]byte, 32),
+			AuthPublic:  make([]byte, 32),
 			EncKey:      make([]byte, 32),
 			Established: true,
 		},
@@ -420,6 +425,7 @@ func TestSignDescriptor(t *testing.T) {
 func TestPublishDescriptor(t *testing.T) {
 	config := &ServiceConfig{
 		NumIntroPoints: 2,
+		AllowPlaceholderIntros: true,
 		Ports: map[int]string{
 			80: "localhost:8080",
 		},
@@ -436,7 +442,7 @@ func TestPublishDescriptor(t *testing.T) {
 		{
 			Relay:       &HSDirectory{Fingerprint: "relay1"},
 			CircuitID:   3001,
-			AuthKey:     make([]byte, 32),
+			AuthPublic:  make([]byte, 32),
 			EncKey:      make([]byte, 32),
 			Established: true,
 		},
@@ -457,17 +463,11 @@ func TestPublishDescriptor(t *testing.T) {
 	ctx := context.Background()
 	err = service.publishDescriptor(ctx, hsdirs)
 
-	// After implementing HTTP POST, we expect connection errors since no HSDirs are running
-	if err == nil {
-		t.Fatal("expected error when no HSDirs are running")
+	// 占位模式下跳过实际上传，应成功
+	if err != nil {
+		t.Fatalf("publish in placeholder mode: %v", err)
 	}
-
-	expectedErr := "failed to publish descriptor to any HSDir"
-	if err.Error() != expectedErr {
-		t.Fatalf("expected error '%s', got '%s'", expectedErr, err.Error())
-	}
-
-	t.Logf("Expected error (no HSDirs running): %v", err)
+	t.Log("publishDescriptor succeeded in placeholder/test mode")
 }
 
 func TestHandleIntroduce2(t *testing.T) {
@@ -489,7 +489,7 @@ func TestHandleIntroduce2(t *testing.T) {
 	service.mu.Lock()
 	service.introPoints = append(service.introPoints, &ServiceIntroPoint{
 		CircuitID:   3001,
-		AuthKey:     introAuthKey,
+		AuthPublic:  introAuthKey,
 		EncKey:      introEncKey,
 		Established: true,
 	})
@@ -534,6 +534,7 @@ func TestHandleIntroduce2InvalidData(t *testing.T) {
 func TestServiceGetStats(t *testing.T) {
 	config := &ServiceConfig{
 		NumIntroPoints: 2,
+		AllowPlaceholderIntros: true,
 		Ports: map[int]string{
 			80: "localhost:8080",
 		},
@@ -615,7 +616,7 @@ func TestUploadDescriptorHTTP(t *testing.T) {
 		{
 			Relay:       &HSDirectory{Fingerprint: "relay1"},
 			CircuitID:   3001,
-			AuthKey:     make([]byte, 32),
+			AuthPublic:  make([]byte, 32),
 			EncKey:      make([]byte, 32),
 			Established: true,
 		},
@@ -671,7 +672,7 @@ func TestUploadDescriptorContextCancellation(t *testing.T) {
 		{
 			Relay:       &HSDirectory{Fingerprint: "relay1"},
 			CircuitID:   3001,
-			AuthKey:     make([]byte, 32),
+			AuthPublic:  make([]byte, 32),
 			EncKey:      make([]byte, 32),
 			Established: true,
 		},

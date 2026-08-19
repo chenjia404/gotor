@@ -258,6 +258,7 @@ func TestHKDFNtor_ClientHandshakeUsesHKDF(t *testing.T) {
 		t.Fatalf("Server HKDF expand failed: %v", err)
 	}
 
+	expectedKeyMaterial = expectedKeyMaterial[:72]
 	if !bytes.Equal(keyMaterial, expectedKeyMaterial) {
 		t.Error("Client and server derived different key material")
 	}

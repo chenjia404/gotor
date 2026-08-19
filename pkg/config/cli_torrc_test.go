@@ -88,3 +88,41 @@ func TestIncludeTorrc(t *testing.T) {
 		t.Fatalf("ControlPort %d", cfg.ControlPort)
 	}
 }
+
+func TestParseCLI_LegacyFlagsOverrideTorrc(t *testing.T) {
+	dir := t.TempDir()
+	torrc := filepath.Join(dir, "torrc")
+	if err := os.WriteFile(torrc, []byte("SocksPort 9055\nControlPort 9056\nDataDirectory /tmp/from-torrc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ParseCLI([]string{"-f", torrc, "-socks-port", "9150", "-control-port", "9151", "-data-dir", "/tmp/from-cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Config.SocksPort != 9150 || res.Config.ControlPort != 9151 {
+		t.Fatalf("legacy flags must override torrc: socks=%d control=%d", res.Config.SocksPort, res.Config.ControlPort)
+	}
+	if res.Config.DataDirectory != "/tmp/from-cli" {
+		t.Fatalf("data-dir override: %s", res.Config.DataDirectory)
+	}
+}
+
+func TestParseCLI_HiddenServicePositional(t *testing.T) {
+	dir := t.TempDir()
+	hs := filepath.Join(dir, "hs")
+	res, err := ParseCLI([]string{
+		"SocksPort", "9070",
+		"HiddenServiceDir", hs,
+		"HiddenServicePort", "80", "127.0.0.1:8080",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Config.OnionServices) != 1 {
+		t.Fatalf("onion services: %d", len(res.Config.OnionServices))
+	}
+	osvc := res.Config.OnionServices[0]
+	if osvc.ServiceDir != hs || osvc.VirtualPort != 80 || osvc.TargetAddr != "127.0.0.1:8080" {
+		t.Fatalf("%+v", osvc)
+	}
+}

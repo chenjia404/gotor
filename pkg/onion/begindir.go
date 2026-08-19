@@ -98,6 +98,55 @@ func (f *BegindirFetcher) Fetch(ctx context.Context, relay *directory.Relay, htt
 	return body, nil
 }
 
+// Post 经匿名 3-hop BEGIN_DIR 向 HSDir POST 描述符（/tor/hs/3/publish）。
+func (f *BegindirFetcher) Post(ctx context.Context, relay *directory.Relay, httpPath string, body []byte) error {
+	if f == nil || f.builder == nil {
+		return fmt.Errorf("begindir fetcher not configured")
+	}
+	if relay == nil || !relay.HasNtorKeys() {
+		return fmt.Errorf("relay missing ntor keys for BEGIN_DIR POST")
+	}
+	if httpPath == "" || httpPath[0] != '/' {
+		return fmt.Errorf("path must start with /")
+	}
+	timeout := 90 * time.Second
+	if dl, ok := ctx.Deadline(); ok {
+		timeout = time.Until(dl)
+		if timeout < 30*time.Second {
+			timeout = 30 * time.Second
+		}
+	}
+	p, err := f.selectAnonPath(relay)
+	if err != nil {
+		return err
+	}
+	var circ *circuit.Circuit
+	var lastBuild error
+	for attempt := 0; attempt < 4; attempt++ {
+		if attempt > 0 {
+			p, err = f.selectAnonPath(relay)
+			if err != nil {
+				return err
+			}
+		}
+		circ, lastBuild = f.builder.BuildCircuit(ctx, p, timeout)
+		if lastBuild == nil {
+			break
+		}
+	}
+	if circ == nil {
+		return fmt.Errorf("build 3-hop for BEGIN_DIR POST: %w", lastBuild)
+	}
+	defer circ.Close()
+	host := fmt.Sprintf("%s:%d", relay.Address, relay.ORPort)
+	resp, err := circ.PostHTTPViaBeginDir(ctx, host, httpPath, body)
+	if err != nil {
+		return fmt.Errorf("BEGIN_DIR HTTP POST %s: %w", httpPath, err)
+	}
+	f.logger.Debug("BEGIN_DIR POST OK", "path", httpPath, "resp_bytes", len(resp))
+	return nil
+}
+
 func (f *BegindirFetcher) selectAnonPath(exit *directory.Relay) (*path.Path, error) {
 	if len(f.relays) == 0 {
 		return nil, fmt.Errorf("begindir: no consensus relays for anonymous path")

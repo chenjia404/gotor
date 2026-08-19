@@ -16,6 +16,7 @@ func TestServiceStatePersistence(t *testing.T) {
 
 	// Create a service with persistence
 	config := &ServiceConfig{
+		AllowPlaceholderIntros: true,
 		DataDirectory:      tempDir,
 		NumIntroPoints:     3,
 		DescriptorLifetime: 3 * time.Hour,
@@ -71,6 +72,7 @@ func TestServiceStateRevisionIncrement(t *testing.T) {
 	tempDir := t.TempDir()
 
 	config := &ServiceConfig{
+		AllowPlaceholderIntros: true,
 		DataDirectory:      tempDir,
 		NumIntroPoints:     3,
 		DescriptorLifetime: 3 * time.Hour,
@@ -128,6 +130,7 @@ func TestServiceStateIntroPointCache(t *testing.T) {
 	tempDir := t.TempDir()
 
 	config := &ServiceConfig{
+		AllowPlaceholderIntros: true,
 		DataDirectory:      tempDir,
 		NumIntroPoints:     3,
 		DescriptorLifetime: 3 * time.Hour,
@@ -151,7 +154,7 @@ func TestServiceStateIntroPointCache(t *testing.T) {
 				Fingerprint: "relay1fingerprint",
 			},
 			CircuitID:   1,
-			AuthKey:     authKey1,
+			AuthPublic:  authKey1,
 			EncKey:      encKey1,
 			Established: true,
 			CreatedAt:   time.Now().Add(-30 * time.Minute),
@@ -161,7 +164,7 @@ func TestServiceStateIntroPointCache(t *testing.T) {
 				Fingerprint: "relay2fingerprint",
 			},
 			CircuitID:   2,
-			AuthKey:     make([]byte, 32),
+			AuthPublic:  make([]byte, 32),
 			EncKey:      make([]byte, 32),
 			Established: false, // Not established, should not be cached
 			CreatedAt:   time.Now().Add(-10 * time.Minute),
@@ -202,6 +205,7 @@ func TestServiceStateIntroPointCache(t *testing.T) {
 func TestServiceStateNoPersistence(t *testing.T) {
 	// Create service without DataDirectory (no persistence)
 	config := &ServiceConfig{
+		AllowPlaceholderIntros: true,
 		NumIntroPoints:     3,
 		DescriptorLifetime: 3 * time.Hour,
 		Ports:              map[int]string{80: "localhost:8080"},
@@ -235,6 +239,7 @@ func TestServiceStateWithProvidedKey(t *testing.T) {
 
 	// Create service with provided key
 	config := &ServiceConfig{
+		AllowPlaceholderIntros: true,
 		PrivateKey:         privKey,
 		DataDirectory:      tempDir,
 		NumIntroPoints:     3,
@@ -262,6 +267,7 @@ func TestServiceStopSavesState(t *testing.T) {
 	tempDir := t.TempDir()
 
 	config := &ServiceConfig{
+		AllowPlaceholderIntros: true,
 		DataDirectory:      tempDir,
 		NumIntroPoints:     3,
 		DescriptorLifetime: 3 * time.Hour,
@@ -305,6 +311,7 @@ func TestServiceStateCreationTime(t *testing.T) {
 	tempDir := t.TempDir()
 
 	config := &ServiceConfig{
+		AllowPlaceholderIntros: true,
 		DataDirectory:      tempDir,
 		NumIntroPoints:     3,
 		DescriptorLifetime: 3 * time.Hour,

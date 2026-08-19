@@ -21,6 +21,20 @@ type CLIResult struct {
 	DefaultsTorrc   string
 }
 
+// legacyOverrides 在 torrc 加载后再应用，保证命令行优先于文件。
+type legacyOverrides struct {
+	socksPort   int
+	socksSet    bool
+	controlPort int
+	controlSet  bool
+	metricsPort int
+	metricsSet  bool
+	dataDir     string
+	dataDirSet  bool
+	logLevel    string
+	logLevelSet bool
+}
+
 // ParseCLI 解析类似 C Tor 的 argv。
 //
 // 支持：
@@ -28,11 +42,12 @@ type CLIResult struct {
 //   - --defaults-torrc PATH
 //   - --hash-password [PASSWORD]
 //   - --version / -version / -h / --help / --list-torrc-options
-//   - 遗留：-socks-port、-control-port、-data-dir、-log-level、-metrics-port
-//   - 其余位置参数：Key Value...（覆盖配置，与 C Tor 一致）
+//   - 遗留：-socks-port、-control-port、-data-dir、-log-level、-metrics-port（覆盖 torrc）
+//   - 其余位置参数：Key Value...（最后覆盖）
 func ParseCLI(args []string) (*CLIResult, error) {
 	res := &CLIResult{Config: DefaultConfig()}
 	var positional []string
+	var leg legacyOverrides
 
 	i := 0
 	for i < len(args) {
@@ -78,7 +93,7 @@ func ParseCLI(args []string) (*CLIResult, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid socks port: %w", err)
 			}
-			res.Config.SocksPort = p
+			leg.socksPort, leg.socksSet = p, true
 			i += 2
 		case a == "-control-port" || a == "--control-port":
 			if i+1 >= len(args) {
@@ -88,7 +103,7 @@ func ParseCLI(args []string) (*CLIResult, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid control port: %w", err)
 			}
-			res.Config.ControlPort = p
+			leg.controlPort, leg.controlSet = p, true
 			i += 2
 		case a == "-metrics-port" || a == "--metrics-port":
 			if i+1 >= len(args) {
@@ -98,20 +113,19 @@ func ParseCLI(args []string) (*CLIResult, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid metrics port: %w", err)
 			}
-			res.Config.MetricsPort = p
-			res.Config.EnableMetrics = true
+			leg.metricsPort, leg.metricsSet = p, true
 			i += 2
 		case a == "-data-dir" || a == "--data-dir":
 			if i+1 >= len(args) {
 				return nil, fmt.Errorf("%s requires a path", a)
 			}
-			res.Config.DataDirectory = args[i+1]
+			leg.dataDir, leg.dataDirSet = args[i+1], true
 			i += 2
 		case a == "-log-level" || a == "--log-level":
 			if i+1 >= len(args) {
 				return nil, fmt.Errorf("%s requires a level", a)
 			}
-			res.Config.LogLevel = strings.ToLower(args[i+1])
+			leg.logLevel, leg.logLevelSet = strings.ToLower(args[i+1]), true
 			i += 2
 		case strings.HasPrefix(a, "-") && !isTorrcKeyLookalike(a):
 			return nil, fmt.Errorf("unknown flag: %s", a)
@@ -125,7 +139,7 @@ func ParseCLI(args []string) (*CLIResult, error) {
 		return res, nil
 	}
 
-	// 加载 defaults → 主 torrc → 命令行 Key Value
+	// 加载 defaults → 主 torrc → 遗留 flag → 位置 Key Value（后者覆盖前者）
 	if res.DefaultsTorrc != "" {
 		if err := LoadFromFile(res.DefaultsTorrc, res.Config); err != nil {
 			return nil, fmt.Errorf("defaults-torrc: %w", err)
@@ -141,6 +155,7 @@ func ParseCLI(args []string) (*CLIResult, error) {
 			return nil, fmt.Errorf("load torrc %s: %w", cfgPath, err)
 		}
 	}
+	applyLegacyOverrides(res.Config, leg)
 
 	if err := applyPositionalOverrides(res.Config, positional); err != nil {
 		return nil, err
@@ -148,8 +163,26 @@ func ParseCLI(args []string) (*CLIResult, error) {
 	return res, nil
 }
 
+func applyLegacyOverrides(cfg *Config, leg legacyOverrides) {
+	if leg.socksSet {
+		cfg.SocksPort = leg.socksPort
+	}
+	if leg.controlSet {
+		cfg.ControlPort = leg.controlPort
+	}
+	if leg.metricsSet {
+		cfg.MetricsPort = leg.metricsPort
+		cfg.EnableMetrics = true
+	}
+	if leg.dataDirSet {
+		cfg.DataDirectory = leg.dataDir
+	}
+	if leg.logLevelSet {
+		cfg.LogLevel = leg.logLevel
+	}
+}
+
 func isTorrcKeyLookalike(a string) bool {
-	// C Tor 允许 -SocksPort 形式较少见；我们把单横线长选项留给遗留 flag。
 	return false
 }
 
@@ -171,38 +204,38 @@ func findDefaultTorrc() string {
 }
 
 func applyPositionalOverrides(cfg *Config, args []string) error {
+	st := &loadState{}
 	for i := 0; i < len(args); {
 		key := args[i]
 		if strings.HasPrefix(key, "-") {
 			return fmt.Errorf("unexpected argument: %s", key)
 		}
-		val := ""
-		if i+1 < len(args) && !looksLikeTorrcKey(args[i+1]) {
-			val = args[i+1]
-			i += 2
-		} else {
+		i++
+		var parts []string
+		for i < len(args) && !looksLikeTorrcKey(args[i]) && !strings.HasPrefix(args[i], "-") {
+			parts = append(parts, args[i])
 			i++
 		}
-		if err := processConfigOption(cfg, key, val, nil); err != nil {
+		val := strings.Join(parts, " ")
+		if err := processConfigOption(cfg, key, val, st); err != nil {
 			return fmt.Errorf("command-line %s: %w", key, err)
 		}
 	}
+	flushPendingHS(cfg, st)
 	return nil
 }
 
-// looksLikeTorrcKey：下一个 token 是否更像配置键（无空格的 CamelCase/已知模式）。
+// looksLikeTorrcKey：下一个 token 是否更像配置键。
 func looksLikeTorrcKey(s string) bool {
 	if s == "" || strings.HasPrefix(s, "-") {
 		return false
 	}
-	// 端口数字、路径、16: 哈希等视为 value
 	if _, err := strconv.Atoi(s); err == nil {
 		return false
 	}
 	if strings.Contains(s, "/") || strings.Contains(s, ":") || strings.Contains(s, ".") {
 		return false
 	}
-	// 纯字母开头的 CamelCase 更像下一键
 	if s[0] >= 'A' && s[0] <= 'Z' {
 		return true
 	}

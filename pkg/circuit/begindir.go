@@ -124,6 +124,67 @@ func (c *Circuit) FetchHTTPViaBeginDir(ctx context.Context, host, path string) (
 	return c.HTTPGetViaBeginDir(ctx, sid, host, path)
 }
 
+// HTTPPostViaBeginDir 经目录流发送 HTTP/1.0 POST 并读响应体。
+func (c *Circuit) HTTPPostViaBeginDir(ctx context.Context, streamID uint16, host, path string, body []byte) ([]byte, error) {
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	req := fmt.Sprintf("POST %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: Tor\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nAccept-Encoding: identity\r\n\r\n",
+		path, host, len(body))
+	payload := append([]byte(req), body...)
+	if err := c.WriteToStream(streamID, payload); err != nil {
+		_ = c.EndStream(streamID, 6)
+		return nil, fmt.Errorf("write HTTP POST: %w", err)
+	}
+
+	var raw bytes.Buffer
+	for {
+		select {
+		case <-ctx.Done():
+			_ = c.EndStream(streamID, 7)
+			return nil, ctx.Err()
+		default:
+		}
+		chunk, err := c.ReadFromStream(ctx, streamID)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			_ = c.EndStream(streamID, 1)
+			return nil, err
+		}
+		raw.Write(chunk)
+		bodyOut, done, err := tryCompleteHTTPBody(raw.Bytes())
+		if err != nil {
+			_ = c.EndStream(streamID, 1)
+			return nil, err
+		}
+		if done {
+			_ = c.EndStream(streamID, 6)
+			return bodyOut, nil
+		}
+		if raw.Len() > 8<<20 {
+			_ = c.EndStream(streamID, 1)
+			return nil, fmt.Errorf("directory response exceeds 8 MiB")
+		}
+	}
+	_ = c.EndStream(streamID, 6)
+	return parseHTTPResponseBody(raw.Bytes())
+}
+
+// PostHTTPViaBeginDir 打开目录流、POST、关闭。
+func (c *Circuit) PostHTTPViaBeginDir(ctx context.Context, host, path string, body []byte) ([]byte, error) {
+	sid, err := c.AllocateStreamID()
+	if err != nil {
+		return nil, err
+	}
+	defer c.ReleaseStreamID(sid)
+	if err := c.OpenDirStream(ctx, sid); err != nil {
+		return nil, err
+	}
+	return c.HTTPPostViaBeginDir(ctx, sid, host, path, body)
+}
+
 func tryCompleteHTTPBody(raw []byte) ([]byte, bool, error) {
 	headerEnd := bytes.Index(raw, []byte("\r\n\r\n"))
 	if headerEnd < 0 {

@@ -75,7 +75,8 @@ type NtorV3ClientState struct {
 	ID             []byte
 	Bx             [32]byte
 	msgMAC         []byte
-	keyMaterialLen int // 0 表示 72（tor1）；CGO 为 160
+	keyMaterialLen int    // 0 表示 72（tor1）；CGO 为 160
+	CircNonce      []byte // rend_circ_nonce，ESTABLISH_INTRO MAC 密钥
 }
 
 func ntorV3Encap(s []byte) []byte {
@@ -337,9 +338,13 @@ func NtorV3ProcessResponse(reply []byte, st *NtorV3ClientState, verification []b
 	if st.keyMaterialLen > 0 {
 		keyLen = st.keyMaterialLen
 	}
-	raw := ntorV3KDF(ntorV3TFinal, keySeed, NtorV3EncKeyLen+keyLen)
+	// C Tor：keys_out_len + DIGEST_LEN；末 20 字节为 rend_circ_nonce
+	raw := ntorV3KDF(ntorV3TFinal, keySeed, NtorV3EncKeyLen+keyLen+NtorCircNonceLen)
 	encKey := raw[:NtorV3EncKeyLen]
-	keyMaterial = append([]byte(nil), raw[NtorV3EncKeyLen:]...)
+	full := raw[NtorV3EncKeyLen:]
+	keyMaterial = append([]byte(nil), full[:keyLen]...)
+	// circ_nonce 暂存于 state，供 WithNonce 取用
+	st.CircNonce = append([]byte(nil), full[keyLen:keyLen+NtorCircNonceLen]...)
 	serverMsg, err = ntorV3AESCTR(encKey, encSM)
 	if err != nil {
 		return nil, nil, err

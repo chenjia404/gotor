@@ -55,6 +55,7 @@
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
 | Circuit padding (Padding=2) | WORKING | 协商+HS setup+直方图 DROP；**真实验收** `TestRealCircpadNegotiate`：PADDING_NEGOTIATE→PADDING_NEGOTIATED OK（middle Padding=2） |
 | Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB） |
+| Onion Service v3（托管） | PARTIAL | ESTABLISH_INTRO 按 rend-spec（AUTH_KEY_TYPE=1B、HANDSHAKE_AUTH、SIG）；ntor rend_circ_nonce；BEGIN_DIR 上传；torrc HiddenService* 接线。剩余：描述符 type8 致盲签/双层封装生产验收、INTRODUCE2 监听回路真网 |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
 | Control Protocol | WORKING | 客户端常用命令齐：GETINFO/SETCONF/SETEVENTS/SIGNAL/MAPADDRESS；事件 CIRC/STREAM/BW/…/NOTICE；SOCKS→STREAM |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
@@ -276,7 +277,7 @@
 
 | 项 | 原因 | 已知坑 |
 |----|------|--------|
-| Onion Service v3（托管） | 本轮聚焦客户端 | 客户端路径已 WORKING；服务端托管另开 |
+| 10 | Onion Service v3（托管） | PARTIAL | ESTABLISH_INTRO 格式与 circ_nonce MAC、禁止明文上传、Fast/Stable 选点、gotor torrc 接线已修；真网发布/接入仍待验收 |
 | Relay 服务端 | 本仓库目标是 client | `pkg/relay/circuit_handler.go` 可能把 Ed25519 当 ntor NODEID |
 | Bridge / PT 生产路径 | 非本轮 | 框架存在，UNVERIFIED |
 

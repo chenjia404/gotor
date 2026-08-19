@@ -78,6 +78,7 @@ func secretToKeyRFC2440(password string, salt []byte, indicator byte) []byte {
 	if len(input) == 0 {
 		return make([]byte, s2kDigestLen)
 	}
+	// #nosec G401 -- C Tor HashedControlPassword 强制 RFC2440 迭代加盐 SHA-1 S2K，非自选口令哈希
 	h := sha1.New() //nolint:gosec
 	written := 0
 	for written < count {

@@ -6,6 +6,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
@@ -87,6 +88,28 @@ func decryptHSDescLayer(blob, secretData, subcred []byte, revision uint64, strin
 	mac := blob[len(blob)-hsDescMACLen:]
 	encrypted := blob[hsDescSaltLen : len(blob)-hsDescMACLen]
 
+	secretKey, secretIV, macKey, err := hsDescDeriveKeys(secretData, subcred, revision, salt, stringConstant)
+	if err != nil {
+		return nil, err
+	}
+
+	expected := hsDescMAC(macKey, salt, encrypted)
+	if !crypto.ConstantTimeCompare(mac, expected) {
+		return nil, fmt.Errorf("layer MAC mismatch")
+	}
+
+	block, err := aes.NewCipher(secretKey)
+	if err != nil {
+		return nil, err
+	}
+	stream := cipher.NewCTR(block, secretIV)
+	plain := make([]byte, len(encrypted))
+	stream.XORKeyStream(plain, encrypted)
+	plain = bytes.TrimRight(plain, "\x00")
+	return plain, nil
+}
+
+func hsDescDeriveKeys(secretData, subcred []byte, revision uint64, salt []byte, stringConstant string) (secretKey, secretIV, macKey []byte, err error) {
 	secretInput := make([]byte, 0, len(secretData)+32+8)
 	secretInput = append(secretInput, secretData...)
 	secretInput = append(secretInput, subcred...)
@@ -101,25 +124,36 @@ func decryptHSDescLayer(blob, secretData, subcred []byte, revision uint64, strin
 
 	keys := make([]byte, hsDescKeyLen+hsDescIVLen+hsDescMACKeyLen)
 	sha3.ShakeSum256(keys, kdfIn)
-	secretKey := keys[:hsDescKeyLen]
-	secretIV := keys[hsDescKeyLen : hsDescKeyLen+hsDescIVLen]
-	macKey := keys[hsDescKeyLen+hsDescIVLen:]
+	return keys[:hsDescKeyLen], keys[hsDescKeyLen : hsDescKeyLen+hsDescIVLen], keys[hsDescKeyLen+hsDescIVLen:], nil
+}
 
-	expected := hsDescMAC(macKey, salt, encrypted)
-	if !crypto.ConstantTimeCompare(mac, expected) {
-		return nil, fmt.Errorf("layer MAC mismatch")
+// encryptHSDescLayer 加密一层 HS 描述符（盐 || CTR || MAC）。
+func encryptHSDescLayer(secretData, subcred []byte, revision uint64, stringConstant string, plain []byte) ([]byte, error) {
+	salt := make([]byte, hsDescSaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, err
 	}
-
+	padded := append([]byte{}, plain...)
+	for len(padded)%16 != 0 {
+		padded = append(padded, 0)
+	}
+	secretKey, secretIV, macKey, err := hsDescDeriveKeys(secretData, subcred, revision, salt, stringConstant)
+	if err != nil {
+		return nil, err
+	}
 	block, err := aes.NewCipher(secretKey)
 	if err != nil {
 		return nil, err
 	}
 	stream := cipher.NewCTR(block, secretIV)
-	plain := make([]byte, len(encrypted))
-	stream.XORKeyStream(plain, encrypted)
-	// 去掉 NUL padding
-	plain = bytes.TrimRight(plain, "\x00")
-	return plain, nil
+	enc := make([]byte, len(padded))
+	stream.XORKeyStream(enc, padded)
+	mac := hsDescMAC(macKey, salt, enc)
+	out := make([]byte, 0, hsDescSaltLen+len(enc)+hsDescMACLen)
+	out = append(out, salt...)
+	out = append(out, enc...)
+	out = append(out, mac...)
+	return out, nil
 }
 
 func hsDescMAC(macKey, salt, encrypted []byte) []byte {
