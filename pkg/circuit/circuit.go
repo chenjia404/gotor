@@ -70,13 +70,15 @@ type Circuit struct {
 	streamManager    interface{}          // Stream manager (interface{} to avoid circular import)
 	nextStreamID     uint16               // 本电路下一个可用 StreamID（跳过 0）
 	usedStreamIDs    map[uint16]struct{}  // 已占用的 StreamID（BEGIN 与 RESOLVE 共用）
-	// Flow control per tor-spec.txt §7.4
-	packageWindow  int      // Circuit-level package window (cells we can send)
-	deliverWindow  int      // Circuit-level deliver window (cells we can receive)
-	sendmeInc      int      // FlowCtrl=2 的 sendme_inc；0 表示经典窗口 100
-	sendmeReceived int      // Count of DATA cells received (for sending SENDME)
-	sendmeSent     int      // Count of SENDME cells sent
-	sendmeExpected [][]byte // 发出 DATA 时记下的 v1 digest FIFO，供对端 SENDME 校验
+	// Flow control per tor-spec.txt §7.4 / proposal 324
+	packageWindow  int             // 还能发多少 DATA（经典窗口，或 Vegas 的 cwnd-inflight）
+	deliverWindow  int             // Circuit-level deliver window (cells we can receive)
+	sendmeInc      int             // FlowCtrl=2 的 sendme_inc；0 表示经典窗口 100
+	sendmeReceived int             // Count of DATA cells received (for sending SENDME)
+	sendmeSent     int             // Count of SENDME cells sent
+	sendmeExpected []sendmePending // 发出 DATA 时记下的 v1 digest + 时间，供 SENDME / RTT
+	ccParams       CCParams        // 共识 CC 参数；EnableCongestionControl 时启用 Vegas
+	vegas          *vegasState     // 非 nil 表示本电路已协商 FlowCtrl=2
 	// SECURITY-001: Replay protection per tor-spec.txt
 	replayProtection *cell.ReplayProtection // Replay protection for cells
 	// AUDIT-MED-4 FIX: Reusable timer to avoid GC pressure from time.After
@@ -150,6 +152,7 @@ func NewCircuit(id uint32) *Circuit {
 		sendmeReceived:   0,    // No DATA cells received yet
 		sendmeSent:       0,    // No SENDME cells sent yet
 		sendmeExpected:   nil,
+		ccParams:         DefaultCCParams(),
 		replayProtection: cell.NewReplayProtection(), // SECURITY-001: Initialize replay protection
 		deliverTimer:     deliverTimer,               // AUDIT-MED-4 FIX: Reusable timer
 		destroyCh:        make(chan struct{}),
@@ -846,6 +849,15 @@ func (c *Circuit) verifyRelayCellDigest(payload []byte) (int, error) {
 func (c *Circuit) decrementPackageWindow() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.vegas != nil {
+		if c.vegas.inflight >= c.vegas.cwnd {
+			return fmt.Errorf("package window exhausted: cannot send more cells until SENDME received")
+		}
+		c.vegas.inflight++
+		c.packageWindow = c.vegas.packageWindow()
+		return nil
+	}
 
 	if c.packageWindow <= 0 {
 		return fmt.Errorf("package window exhausted: cannot send more cells until SENDME received")

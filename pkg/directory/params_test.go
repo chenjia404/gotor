@@ -274,3 +274,19 @@ func TestPaddingParamsDefaults(t *testing.T) {
 		t.Error("default PaddingDisabled should be false")
 	}
 }
+
+func TestLastConsensusParamsRoundTrip(t *testing.T) {
+	c := NewClient(nil)
+	if c.LastConsensusParams() != nil {
+		t.Fatal("no consensus yet → nil")
+	}
+	c.storeLastParams(map[string]int{"cc_cwnd_min": 124, "cc_vegas_alpha_exit": 186})
+	got := c.LastConsensusParams()
+	if got["cc_cwnd_min"] != 124 || got["cc_vegas_alpha_exit"] != 186 {
+		t.Fatalf("got %#v", got)
+	}
+	got["cc_cwnd_min"] = 1
+	if c.LastConsensusParams()["cc_cwnd_min"] != 124 {
+		t.Fatal("LastConsensusParams 必须返回副本")
+	}
+}

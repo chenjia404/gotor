@@ -31,10 +31,6 @@ const (
 	HandshakeTypeTAP HandshakeType = 0x0000
 )
 
-const (
-	defaultCCCwndInit = 186 // 与当前共识 cc_cwnd_init 默认一致
-)
-
 // Extension handles circuit extension operations
 type Extension struct {
 	circuit          *Circuit

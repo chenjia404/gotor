@@ -37,7 +37,7 @@ Relay 宣告 `Relay=4` 才接受 ntor-v3。`FlowCtrl=2` 才协商拥塞控制。
 ## gotor 行为
 
 - 默认：具备 Ed25519 + ntor onion key，且 `pr` 未禁止 `Relay=4` 时，CREATE2/EXTEND2 用 `0x0003`
-- `FlowCtrl=2` 时发送 `CC_FIELD_REQUEST`；收到 `sendme_inc` 后把电路窗口改为该增量（初始 cwnd=186）
+- `FlowCtrl=2` 时发送 `CC_FIELD_REQUEST`；收到 `sendme_inc` 后启用 TOR_VEGAS（初始 cwnd=`cc_cwnd_init`，C Tor 默认 124）
 - 未宣告 FlowCtrl=2 时不请求 CC，继续经典 SENDME v1（间隔 100）
 - 缺 Ed25519 或 `Relay<4` 时回退经典 ntor
 
