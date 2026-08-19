@@ -2630,6 +2630,23 @@ func (c *Client) CompleteRendezvous(ctx context.Context, rendezvousCircuitID uin
 		"key_material_len", len(keyMaterial),
 		"circuit_id", rendezvousCircuitID)
 
+	// 安装会合末跳加密（SHA3-256 + AES-256）
+	if installer, ok := c.circuitBuilder.(interface {
+		InstallHSHop(circuitID uint32, keyMaterial []byte) error
+	}); ok {
+		kmCopy := append([]byte(nil), keyMaterial...)
+		if err := installer.InstallHSHop(rendezvousCircuitID, kmCopy); err != nil {
+			c.RemoveRendezvousState(rendezvousCircuitID)
+			return fmt.Errorf("install HS hop: %w", err)
+		}
+	} else if adapter, ok := c.cellSender.(*CircuitAdapter); ok {
+		kmCopy := append([]byte(nil), keyMaterial...)
+		if err := adapter.InstallHSHop(rendezvousCircuitID, kmCopy); err != nil {
+			c.RemoveRendezvousState(rendezvousCircuitID)
+			return fmt.Errorf("install HS hop: %w", err)
+		}
+	}
+
 	c.RemoveRendezvousState(rendezvousCircuitID)
 	c.logger.Info("Rendezvous protocol completed successfully")
 	return nil

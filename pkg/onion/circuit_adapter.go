@@ -212,6 +212,23 @@ func (a *CircuitAdapter) ReceiveRelayCell(ctx context.Context, circuitID uint32,
 	return rc.Data, nil
 }
 
+// InstallHSHop 在会合电路末尾安装 hs-ntor 派生的加密层。
+func (a *CircuitAdapter) InstallHSHop(circuitID uint32, keyMaterial []byte) error {
+	circ := a.lookup(circuitID)
+	if circ == nil {
+		return fmt.Errorf("circuit %d not found", circuitID)
+	}
+	hop, err := circuit.NewHopFromHSKeyMaterial(keyMaterial)
+	if err != nil {
+		return err
+	}
+	if err := circ.AddHop(hop); err != nil {
+		return fmt.Errorf("add HS hop: %w", err)
+	}
+	a.logger.Info("Installed HS rendezvous crypto hop", "circuit_id", circuitID)
+	return nil
+}
+
 // GetCircuit 返回本地缓存的电路。
 func (a *CircuitAdapter) GetCircuit(id uint32) *circuit.Circuit {
 	return a.lookup(id)
