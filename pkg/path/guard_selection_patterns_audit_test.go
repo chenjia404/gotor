@@ -43,21 +43,21 @@ func TestGuardPersistenceAcrossRestarts(t *testing.T) {
 			Nickname:    "Guard1",
 			Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			Address:     "192.0.2.1:9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   1000000,
 		},
 		{
 			Nickname:    "Guard2",
 			Fingerprint: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
 			Address:     "192.0.2.2:9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   1000000,
 		},
 		{
 			Nickname:    "Guard3",
 			Fingerprint: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
 			Address:     "192.0.2.3:9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   1000000,
 		},
 	}
@@ -137,7 +137,7 @@ func TestGuardExpiryTiming(t *testing.T) {
 		Nickname:    "TestGuard",
 		Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	if err := gm.AddGuard(guard); err != nil {
@@ -178,7 +178,7 @@ func TestGuardConfirmationWorkflow(t *testing.T) {
 		Nickname:    "TestGuard",
 		Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	// Step 1: Add guard (should be unconfirmed)
@@ -309,21 +309,21 @@ func TestPersistentGuardPreference(t *testing.T) {
 			Nickname:    "Guard1",
 			Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			Address:     "192.0.2.1:9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   1000000,
 		},
 		{
 			Nickname:    "Guard2",
 			Fingerprint: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
 			Address:     "192.0.2.2:9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   1000000,
 		},
 		{
 			Nickname:    "Guard3",
 			Fingerprint: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
 			Address:     "192.0.2.3:9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   1000000,
 		},
 	}
@@ -388,7 +388,7 @@ func TestFamilyDiversityEnforcement(t *testing.T) {
 			Nickname:    "Guard1",
 			Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			Address:     "192.0.2.1:9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   1000000,
 			Family:      []string{"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}, // Related to Relay1
 		},
@@ -396,7 +396,7 @@ func TestFamilyDiversityEnforcement(t *testing.T) {
 			Nickname:    "Relay1",
 			Fingerprint: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
 			Address:     "10.0.1.1:9001",              // Different /16 subnet
-			Flags:       []string{"Running", "Valid"}, // Not Exit flag
+			Flags:       []string{"Running", "Valid", "Fast"}, // Not Exit flag
 			Bandwidth:   1000000,
 			Family:      []string{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}, // Related to Guard1
 		},
@@ -404,7 +404,7 @@ func TestFamilyDiversityEnforcement(t *testing.T) {
 			Nickname:    "Exit2",
 			Fingerprint: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
 			Address:     "172.16.1.1:9001", // Different /16 subnet
-			Flags:       []string{"Exit", "Running", "Valid"},
+			Flags:       []string{"Exit", "Running", "Valid", "Fast"},
 			Bandwidth:   1000000,
 			// No family relationship
 		},
@@ -412,7 +412,7 @@ func TestFamilyDiversityEnforcement(t *testing.T) {
 			Nickname:    "Exit3",
 			Fingerprint: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
 			Address:     "203.0.113.1:9001", // Different /16 subnet
-			Flags:       []string{"Exit", "Running", "Valid"},
+			Flags:       []string{"Exit", "Running", "Valid", "Fast"},
 			Bandwidth:   1000000,
 			// No family relationship
 		},
@@ -452,21 +452,21 @@ func TestSubnetDiversityEnforcement(t *testing.T) {
 			Nickname:    "Guard1",
 			Fingerprint: "AAAA",
 			Address:     "192.168.1.1:9001", // 192.168/16 subnet
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   1000000,
 		},
 		{
 			Nickname:    "Exit1",
 			Fingerprint: "BBBB",
 			Address:     "192.168.2.1:9001", // Same 192.168/16 subnet
-			Flags:       []string{"Exit", "Running", "Valid"},
+			Flags:       []string{"Exit", "Running", "Valid", "Fast"},
 			Bandwidth:   1000000,
 		},
 		{
 			Nickname:    "Exit2",
 			Fingerprint: "CCCC",
 			Address:     "10.0.1.1:9001", // Different 10.0/16 subnet
-			Flags:       []string{"Exit", "Running", "Valid"},
+			Flags:       []string{"Exit", "Running", "Valid", "Fast"},
 			Bandwidth:   1000000,
 		},
 	}
@@ -604,14 +604,14 @@ func TestBiasDetectorFiltersBiasedGuards(t *testing.T) {
 			Nickname:    "BiasedGuard",
 			Fingerprint: "AAAA",
 			Address:     "192.0.2.1:9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   1000000,
 		},
 		{
 			Nickname:    "GoodGuard",
 			Fingerprint: "BBBB",
 			Address:     "192.0.2.2:9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   1000000,
 		},
 	}
@@ -664,19 +664,19 @@ func TestGuardRotationNotTriggeredOnNormalUse(t *testing.T) {
 			Nickname:    "Guard1",
 			Fingerprint: "AAAA",
 			Address:     "192.0.2.1:9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		},
 		{
 			Nickname:    "Guard2",
 			Fingerprint: "BBBB",
 			Address:     "192.0.2.2:9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		},
 		{
 			Nickname:    "Guard3",
 			Fingerprint: "CCCC",
 			Address:     "192.0.2.3:9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		},
 	}
 
@@ -735,9 +735,9 @@ func TestThreadSafeConcurrentGuardAccess(t *testing.T) {
 	}
 
 	guards := []*directory.Relay{
-		{Nickname: "G1", Fingerprint: "AAAA", Address: "192.0.2.1:9001", Flags: []string{"Guard", "Running", "Valid", "Stable"}},
-		{Nickname: "G2", Fingerprint: "BBBB", Address: "192.0.2.2:9001", Flags: []string{"Guard", "Running", "Valid", "Stable"}},
-		{Nickname: "G3", Fingerprint: "CCCC", Address: "192.0.2.3:9001", Flags: []string{"Guard", "Running", "Valid", "Stable"}},
+		{Nickname: "G1", Fingerprint: "AAAA", Address: "192.0.2.1:9001", Flags: []string{"Guard", "Running", "Valid", "Stable", "Fast"}},
+		{Nickname: "G2", Fingerprint: "BBBB", Address: "192.0.2.2:9001", Flags: []string{"Guard", "Running", "Valid", "Stable", "Fast"}},
+		{Nickname: "G3", Fingerprint: "CCCC", Address: "192.0.2.3:9001", Flags: []string{"Guard", "Running", "Valid", "Stable", "Fast"}},
 	}
 
 	// Add initial guards
@@ -800,7 +800,7 @@ func TestGuardSetSizeLimitEnforcement(t *testing.T) {
 			Nickname:    fmt.Sprintf("Guard%d", i+1),
 			Fingerprint: fmt.Sprintf("%040d", i),
 			Address:     fmt.Sprintf("192.0.2.%d:9001", i+1),
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		}
 
 		if err := gm.AddGuard(guard); err != nil {
@@ -869,13 +869,13 @@ func TestGuardExpiryCleanup(t *testing.T) {
 		Nickname:    "RecentGuard",
 		Fingerprint: "AAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 	oldGuard := &directory.Relay{
 		Nickname:    "OldGuard",
 		Fingerprint: "BBBB",
 		Address:     "192.0.2.2:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	if err := gm.AddGuard(recentGuard); err != nil {

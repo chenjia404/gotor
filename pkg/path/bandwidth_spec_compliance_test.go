@@ -326,7 +326,7 @@ func TestBandwidthWeightingSpecCompliance_GuardSelection(t *testing.T) {
 			Nickname:    "LowBWGuard",
 			Address:     "192.168.1.1",
 			ORPort:      9001,
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   100,
 			Fingerprint: "0000000000000000000000000000000000000001",
 		},
@@ -334,7 +334,7 @@ func TestBandwidthWeightingSpecCompliance_GuardSelection(t *testing.T) {
 			Nickname:    "HighBWGuard",
 			Address:     "192.168.1.2",
 			ORPort:      9001,
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   10000, // 100x higher bandwidth
 			Fingerprint: "0000000000000000000000000000000000000002",
 		},
@@ -439,7 +439,7 @@ func TestBandwidthWeightingSpecCompliance_MiddleSelection(t *testing.T) {
 		Nickname:    "Guard",
 		Address:     "10.0.1.1",
 		ORPort:      9001,
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		Bandwidth:   1000,
 		Fingerprint: "0000000000000000000000000000000000000010",
 	}

@@ -310,6 +310,43 @@ func TestRelayIsRunning(t *testing.T) {
 	}
 }
 
+func TestRelayUsableFlags(t *testing.T) {
+	fastGuard := &Relay{Flags: []string{"Guard", "Running", "Valid", "Stable", "Fast"}}
+	if !fastGuard.IsFast() || !fastGuard.UsableAsGuard() || !fastGuard.UsableAsCircuitHop() {
+		t.Fatal("完整 Fast Guard 必须可用")
+	}
+	if !fastGuard.UsableAsExit() {
+		t.Fatal("无 MiddleOnly/BadExit 的 Fast hop 可作为 exit 候选（策略另判）")
+	}
+
+	middleOnly := &Relay{Flags: []string{"Guard", "Exit", "Running", "Valid", "Stable", "Fast", "MiddleOnly"}}
+	if !middleOnly.IsMiddleOnly() {
+		t.Fatal("应识别 MiddleOnly")
+	}
+	if middleOnly.UsableAsGuard() || middleOnly.UsableAsExit() {
+		t.Fatal("MiddleOnly 不得作 Guard/Exit")
+	}
+	if !middleOnly.UsableAsCircuitHop() {
+		t.Fatal("MiddleOnly 仍可作电路 hop（middle）")
+	}
+
+	bad := &Relay{Flags: []string{"Exit", "Running", "Valid", "Fast", "BadExit"}}
+	if !bad.IsBadExit() || bad.UsableAsExit() {
+		t.Fatal("BadExit 不得作 Exit")
+	}
+
+	slow := &Relay{Flags: []string{"Guard", "Running", "Valid", "Stable"}}
+	if slow.IsFast() || slow.UsableAsCircuitHop() || slow.UsableAsGuard() {
+		t.Fatal("缺 Fast 不得用于非测试电路")
+	}
+
+	var nilRelay *Relay
+	if nilRelay.IsFast() || nilRelay.IsMiddleOnly() || nilRelay.IsBadExit() ||
+		nilRelay.UsableAsCircuitHop() || nilRelay.UsableAsGuard() || nilRelay.UsableAsExit() {
+		t.Fatal("nil relay 必须安全且不可用")
+	}
+}
+
 func TestRelayIsValid(t *testing.T) {
 	relay := &Relay{Flags: []string{"Valid", "Running"}}
 	if !relay.IsValid() {
