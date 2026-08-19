@@ -54,7 +54,7 @@
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
 | Circuit padding (Padding=2) | PARTIAL | 协商+状态表+`CircpadController`+`SendRelayCellToHop`；共识 `circpad_*` 已注入 client；onion 自动触发待 Phase 4 |
-| Onion Service v3 | PARTIAL | hs-ntor WORKING（Appendix G.1）；RENDEZVOUS1 + INTRODUCE2 解密已用 hs-ntor。客户端访问 / HSDir 真实验收仍缺 |
+| Onion Service v3 | PARTIAL | hs-ntor WORKING；INTRODUCE1/2 加解密 + RENDEZVOUS1 已对齐。HSDir 真实验收 / 端到端访问仍缺 |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
 | Control Protocol | PARTIAL | 框架存在，非本轮验收 |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
