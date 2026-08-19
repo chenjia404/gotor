@@ -639,22 +639,34 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 
 		case "introduction-point":
 			// Start of introduction point block
+			// 格式：introduction-point SP base64(link-specifiers)
+			if inIntroPointBlock && currentIntroPoint != nil {
+				desc.IntroPoints = append(desc.IntroPoints, *currentIntroPoint)
+			}
 			inIntroPointBlock = true
 			currentIntroPoint = &IntroductionPoint{
 				LinkSpecifiers: make([]LinkSpecifier, 0),
+			}
+			if args != "" {
+				if linkData, err := decodeDescriptorBase64(args); err == nil {
+					parseLinkSpecifiers(linkData, currentIntroPoint)
+				}
 			}
 
 		case "onion-key":
 			// Introduction point onion key
 			if inIntroPointBlock && currentIntroPoint != nil {
-				// Next line should be the key type
-				if i+1 < len(lines) {
+				// 同行：onion-key ntor <b64>
+				keyParts := strings.Fields(args)
+				if len(keyParts) >= 2 && keyParts[0] == "ntor" {
+					if decoded, err := decodeDescriptorBase64(keyParts[1]); err == nil {
+						currentIntroPoint.OnionKey = decoded
+					}
+				} else if i+1 < len(lines) {
 					keyType := strings.TrimSpace(string(lines[i+1]))
 					if strings.HasPrefix(keyType, "ntor ") {
-						// Key is base64 encoded
 						keyData := strings.TrimPrefix(keyType, "ntor ")
-						decoded, err := base64.StdEncoding.DecodeString(keyData)
-						if err == nil {
+						if decoded, err := decodeDescriptorBase64(keyData); err == nil {
 							currentIntroPoint.OnionKey = decoded
 						}
 					}
@@ -662,14 +674,11 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 			}
 
 		case "auth-key":
-			// Introduction point authentication key
+			// auth-key 后跟 ED25519 CERT；提取 certified_key
 			if inIntroPointBlock && currentIntroPoint != nil {
-				// Key data follows
-				if i+1 < len(lines) {
-					keyData := strings.TrimSpace(string(lines[i+1]))
-					decoded, err := base64.StdEncoding.DecodeString(keyData)
-					if err == nil {
-						currentIntroPoint.AuthKey = decoded
+				if cert := extractFollowingEd25519Cert(lines, i+1); len(cert) > 0 {
+					if parsed, err := parseCertificate(cert); err == nil && len(parsed.SigningKey) == 32 {
+						currentIntroPoint.AuthKey = parsed.SigningKey
 					}
 				}
 			}
@@ -677,10 +686,9 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 		case "enc-key":
 			// Introduction point encryption key
 			if inIntroPointBlock && currentIntroPoint != nil {
-				// Key type and data
 				keyParts := strings.Fields(args)
 				if len(keyParts) >= 2 && keyParts[0] == "ntor" {
-					decoded, err := base64.StdEncoding.DecodeString(keyParts[1])
+					decoded, err := decodeDescriptorBase64(keyParts[1])
 					if err == nil {
 						currentIntroPoint.EncKey = decoded
 					}
@@ -758,6 +766,37 @@ func decodeDescriptorBase64(s string) ([]byte, error) {
 	return nil, fmt.Errorf("invalid base64")
 }
 
+// extractFollowingEd25519Cert 从 lines[start:] 提取 PEM 风格 ED25519 CERT 正文并解码。
+func extractFollowingEd25519Cert(lines [][]byte, start int) []byte {
+	certLines := make([]string, 0)
+	inCert := false
+	for j := start; j < len(lines); j++ {
+		line := strings.TrimSpace(string(lines[j]))
+		if strings.HasPrefix(line, "-----BEGIN") {
+			inCert = true
+			continue
+		}
+		if strings.HasPrefix(line, "-----END") {
+			break
+		}
+		if inCert && line != "" {
+			certLines = append(certLines, line)
+		}
+		// 非证书块且已遇到其他关键词则停止
+		if !inCert && line != "" && !strings.HasPrefix(line, "-----") {
+			break
+		}
+	}
+	if len(certLines) == 0 {
+		return nil
+	}
+	b, err := decodeDescriptorBase64(strings.Join(certLines, ""))
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
 
 
 // deriveDescriptorKeys derives keys for descriptor encryption/decryption
@@ -814,11 +853,16 @@ func parseDecryptedLayer(data []byte) (*Descriptor, error) {
 			currentIntroPoint = &IntroductionPoint{
 				LinkSpecifiers: make([]LinkSpecifier, 0),
 			}
+			if args != "" {
+				if linkData, err := decodeDescriptorBase64(args); err == nil {
+					parseLinkSpecifiers(linkData, currentIntroPoint)
+				}
+			}
 
 		case "link-specifiers":
 			// Link specifiers are base64-encoded
 			if inIntroPointBlock && currentIntroPoint != nil && args != "" {
-				linkData, err := base64.StdEncoding.DecodeString(args)
+				linkData, err := decodeDescriptorBase64(args)
 				if err == nil {
 					parseLinkSpecifiers(linkData, currentIntroPoint)
 				}
@@ -827,11 +871,16 @@ func parseDecryptedLayer(data []byte) (*Descriptor, error) {
 		case "onion-key":
 			// Introduction point onion key (ntor)
 			if inIntroPointBlock && currentIntroPoint != nil {
-				if i+1 < len(lines) {
+				keyParts := strings.Fields(args)
+				if len(keyParts) >= 2 && keyParts[0] == "ntor" {
+					if decoded, err := decodeDescriptorBase64(keyParts[1]); err == nil && len(decoded) == 32 {
+						currentIntroPoint.OnionKey = decoded
+					}
+				} else if i+1 < len(lines) {
 					keyLine := strings.TrimSpace(string(lines[i+1]))
 					if strings.HasPrefix(keyLine, "ntor ") {
 						keyData := strings.TrimPrefix(keyLine, "ntor ")
-						decoded, err := base64.StdEncoding.DecodeString(keyData)
+						decoded, err := decodeDescriptorBase64(keyData)
 						if err == nil && len(decoded) == 32 {
 							currentIntroPoint.OnionKey = decoded
 						}
@@ -840,13 +889,11 @@ func parseDecryptedLayer(data []byte) (*Descriptor, error) {
 			}
 
 		case "auth-key":
-			// Introduction point authentication key
+			// Introduction point authentication key（ED25519 CERT）
 			if inIntroPointBlock && currentIntroPoint != nil {
-				if i+1 < len(lines) {
-					keyData := strings.TrimSpace(string(lines[i+1]))
-					decoded, err := base64.StdEncoding.DecodeString(keyData)
-					if err == nil && len(decoded) == 32 {
-						currentIntroPoint.AuthKey = decoded
+				if cert := extractFollowingEd25519Cert(lines, i+1); len(cert) > 0 {
+					if parsed, err := parseCertificate(cert); err == nil && len(parsed.SigningKey) == 32 {
+						currentIntroPoint.AuthKey = parsed.SigningKey
 					}
 				}
 			}
@@ -856,7 +903,7 @@ func parseDecryptedLayer(data []byte) (*Descriptor, error) {
 			if inIntroPointBlock && currentIntroPoint != nil {
 				keyParts := strings.Fields(args)
 				if len(keyParts) >= 2 && keyParts[0] == "ntor" {
-					decoded, err := base64.StdEncoding.DecodeString(keyParts[1])
+					decoded, err := decodeDescriptorBase64(keyParts[1])
 					if err == nil && len(decoded) == 32 {
 						currentIntroPoint.EncKey = decoded
 					}

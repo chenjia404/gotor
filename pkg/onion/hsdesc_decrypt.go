@@ -70,14 +70,10 @@ func DecryptDescriptor(descriptor *Descriptor, address *Address, timePeriod uint
 
 	out := *descriptor
 	out.IntroPoints = nil
-	parsed, err := ParseDescriptor(append([]byte("hs-descriptor 3\n"), innerPlain...))
-	if err != nil {
-		// 内层常无 hs-descriptor 头，直接解析引言点块
-		out.IntroPoints = parseIntroPointsFromPlaintext(innerPlain)
-	} else {
+	parsed, err := parseDecryptedLayer(innerPlain)
+	if err == nil && parsed != nil && len(parsed.IntroPoints) > 0 {
 		out.IntroPoints = parsed.IntroPoints
-	}
-	if len(out.IntroPoints) == 0 {
+	} else {
 		out.IntroPoints = parseIntroPointsFromPlaintext(innerPlain)
 	}
 	return &out, nil
