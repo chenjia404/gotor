@@ -456,7 +456,7 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 
 - **状态**：PARTIAL（CLI / torrc / DataDirectory / 启动接线已落地并有离线单测；**未**用真实 C Tor 脚本/发行包装验收，故不标 WORKING）
 - **已做**：
-  - `DefaultCLIConfig()`：9050/9051、`~/.tor`（Windows `%APPDATA%\tor`）；**不改** `DefaultConfig()` 库行为
+  - `DefaultCLIConfig()`：SocksPort=9050、**ControlPort=0**、`~/.tor`（Windows `%APPDATA%\tor`）；开启控制口则默认 Cookie；**不改** `DefaultConfig()` 库行为
   - CLI：`-f`/`--torrc-file`/`-f -`、`--allow-missing-torrc`（仅文件不存在）、`--defaults-torrc`、`--verify-config`、`--dump-config`、`--quiet`/`--hush`、`--list-*`、`--list-fingerprint`（不自动写钥）、`--keygen`、`--service` 明确未实现、`--dbg-*` 忽略
   - `--version` 输出 `Tor version 0.4.9.11 (gotor).`
   - torrc：CacheDirectory、PidFile、RunAsDaemon、ClientOnly、DisableNetwork、HTTPTunnelPort、DNSPort、ControlSocket、SocksPort `auto`/`0`/`unix:`、ControlPort `0`、MapAddress、Automap*、SafeSocks/TestSocks、padding、FallbackDir、AvoidDiskWrites、`%include` 通配/目录、引号路径

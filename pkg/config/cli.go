@@ -218,6 +218,7 @@ func ParseCLIWithStdin(args []string, stdin io.Reader) (*CLIResult, error) {
 	} else if res.Hush && (res.Config.LogLevel == "debug" || res.Config.LogLevel == "info") {
 		res.Config.LogLevel = "warn"
 	}
+	res.Config.EnsureControlAuth()
 	return res, nil
 }
 
@@ -366,6 +367,7 @@ func KnownTorrcOptions() []string {
 		"MapAddress", "AutomapHostsOnResolve", "AutomapHostsSuffixes",
 		"VirtualAddrNetworkIPv4", "VirtualAddrNetworkIPv6",
 		"ClientOnionAuthDir", "SafeSocks", "TestSocks", "ClientRejectInternalAddresses",
+		"UnixSocksGroupWritable",
 		"CircuitPadding", "ReducedCircuitPadding", "ConnectionPadding",
 		"SocksTimeout", "FallbackDir", "UseDefaultFallbackDirs", "AvoidDiskWrites",
 		"TransPort", "NATDPort",

@@ -32,6 +32,7 @@ type Server struct {
 	cookieAuth   bool
 	cookieFile   string
 	cookieBytes  []byte
+	requireAuth  bool // CLI：无认证方式时拒绝空 AUTHENTICATE
 
 	// Connection management
 	conns   map[net.Conn]*connection
@@ -60,6 +61,9 @@ type AuthOptions struct {
 	HashedControlPassword string // 16:...
 	CookieAuthentication  bool
 	CookieAuthFile        string
+	// RequireAuth 为 true 时，无 cookie/口令不得接受空 AUTHENTICATE（CLI drop-in）。
+	// 库 NewServer / DefaultConfig 保持 false。
+	RequireAuth bool
 }
 
 // authRateLimiter tracks authentication attempts per IP
@@ -131,6 +135,7 @@ func NewServerWithAuth(address string, clientGetter ClientInfoGetter, auth AuthO
 		hashedPass:   auth.HashedControlPassword,
 		cookieAuth:   auth.CookieAuthentication,
 		cookieFile:   auth.CookieAuthFile,
+		requireAuth:  auth.RequireAuth,
 		conns:        make(map[net.Conn]*connection),
 		dispatcher:   NewEventDispatcher(),
 		authAttempts: make(map[string]*authRateLimiter),
@@ -452,6 +457,11 @@ func (s *Server) handleMapAddress(conn *connection, args []string) {
 func (s *Server) handleAuthenticate(conn *connection, args []string) {
 	needAuth := s.password != "" || s.hashedPass != "" || s.cookieAuth
 	if !needAuth {
+		if s.requireAuth {
+			conn.writeReply(515, "Authentication required")
+			s.logger.Warn("拒绝空 AUTHENTICATE：控制口已监听但未配置认证", "remote", conn.conn.RemoteAddr())
+			return
+		}
 		conn.mu.Lock()
 		conn.authenticated = true
 		conn.mu.Unlock()

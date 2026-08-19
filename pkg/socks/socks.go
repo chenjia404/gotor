@@ -92,6 +92,8 @@ type Config struct {
 	IsolateClientPort   bool                   // Isolate by client port
 	// Network 为 "unix" 时 Listen unix socket；Address 为路径。
 	Network string
+	// UnixGroupWritable 为 true 时 unix socket 权限 0660，否则 0600。
+	UnixGroupWritable bool
 	// SafeSocks 拒绝以 IP 字面量为目标的 CONNECT（要求主机名）。
 	SafeSocks bool
 	// TestSocks 记录目标是否为 IP 字面量（便于发现 DNS 泄漏测试）。
@@ -445,6 +447,16 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	listener, err := net.Listen(network, s.address)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
+	}
+	if network == "unix" {
+		mode := os.FileMode(0o600)
+		if s.config != nil && s.config.UnixGroupWritable {
+			mode = 0o660
+		}
+		if err := os.Chmod(s.address, mode); err != nil {
+			_ = listener.Close()
+			return fmt.Errorf("chmod socks unix socket: %w", err)
+		}
 	}
 
 	// Use mutex to protect listener assignment

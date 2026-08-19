@@ -12,8 +12,14 @@ import (
 func TestDefaultCLIConfigDoesNotChangeLibraryDefaults(t *testing.T) {
 	lib := DefaultConfig()
 	cli := DefaultCLIConfig()
-	if cli.SocksPort != 9050 || cli.ControlPort != 9051 {
-		t.Fatalf("cli ports %d %d", cli.SocksPort, cli.ControlPort)
+	if cli.SocksPort != 9050 || cli.ControlPort != 0 {
+		t.Fatalf("cli ports socks=%d control=%d（C Tor 默认不开放 ControlPort）", cli.SocksPort, cli.ControlPort)
+	}
+	if cli.AllowUnauthenticatedControl {
+		t.Fatal("CLI 不得默认允许无认证控制口")
+	}
+	if lib.AllowUnauthenticatedControl == false {
+		t.Fatal("库 DefaultConfig 应保留无认证放行以兼容测试")
 	}
 	if runtime.GOOS == "windows" {
 		if !strings.Contains(strings.ToLower(cli.DataDirectory), "tor") {
@@ -31,6 +37,25 @@ func TestDefaultCLIConfigDoesNotChangeLibraryDefaults(t *testing.T) {
 	}
 	if strings.Contains(lib.DataDirectory, "go-tor") == strings.HasSuffix(cli.DataDirectory, ".tor") {
 		// ok: 不同约定
+	}
+}
+
+func TestCLIControlPortEnablesCookie(t *testing.T) {
+	cfg := DefaultCLIConfig()
+	if cfg.ControlPort != 0 || cfg.CookieAuthentication {
+		t.Fatalf("默认 ControlPort=%d cookie=%v", cfg.ControlPort, cfg.CookieAuthentication)
+	}
+	cfg.ControlPort = 9051
+	cfg.EnsureControlAuth()
+	if !cfg.CookieAuthentication {
+		t.Fatal("设置 ControlPort 后应默认启用 CookieAuthentication")
+	}
+	res, err := ParseCLI([]string{"ControlPort", "9051"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Config.ControlPort != 9051 || !res.Config.CookieAuthentication {
+		t.Fatalf("ParseCLI ControlPort 后 cookie=%v port=%d", res.Config.CookieAuthentication, res.Config.ControlPort)
 	}
 }
 

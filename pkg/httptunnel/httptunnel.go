@@ -71,6 +71,12 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if s.network == "unix" {
+		if err := os.Chmod(s.address, 0o600); err != nil {
+			_ = ln.Close()
+			return fmt.Errorf("chmod httptunnel unix socket: %w", err)
+		}
+	}
 	s.mu.Lock()
 	s.ln = ln
 	s.mu.Unlock()

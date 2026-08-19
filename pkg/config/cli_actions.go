@@ -58,6 +58,17 @@ func (c *Config) ControlEnabled() bool {
 	return c != nil && (c.ControlPort > 0 || c.ControlSocket != "")
 }
 
+// EnsureControlAuth 在 CLI 路径上：只要控制口会监听且尚无认证，就启用 CookieAuthentication。
+// 库 DefaultConfig()（AllowUnauthenticatedControl=true）不改动。
+func (c *Config) EnsureControlAuth() {
+	if c == nil || !c.ControlEnabled() || c.AllowUnauthenticatedControl {
+		return
+	}
+	if !c.CookieAuthentication && c.ControlPassword == "" && c.HashedControlPassword == "" {
+		c.CookieAuthentication = true
+	}
+}
+
 // EffectiveCacheDirectory 返回 CacheDirectory，空则回退 DataDirectory。
 func (c *Config) EffectiveCacheDirectory() string {
 	if c == nil {

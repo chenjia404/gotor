@@ -36,14 +36,16 @@ gotor --version                   # Tor version 0.4.9.11 (gotor).
 ### 库 API 与二进制默认不同
 
 `DefaultConfig()`（库）行为不变：自动选空闲端口、`~/.config/go-tor`。
-`ParseCLI` 使用 `DefaultCLIConfig()`：SocksPort=9050、ControlPort=9051、DataDirectory=`~/.tor`（Windows: `%APPDATA%\tor`）、CacheDirectory 默认等于 DataDirectory。
+`ParseCLI` 使用 `DefaultCLIConfig()`：SocksPort=9050、**ControlPort=0（默认不开放控制口，对齐 C Tor 0.4.9）**、DataDirectory=`~/.tor`（Windows: `%APPDATA%\tor`）、CacheDirectory 默认等于 DataDirectory。
+
+要开控制口请显式写 `ControlPort 9051`（或 `ControlSocket`）。只要控制口会监听，gotor 会**默认启用 CookieAuthentication** 并写入 `DataDirectory/control_auth_cookie`（0600）；可与 `HashedControlPassword` 并存。CLI 路径**不接受**无认证的空 `AUTHENTICATE`。
 
 ## 已识别并尽量生效的 torrc 键
 
 | 键 | 行为 |
 |----|------|
-| SocksPort [addr:]port \| auto \| 0 \| unix:/path [Isolate*] | 0=关闭；auto=选空闲端口；unix socket 启动前删除陈旧文件 |
-| ControlPort / ControlSocket | 0 且无 socket 则**不监听**（已修旧 bug）；unix socket `chmod 0600`；无认证时自动启用 CookieAuthentication |
+| SocksPort [addr:]port \| auto \| 0 \| unix:/path [Isolate*] | 0=关闭；auto=选空闲端口；unix socket 启动前删除陈旧文件，listen 后 `chmod 0600`（仅 `UnixSocksGroupWritable 1` 时 0660） |
+| ControlPort / ControlSocket | **默认 0 不监听**；显式开启后默认 CookieAuthentication + `control_auth_cookie` 0600；unix socket `chmod 0600` |
 | DataDirectory / CacheDirectory | 状态与目录缓存 |
 | PidFile | 启动写、停止删 |
 | RunAsDaemon | Unix re-exec；Windows 警告 |

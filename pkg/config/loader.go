@@ -258,6 +258,9 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 	case "ClientOnionAuthDir":
 		cfg.ClientOnionAuthDir = value
 
+	case "UnixSocksGroupWritable":
+		cfg.UnixSocksGroupWritable = parseBool(value)
+
 	case "SafeSocks":
 		cfg.SafeSocks = parseBool(value)
 

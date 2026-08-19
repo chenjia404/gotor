@@ -20,24 +20,28 @@ type Config struct {
 	ControlListenAddr string // Control 绑定地址（默认 127.0.0.1；兼容 ControlPort addr:port）
 	ControlPassword   string // 明文控制口令（非 C Tor 标准；优先于空哈希时使用）
 	// HashedControlPassword 为 C Tor 标准 `16:...` 哈希；与 CookieAuthentication 可并存
-	HashedControlPassword         string
-	CookieAuthentication          bool   // 启用 control_auth_cookie
-	CookieAuthFile                string // 可选 cookie 路径；空则 DataDirectory/control_auth_cookie
-	DataDirectory                 string // Directory for persistent state
-	CacheDirectory                string // 目录缓存（共识/microdesc）；空则等于 DataDirectory
-	PidFile                       string // 启动写 PID、停止删除
-	RunAsDaemon                   bool   // Unix 后台化；Windows 仅警告
-	ClientOnly                    bool   // 禁止作为中继/出口运行
-	DisableNetwork                bool   // 起监听但不拉共识/不建电路
-	HTTPTunnelPort                int    // HTTP CONNECT 隧道端口（0=关闭）
-	HTTPTunnelListenAddr          string // HTTPTunnelPort 绑定地址
-	DNSPort                       int    // UDP DNS 端口（0=关闭）
-	DNSPortListenAddr             string // DNSPort 绑定地址
-	ControlSocket                 string // Control 的 unix socket 路径
-	SocksUnixPath                 string // SocksPort unix:/path
-	ClientUseIPv4                 bool   // 是否使用 IPv4 连接 OR
-	ClientUseIPv6                 bool   // 是否使用 IPv6 连接 OR
-	ClientPreferIPv6ORPort        bool   // 优先 IPv6 ORPort
+	HashedControlPassword  string
+	CookieAuthentication   bool   // 启用 control_auth_cookie
+	CookieAuthFile         string // 可选 cookie 路径；空则 DataDirectory/control_auth_cookie
+	DataDirectory          string // Directory for persistent state
+	CacheDirectory         string // 目录缓存（共识/microdesc）；空则等于 DataDirectory
+	PidFile                string // 启动写 PID、停止删除
+	RunAsDaemon            bool   // Unix 后台化；Windows 仅警告
+	ClientOnly             bool   // 禁止作为中继/出口运行
+	DisableNetwork         bool   // 起监听但不拉共识/不建电路
+	HTTPTunnelPort         int    // HTTP CONNECT 隧道端口（0=关闭）
+	HTTPTunnelListenAddr   string // HTTPTunnelPort 绑定地址
+	DNSPort                int    // UDP DNS 端口（0=关闭）
+	DNSPortListenAddr      string // DNSPort 绑定地址
+	ControlSocket          string // Control 的 unix socket 路径
+	SocksUnixPath          string // SocksPort unix:/path
+	UnixSocksGroupWritable bool   // unix SOCKS 用 0660；默认 false 即 0600
+	// AllowUnauthenticatedControl 允许无 cookie/口令时接受空 AUTHENTICATE。
+	// 仅库 DefaultConfig() 为 true；CLI / DefaultCLIConfig 必须为 false。
+	AllowUnauthenticatedControl   bool
+	ClientUseIPv4                 bool // 是否使用 IPv4 连接 OR
+	ClientUseIPv6                 bool // 是否使用 IPv6 连接 OR
+	ClientPreferIPv6ORPort        bool // 优先 IPv6 ORPort
 	MapAddress                    []MapAddressEntry
 	AutomapHostsOnResolve         bool
 	AutomapHostsSuffixes          []string
@@ -256,57 +260,58 @@ func DefaultConfig() *Config {
 	}
 
 	return &Config{
-		SocksPort:               socksPort,
-		SocksListenAddr:         "127.0.0.1",
-		ControlPort:             controlPort,
-		ControlListenAddr:       "127.0.0.1",
-		ControlPassword:         "", // No authentication by default
-		HashedControlPassword:   "",
-		CookieAuthentication:    false,
-		CookieAuthFile:          "",
-		DataDirectory:           dataDir,
-		CacheDirectory:          "",
-		ClientUseIPv4:           true,
-		ClientUseIPv6:           true,
-		ClientPreferIPv6ORPort:  false,
-		UseDefaultFallbackDirs:  true,
-		ConnectionPadding:       "auto",
-		VirtualAddrNetworkIPv4:  "127.192.0.0/10",
-		VirtualAddrNetworkIPv6:  "[FE80::]/10",
-		AutomapHostsSuffixes:    []string{".onion", ".exit"},
-		CircuitBuildTimeout:     60 * time.Second,
-		MaxCircuitDirtiness:     10 * time.Minute,
-		NewCircuitPeriod:        30 * time.Second,
-		NumEntryGuards:          3,
-		UseEntryGuards:          true,
-		UseBridges:              false,
-		BridgeAddresses:         []string{},
-		ExcludeNodes:            []string{},
-		ExcludeExitNodes:        []string{},
-		ExitNodes:               []string{},
-		EntryNodes:              []string{},
-		StrictNodes:             false,
-		ConnLimit:               1000,
-		DormantTimeout:          24 * time.Hour,
-		ORPort:                  0,
-		ORListenAddr:            "0.0.0.0",
-		Nickname:                "",
-		ContactInfo:             "",
-		RelayAddress:            "",
-		ExitRelay:               false,
-		PublishServerDescriptor: true,
-		AssumeReachable:         false,
-		RelayBandwidthRate:      0,
-		RelayBandwidthBurst:     0,
-		ExitPolicyLines:         nil,
-		IPv6Exit:                false,
-		ReduceExitPolicy:        false,
-		OnionServices:           []OnionServiceConfig{},
-		ClientTransports:        []ClientTransportConfig{},
-		ServerTransports:        []ServerTransportConfig{},
-		TransportProxy:          "",
-		LogLevel:                "info",
-		LogFile:                 "",
+		SocksPort:                   socksPort,
+		SocksListenAddr:             "127.0.0.1",
+		ControlPort:                 controlPort,
+		ControlListenAddr:           "127.0.0.1",
+		ControlPassword:             "", // No authentication by default
+		HashedControlPassword:       "",
+		CookieAuthentication:        false,
+		CookieAuthFile:              "",
+		AllowUnauthenticatedControl: true, // 库路径：兼容既有无认证测试
+		DataDirectory:               dataDir,
+		CacheDirectory:              "",
+		ClientUseIPv4:               true,
+		ClientUseIPv6:               true,
+		ClientPreferIPv6ORPort:      false,
+		UseDefaultFallbackDirs:      true,
+		ConnectionPadding:           "auto",
+		VirtualAddrNetworkIPv4:      "127.192.0.0/10",
+		VirtualAddrNetworkIPv6:      "[FE80::]/10",
+		AutomapHostsSuffixes:        []string{".onion", ".exit"},
+		CircuitBuildTimeout:         60 * time.Second,
+		MaxCircuitDirtiness:         10 * time.Minute,
+		NewCircuitPeriod:            30 * time.Second,
+		NumEntryGuards:              3,
+		UseEntryGuards:              true,
+		UseBridges:                  false,
+		BridgeAddresses:             []string{},
+		ExcludeNodes:                []string{},
+		ExcludeExitNodes:            []string{},
+		ExitNodes:                   []string{},
+		EntryNodes:                  []string{},
+		StrictNodes:                 false,
+		ConnLimit:                   1000,
+		DormantTimeout:              24 * time.Hour,
+		ORPort:                      0,
+		ORListenAddr:                "0.0.0.0",
+		Nickname:                    "",
+		ContactInfo:                 "",
+		RelayAddress:                "",
+		ExitRelay:                   false,
+		PublishServerDescriptor:     true,
+		AssumeReachable:             false,
+		RelayBandwidthRate:          0,
+		RelayBandwidthBurst:         0,
+		ExitPolicyLines:             nil,
+		IPv6Exit:                    false,
+		ReduceExitPolicy:            false,
+		OnionServices:               []OnionServiceConfig{},
+		ClientTransports:            []ClientTransportConfig{},
+		ServerTransports:            []ServerTransportConfig{},
+		TransportProxy:              "",
+		LogLevel:                    "info",
+		LogFile:                     "",
 		// Monitoring defaults (Phase 9.1)
 		MetricsPort:   0,     // Disabled by default
 		EnableMetrics: false, // Disabled by default
@@ -645,14 +650,15 @@ func (c *Config) Clone() *Config {
 	return &clone
 }
 
-// DefaultCLIConfig 给 ParseCLI / gotor 二进制使用，对齐 C Tor 默认：
-// SocksPort=9050、ControlPort=9051，不自动抢下一个空闲端口；
+// DefaultCLIConfig 给 ParseCLI / gotor 二进制使用，对齐 C Tor 0.4.9：
+// SocksPort=9050、ControlPort=0（默认不开放控制口），不自动抢下一个空闲端口；
 // DataDirectory 为 ~/.tor（Windows: %APPDATA%\tor）；CacheDirectory 默认等于 DataDirectory。
 // 不得替代 DefaultConfig()：库测试依赖自动选端口与 ~/.config/go-tor。
 func DefaultCLIConfig() *Config {
 	cfg := DefaultConfig()
 	cfg.SocksPort = 9050
-	cfg.ControlPort = 9051
+	cfg.ControlPort = 0
+	cfg.AllowUnauthenticatedControl = false
 	cfg.DataDirectory = defaultTorDataDir()
 	if cfg.CacheDirectory == "" {
 		cfg.CacheDirectory = cfg.DataDirectory

@@ -154,6 +154,7 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 	if cfg.SocksUnixPath != "" {
 		socksAddr = cfg.SocksUnixPath
 		socksConfig.Network = "unix"
+		socksConfig.UnixGroupWritable = cfg.UnixSocksGroupWritable
 	}
 	socksServer := socks.NewServerWithConfig(socksAddr, circuitMgr, log, socksConfig)
 
@@ -193,17 +194,13 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 	if ip := net.ParseIP(controlHost); ip != nil && !ip.IsLoopback() && cfg.ControlPort > 0 {
 		log.Warn("ControlPort 绑定非回环地址，必须启用 Cookie 或口令认证", "addr", controlAddr)
 	}
-	// Unix 控制口在常见 umask 下可能被其他用户连接。无认证时启用 Cookie，对齐现代 C Tor。
-	if cfg.ControlSocket != "" && !cfg.CookieAuthentication &&
-		cfg.ControlPassword == "" && cfg.HashedControlPassword == "" {
-		cfg.CookieAuthentication = true
-		log.Info("ControlSocket 未配置认证，已启用 CookieAuthentication")
-	}
+	cfg.EnsureControlAuth()
 	auth := control.AuthOptions{
 		Password:              cfg.ControlPassword,
 		HashedControlPassword: cfg.HashedControlPassword,
 		CookieAuthentication:  cfg.CookieAuthentication,
 		CookieAuthFile:        cfg.CookieAuthFile,
+		RequireAuth:           !cfg.AllowUnauthenticatedControl,
 	}
 	if auth.CookieAuthFile == "" && cfg.CookieAuthentication && cfg.DataDirectory != "" {
 		auth.CookieAuthFile = filepath.Join(cfg.DataDirectory, "control_auth_cookie")
