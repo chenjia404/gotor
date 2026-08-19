@@ -15,6 +15,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/client"
 	"github.com/opd-ai/go-tor/pkg/config"
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/relay"
 )
 
 var (
@@ -106,6 +107,24 @@ func main() {
 
 func run(ctx context.Context, cfg *config.Config, log *logger.Logger) error {
 	log.Info("starting gotor", "version", version, "build_time", buildTime)
+
+	var relaySrv *relay.Server
+	if cfg.ORPort > 0 {
+		var err error
+		relaySrv, err = relay.NewServerFromConfig(cfg, log)
+		if err != nil {
+			return fmt.Errorf("create relay: %w", err)
+		}
+		if err := relaySrv.Start(ctx); err != nil {
+			return fmt.Errorf("start relay ORPort: %w", err)
+		}
+		log.Info("relay OR listening",
+			"port", cfg.ORPort,
+			"nickname", cfg.Nickname,
+			"fingerprint", relaySrv.Fingerprint())
+		defer func() { _ = relaySrv.Stop() }()
+	}
+
 	torClient, err := client.New(cfg, log)
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
@@ -158,5 +177,6 @@ func printHelp() {
   gotor -f /etc/tor/torrc
   gotor SocksPort 9150 ControlPort 9151
   gotor --hash-password mysecret
+  gotor ORPort 9001 Nickname gotorRelay ExitRelay 0
 `)
 }

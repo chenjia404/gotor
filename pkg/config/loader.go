@@ -239,6 +239,43 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 	case "TransportProxy":
 		cfg.TransportProxy = value
 
+	case "ORPort":
+		return parseORPort(cfg, value)
+
+	case "Nickname":
+		cfg.Nickname = value
+
+	case "ContactInfo":
+		cfg.ContactInfo = value
+
+	case "Address":
+		cfg.RelayAddress = value
+
+	case "ExitRelay":
+		cfg.ExitRelay = parseBool(value)
+
+	case "PublishServerDescriptor":
+		// CSV；含 0/false/none 视为关闭
+		v := strings.ToLower(strings.TrimSpace(value))
+		cfg.PublishServerDescriptor = !(v == "0" || v == "false" || v == "no" || v == "none" || v == "")
+
+	case "AssumeReachable":
+		cfg.AssumeReachable = parseBool(value)
+
+	case "RelayBandwidthRate", "BandwidthRate":
+		n, err := parseByteRate(value)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", key, err)
+		}
+		cfg.RelayBandwidthRate = n
+
+	case "RelayBandwidthBurst", "BandwidthBurst":
+		n, err := parseByteRate(value)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", key, err)
+		}
+		cfg.RelayBandwidthBurst = n
+
 	case "HiddenServiceDir":
 		if st == nil {
 			st = &loadState{}
@@ -360,6 +397,76 @@ func parseSocksListenAddress(cfg *Config, value string) error {
 		return fmt.Errorf("empty SocksListenAddress")
 	}
 	return parseSocksPort(cfg, fields[0])
+}
+
+// parseORPort 支持：9001 | 0.0.0.0:9001 | [::<]:9001
+func parseORPort(cfg *Config, value string) error {
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return fmt.Errorf("empty ORPort")
+	}
+	addrPort := fields[0]
+	if strings.Contains(addrPort, ":") {
+		host, portStr, err := splitHostPortLoose(addrPort)
+		if err != nil {
+			return fmt.Errorf("invalid ORPort: %w", err)
+		}
+		cfg.ORListenAddr = host
+		p, err := strconv.Atoi(portStr)
+		if err != nil {
+			return fmt.Errorf("invalid ORPort port: %s", portStr)
+		}
+		cfg.ORPort = p
+		return nil
+	}
+	p, err := strconv.Atoi(addrPort)
+	if err != nil {
+		return fmt.Errorf("invalid ORPort: %s", addrPort)
+	}
+	cfg.ORPort = p
+	return nil
+}
+
+// parseByteRate 解析 "1 MB" / "1048576" / "1MB" 为字节/秒。
+func parseByteRate(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	fields := strings.Fields(value)
+	numStr := fields[0]
+	unit := ""
+	if len(fields) >= 2 {
+		unit = strings.ToUpper(fields[1])
+	} else {
+		// 1MB 粘连
+		for i, c := range numStr {
+			if c < '0' || c > '9' {
+				if i == 0 {
+					break
+				}
+				unit = strings.ToUpper(numStr[i:])
+				numStr = numStr[:i]
+				break
+			}
+		}
+	}
+	n, err := strconv.ParseInt(numStr, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	switch unit {
+	case "", "B", "BYTES":
+		return n, nil
+	case "KB", "KBYTES":
+		return n * 1024, nil
+	case "MB", "MBYTES":
+		return n * 1024 * 1024, nil
+	case "GB", "GBYTES":
+		return n * 1024 * 1024 * 1024, nil
+	default:
+		return 0, fmt.Errorf("unknown unit %q", unit)
+	}
 }
 
 func splitHostPortLoose(s string) (host, port string, err error) {

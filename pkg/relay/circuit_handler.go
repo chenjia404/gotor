@@ -106,33 +106,46 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 
 	h.logger.Debug("CREATE2 handshake", "type", htype, "len", hlen)
 
-	// Only support ntor (type 0x0002)
-	if htype != 0x0002 {
-		h.logger.Warn("Unsupported handshake type", "type", htype)
-		return h.sendDestroyCell(conn, c.CircID, cell.DestroyReasonProtocol)
-	}
-
 	if len(c.Payload) < 4+int(hlen) {
 		h.logger.Warn("CREATE2 payload incomplete", "expected", 4+hlen, "got", len(c.Payload))
 		return h.sendDestroyCell(conn, c.CircID, cell.DestroyReasonProtocol)
 	}
-
 	handshakeData := c.Payload[4 : 4+hlen]
 
-	// Validate handshake data length for ntor (84 bytes)
-	if len(handshakeData) != 84 {
-		h.logger.Warn("Invalid ntor handshake length", "len", len(handshakeData))
+	var response, keyMaterial []byte
+	var err error
+	switch htype {
+	case 0x0002: // classic ntor
+		if len(handshakeData) != 84 {
+			h.logger.Warn("Invalid ntor handshake length", "len", len(handshakeData))
+			return h.sendDestroyCell(conn, c.CircID, cell.DestroyReasonProtocol)
+		}
+		response, keyMaterial, err = crypto.NtorServerHandshake(
+			handshakeData,
+			h.keys.NtorOnionKey,
+			h.keys.RSANodeID(),
+		)
+	case 0x0003: // ntor-v3
+		if len(handshakeData) < crypto.NtorV3FixedClientLen {
+			h.logger.Warn("Invalid ntor-v3 handshake length", "len", len(handshakeData))
+			return h.sendDestroyCell(conn, c.CircID, cell.DestroyReasonProtocol)
+		}
+		sm := crypto.EncodeNtorV3Extensions([]crypto.NtorV3Extension{
+			{Type: crypto.NtorV3ExtCCResponse, Data: []byte{31}},
+		})
+		response, keyMaterial, err = crypto.NtorV3ServerHandshake(
+			handshakeData,
+			h.keys.Ed25519Public,
+			h.keys.NtorOnionKey,
+			crypto.NtorV3CircuitVerification,
+			sm,
+		)
+	default:
+		h.logger.Warn("Unsupported handshake type", "type", htype)
 		return h.sendDestroyCell(conn, c.CircID, cell.DestroyReasonProtocol)
 	}
-
-	// Perform server-side ntor handshake
-	response, keyMaterial, err := crypto.NtorServerHandshake(
-		handshakeData,
-		h.keys.NtorOnionKey,
-		h.keys.RSANodeID(),
-	)
 	if err != nil {
-		h.logger.Error("Ntor handshake failed", "error", err)
+		h.logger.Error("Handshake failed", "type", htype, "error", err)
 		return h.sendDestroyCell(conn, c.CircID, cell.DestroyReasonInternal)
 	}
 
@@ -153,6 +166,7 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 
 	h.logger.Info("Circuit created",
 		"circuit_id", c.CircID,
+		"handshake", htype,
 		"key_material_len", len(keyMaterial))
 
 	// Send CREATED2 response
