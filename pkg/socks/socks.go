@@ -154,6 +154,9 @@ type Server struct {
 	rateLimiter      *ratelimit.RateLimiter      // Global connection rate limiter
 	perClientLimiter *ratelimit.KeyedRateLimiter // Per-client rate limiter
 	metrics          *metrics.Metrics            // Optional metrics for recording rate limit events
+
+	circpadCfg    circuit.CircpadConfig
+	circpadCfgSet bool
 }
 
 // NewServer creates a new SOCKS5 proxy server
@@ -199,7 +202,7 @@ func NewServerWithConfig(address string, circuitMgr *circuit.Manager, log *logge
 		}
 	}
 
-	return &Server{
+	srv := &Server{
 		address:           address,
 		circuitMgr:        circuitMgr,
 		streamMgr:         stream.NewManager(log),
@@ -213,6 +216,40 @@ func NewServerWithConfig(address string, circuitMgr *circuit.Manager, log *logge
 		rateLimiter:       rateLimiter,
 		perClientLimiter:  perClientLimiter,
 	}
+	srv.wireOnionCircpad()
+	return srv
+}
+
+// wireOnionCircpad 在 INTRODUCE1 后尝试启动 Padding=2 HS setup 机。
+func (s *Server) wireOnionCircpad() {
+	if s.onionClient == nil || s.circuitMgr == nil {
+		return
+	}
+	s.onionClient.AfterIntroduce1 = func(ctx context.Context, introCircuitID uint32) error {
+		circ, err := s.circuitMgr.GetCircuit(introCircuitID)
+		if err != nil || circ == nil {
+			return fmt.Errorf("intro circuit %d not found: %w", introCircuitID, err)
+		}
+		cfg := circuit.CircpadConfig{}
+		s.mu.Lock()
+		if s.circpadCfgSet {
+			cfg = s.circpadCfg
+		}
+		s.mu.Unlock()
+		if cfg.Disabled {
+			return nil
+		}
+		return circ.StartHSSetupPadding(circuit.HSSetupIntro, true, cfg)
+	}
+}
+
+// SetCircpadConfig 注入共识 circpad_*（由 Tor client 在拉共识后调用）。
+func (s *Server) SetCircpadConfig(cfg circuit.CircpadConfig) {
+	s.mu.Lock()
+	s.circpadCfg = cfg
+	s.circpadCfgSet = true
+	s.mu.Unlock()
+	s.wireOnionCircpad()
 }
 
 // buildIsolationPolicy creates an isolation policy from SOCKS server config.

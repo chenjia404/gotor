@@ -347,6 +347,9 @@ type Client struct {
 	rendezvousState map[uint32]*RendezvousState // AUDIT-006: Track ephemeral keys per circuit
 	rendezvousMu    sync.Mutex                  // Protects rendezvousState map
 	authStore       *ClientAuthStore            // Client authorization credentials for private onion services
+	// AfterIntroduce1 在 INTRODUCE1 发送成功后调用（用于 Padding=2 HS setup 机）。
+	// introCircuitID 为引言点电路；失败只记日志，不中断连接。
+	AfterIntroduce1 func(ctx context.Context, introCircuitID uint32) error
 }
 
 // NewClient creates a new onion service client
@@ -1554,6 +1557,34 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 		}
 	}
 
+	// 负责 HSDir 常无 DirPort。回退：尝试列表中所有开放 HTTP DirPort 的缓存。
+	for _, hsdir := range hsdirs {
+		if hsdir == nil || hsdir.DirPort <= 0 {
+			continue
+		}
+		desc, err := h.fetchFromHSDir(ctx, hsdir, descriptorID, -1)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		desc.Address = addr
+		desc.BlindedPubkey = blindedPubkey
+		desc.DescriptorID = descriptorID
+		if err := VerifyDescriptorSignature(desc, addr); err != nil {
+			lastErr = err
+			continue
+		}
+		decryptedDesc, err := DecryptDescriptor(desc, addr, timePeriod)
+		if err != nil {
+			h.logger.Warn("Descriptor decryption failed (may not be encrypted)",
+				"hsdir", hsdir.Fingerprint, "error", err)
+			return desc, nil
+		}
+		h.logger.Info("Fetched descriptor from HTTP DirPort cache",
+			"hsdir", hsdir.Fingerprint, "intro_points", len(decryptedDesc.IntroPoints))
+		return decryptedDesc, nil
+	}
+
 	// Failed after all retries
 	if lastErr != nil {
 		return nil, fmt.Errorf("failed to fetch descriptor after %d retries: %w", maxRetries, lastErr)
@@ -2081,6 +2112,14 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 	}
 
 	c.logger.Debug("INTRODUCE1 cell sent")
+
+	// Padding=2：引言电路上启动 HS setup 机（失败不阻断连接）
+	if c.AfterIntroduce1 != nil {
+		if err := c.AfterIntroduce1(ctx, introCircuitID); err != nil {
+			c.logger.Warn("AfterIntroduce1 circpad hook failed",
+				"circuit_id", introCircuitID, "error", err)
+		}
+	}
 
 	// Step 8: Wait for RENDEZVOUS2 and complete the connection
 	if err := c.CompleteRendezvous(ctx, rendezvousCircuitID); err != nil {

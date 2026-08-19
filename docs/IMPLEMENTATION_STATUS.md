@@ -53,7 +53,7 @@
 | Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
-| Circuit padding (Padding=2) | PARTIAL | 协商+状态表+`CircpadController`+`SendRelayCellToHop`；共识 `circpad_*` 已注入 client；onion 自动触发待 Phase 4 |
+| Circuit padding (Padding=2) | PARTIAL | 电路层齐；SOCKS `AfterIntroduce1` 已接线。真实验收待 onion e2e；BEGIN_DIR 前 HSDir HTTP 有限 |
 | Onion Service v3 | PARTIAL | hs-ntor WORKING；INTRODUCE1/2 加解密 + RENDEZVOUS1 已对齐。HSDir 真实验收 / 端到端访问仍缺 |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
 | Control Protocol | PARTIAL | 框架存在，非本轮验收 |
@@ -184,7 +184,8 @@
   - `SendRelayCellToHop`：协商发往第二跳（`encryptOnion` dest）
   - `Client.refreshCircpadConfig` / `StartHSSetupPaddingOn`（读 `circpad_padding_disabled`）
   - Intro DROPs 7–10；单测覆盖编解码与状态机
-- **未做**：Onion INTRODUCE1 后自动启动；完整直方图延迟定时器；真实验收
+- **未做**：完整直方图延迟定时器；onion e2e 真实验收 circpad；BEGIN_DIR 拉 HS 描述符
+- **已接线**：`onion.Client.AfterIntroduce1` → socks `StartHSSetupPadding(HSSetupIntro)`；共识 `SetCircpadConfig`
 - **Spec**：https://spec.torproject.org/padding-spec ；proposal 302
 - **现有代码**：`pkg/circuit/circpad.go`、`circpad_runtime.go`、`circuit.go`；`pkg/client`；`docs/interop/circuit-padding.md`
 - **禁止**：发明与 spec 不符的随机 padding 并宣称合规。
@@ -411,4 +412,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准：** HSDir 真实验收 / `.onion` 端到端；INTRODUCE1 后 circpad；Phase 3 官方向量与文档去伪。
+**下一轮完成标准：** BEGIN_DIR 拉 HS 描述符 / `.onion` e2e；Phase 3 官方向量原样导入。

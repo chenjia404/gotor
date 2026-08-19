@@ -1556,6 +1556,9 @@ func (c *Client) refreshCircpadConfig() {
 	c.circpadCfgMu.Lock()
 	c.circpadCfg = cfg
 	c.circpadCfgMu.Unlock()
+	if c.socksServer != nil {
+		c.socksServer.SetCircpadConfig(cfg)
+	}
 	if cfg.Disabled {
 		c.logger.Info("circuit padding disabled by consensus circpad_padding_disabled")
 	}
