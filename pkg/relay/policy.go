@@ -21,11 +21,15 @@ var privateRejectLines = []string{
 	"reject 192.168.0.0/16:*",
 	"reject 169.254.0.0/16:*",
 	"reject 100.64.0.0/10:*",
+	"reject 224.0.0.0/4:*",
+	"reject 240.0.0.0/4:*",
+	"reject 255.255.255.255/32:*",
 	"reject [::]/128:*",
 	"reject [::1]/128:*",
 	"reject [fe80::]/10:*",
 	"reject [fc00::]/7:*",
 	"reject [2001:db8::]/32:*",
+	"reject [ff00::]/8:*",
 	"reject *:25",
 }
 

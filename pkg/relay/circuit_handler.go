@@ -301,7 +301,7 @@ func (h *CircuitHandler) CloseCircuit(circuitID uint32) {
 		h.exits.CloseCircuit(circuitID)
 	}
 	if h.forwarder != nil {
-		h.forwarder.HandleDestroy(circuitID)
+		_ = h.forwarder.HandleDestroy(circuitID)
 	}
 	h.logger.Info("Circuit closed", "circuit_id", circuitID)
 }

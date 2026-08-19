@@ -45,11 +45,11 @@ type streamKey struct {
 }
 
 type exitStream struct {
-	conn           net.Conn
-	cancel         context.CancelFunc
-	packageWindow  int // 向客户端发送
-	deliverWindow  int // 允许再收多少客户端 DATA（扣减后靠我们发的 SENDME 恢复对端，本端防灌）
-	deliverCount   int
+	conn          net.Conn
+	cancel        context.CancelFunc
+	packageWindow int // 向客户端发送
+	deliverWindow int // 允许再收多少客户端 DATA（扣减后靠我们发的 SENDME 恢复对端，本端防灌）
+	deliverCount  int
 }
 
 func NewExitStreamManager(policy *ExitPolicy, log *logger.Logger) *ExitStreamManager {
