@@ -328,7 +328,7 @@ func TestCircuitSendCircuitSendme(t *testing.T) {
 	c.SetState(StateOpen)
 
 	// sendCircuitSendme requires a connection, test error case
-	err := c.sendCircuitSendme()
+	err := c.sendCircuitSendme(make([]byte, 20))
 	if err == nil {
 		t.Error("sendCircuitSendme() should return error when conn is nil")
 	}

@@ -321,19 +321,20 @@ func TestRELAY_SENDMECellFormat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Construct RELAY_SENDME cell per tor-spec.txt §7.4
-			// Version 0: empty data
-			// Version 1: 1 byte version (0x01) + 20 byte digest (not implemented here)
-			// For compatibility, we test version 0 (empty data)
-			data := []byte{} // Version 0 SENDME has no data
+			var data []byte
+			if tt.isCirc {
+				var err error
+				data, err = cell.EncodeSendmeV1(make([]byte, cell.SendmeV1DigestLen))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 
-			// Create RELAY_SENDME cell
 			relayCell, err := cell.NewRelayCell(tt.streamID, cell.RelaySendme, data)
 			if err != nil {
 				t.Fatalf("NewRelayCell() error = %v", err)
 			}
 
-			// Verify cell structure
 			if relayCell.Command != cell.RelaySendme {
 				t.Errorf("Command = %d, want %d (RELAY_SENDME)", relayCell.Command, cell.RelaySendme)
 			}
@@ -341,20 +342,21 @@ func TestRELAY_SENDMECellFormat(t *testing.T) {
 				t.Errorf("StreamID = %d, want %d", relayCell.StreamID, tt.streamID)
 			}
 
-			// Verify stream ID semantics
 			if tt.isCirc {
 				if relayCell.StreamID != 0 {
 					t.Errorf("Circuit-level SENDME must have StreamID=0, got %d", relayCell.StreamID)
+				}
+				ver, digest, err := cell.DecodeSendme(relayCell.Data)
+				if err != nil || ver != cell.SendmeVersion1 || len(digest) != 20 {
+					t.Fatalf("circuit SENDME must be v1 with 20-byte digest: ver=%d err=%v", ver, err)
 				}
 			} else {
 				if relayCell.StreamID == 0 {
 					t.Errorf("Stream-level SENDME must have StreamID>0, got %d", relayCell.StreamID)
 				}
-			}
-
-			// Verify data (version 0 has no data)
-			if len(relayCell.Data) != 0 {
-				t.Errorf("SENDME v0 data length = %d, want 0", len(relayCell.Data))
+				if len(relayCell.Data) != 0 {
+					t.Errorf("stream SENDME body should be empty, got %d", len(relayCell.Data))
+				}
 			}
 		})
 	}
