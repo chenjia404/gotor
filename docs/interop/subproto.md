@@ -38,6 +38,10 @@ cap_number    [1]
 - `pkg/directory`：`SupportsSubprotoRequest`（`Relay=5`）
 - `pkg/circuit/extension.go`：CREATE2/EXTEND2 的 CM 走 `EncodeNtorV3ClientMsg`
 
+## 真实网络（2026-08-19）
+
+`TestRealGuardCreate2` / `TestRealNtorV3`：Guard `SENDNOOSEplz`，HTYPE=3，`FlowCtrl=2` `sendme_inc=31`。未出现 type 3 请求日志，CREATE2 成功。
+
 ## 禁止
 
 - 在 CGO 未实现时请求 `Relay=6`

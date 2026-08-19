@@ -101,6 +101,7 @@
   - `ImplementedNegotiableCaps()` 为空（CGO 未做）
   - 单测：排序、拒空/重复/未登记、与 CC type 1 同框编码
 - **未做**：真正发出 type 3（须等 CGO）；真实网络「请求已实现能力」验收
+- **真实网络（2026-08-19）**：`TestRealGuardCreate2` / `TestRealNtorV3` 仍通过。Guard `SENDNOOSEplz`，HTYPE=3，`sendme_inc=31`。日志无 “Requesting ntor-v3 subproto capabilities”，确认未发 type 3。
 - **Spec**：https://spec.torproject.org/tor-spec/create-created-cells.html ；https://spec.torproject.org/proposals/346-protovers-again.html
 - **现有代码**：`pkg/crypto/subproto.go`、`pkg/crypto/ntorv3.go`、`pkg/circuit/extension.go`
 - **禁止**：未实现 CGO 时请求 `[02 06]`。
