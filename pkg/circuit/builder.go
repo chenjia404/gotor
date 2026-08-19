@@ -125,7 +125,7 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 	// Extend to middle relay using EXTEND2 protocol
 	ext.SetTargetRelay(p.Middle)
 	middleAddr := fmt.Sprintf("%s:%d", p.Middle.Address, p.Middle.ORPort)
-	if err := ext.ExtendCircuit(buildCtx, middleAddr, HandshakeTypeNTor); err != nil {
+	if err := ext.ExtendCircuit(buildCtx, middleAddr, HandshakeTypeFor(p.Middle)); err != nil {
 		circuit.Close()
 		return nil, fmt.Errorf("failed to extend to middle hop: %w", err)
 	}
@@ -135,7 +135,7 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 	// Extend to exit relay using EXTEND2 protocol
 	ext.SetTargetRelay(p.Exit)
 	exitAddr := fmt.Sprintf("%s:%d", p.Exit.Address, p.Exit.ORPort)
-	if err := ext.ExtendCircuit(buildCtx, exitAddr, HandshakeTypeNTor); err != nil {
+	if err := ext.ExtendCircuit(buildCtx, exitAddr, HandshakeTypeFor(p.Exit)); err != nil {
 		circuit.Close()
 		return nil, fmt.Errorf("failed to extend to exit hop: %w", err)
 	}
@@ -196,11 +196,11 @@ func (b *Builder) handshakeAndCreateGuard(ctx context.Context, circuit *Circuit,
 
 	ext := NewExtension(circuit, b.logger)
 	ext.SetTargetRelay(guard)
-	if err := ext.CreateFirstHop(ctx, HandshakeTypeNTor); err != nil {
+	if err := ext.CreateFirstHop(ctx, HandshakeTypeFor(guard)); err != nil {
 		circuit.Close()
 		return nil, fmt.Errorf("failed to create first hop: %w", err)
 	}
-	b.logger.Info("First hop created with ntor handshake", "guard", guard.Nickname)
+	b.logger.Info("First hop created", "guard", guard.Nickname, "handshake", HandshakeTypeFor(guard))
 	return ext, nil
 }
 

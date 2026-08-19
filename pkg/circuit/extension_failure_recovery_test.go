@@ -360,4 +360,7 @@ func TestHandshakeTypeConstantsRecovery(t *testing.T) {
 	if HandshakeTypeTAP != 0x0000 {
 		t.Errorf("HandshakeTypeTAP = %d, want 0", HandshakeTypeTAP)
 	}
+	if HandshakeTypeNtorV3 != 0x0003 {
+		t.Errorf("HandshakeTypeNtorV3 = %d, want 3", HandshakeTypeNtorV3)
+	}
 }

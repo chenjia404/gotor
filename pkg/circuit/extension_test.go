@@ -510,6 +510,9 @@ func TestHandshakeTypeConstants(t *testing.T) {
 	if HandshakeTypeTAP != 0x0000 {
 		t.Errorf("Expected HandshakeTypeTAP=0x0000, got 0x%04x", HandshakeTypeTAP)
 	}
+	if HandshakeTypeNtorV3 != 0x0003 {
+		t.Errorf("Expected HandshakeTypeNtorV3=0x0003, got 0x%04x", HandshakeTypeNtorV3)
+	}
 }
 
 // TestCreateFirstHopWireProtocol tests the complete CREATE2/CREATED2 wire protocol

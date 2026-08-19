@@ -71,8 +71,9 @@ type Circuit struct {
 	nextStreamID     uint16               // 本电路下一个可用 StreamID（跳过 0）
 	usedStreamIDs    map[uint16]struct{}  // 已占用的 StreamID（BEGIN 与 RESOLVE 共用）
 	// Flow control per tor-spec.txt §7.4
-	packageWindow  int // Circuit-level package window (cells we can send)
-	deliverWindow  int // Circuit-level deliver window (cells we can receive)
+	packageWindow  int      // Circuit-level package window (cells we can send)
+	deliverWindow  int      // Circuit-level deliver window (cells we can receive)
+	sendmeInc      int      // FlowCtrl=2 的 sendme_inc；0 表示经典窗口 100
 	sendmeReceived int      // Count of DATA cells received (for sending SENDME)
 	sendmeSent     int      // Count of SENDME cells sent
 	sendmeExpected [][]byte // 发出 DATA 时记下的 v1 digest FIFO，供对端 SENDME 校验
@@ -144,13 +145,13 @@ func NewCircuit(id uint32) *Circuit {
 		streamManager:    nil,                            // Stream manager set later
 		nextStreamID:     1,                              // spec：RESOLVE/BEGIN 都必须用非 0 StreamID
 		usedStreamIDs:    make(map[uint16]struct{}),
-		packageWindow:    1000,                           // tor-spec.txt §7.4: Initial circuit window is 1000
-		deliverWindow:    1000,                           // tor-spec.txt §7.4: Initial circuit window is 1000
-		sendmeReceived:   0,                              // No DATA cells received yet
-		sendmeSent:       0,                              // No SENDME cells sent yet
+		packageWindow:    1000, // tor-spec.txt §7.4: Initial circuit window is 1000
+		deliverWindow:    1000, // tor-spec.txt §7.4: Initial circuit window is 1000
+		sendmeReceived:   0,    // No DATA cells received yet
+		sendmeSent:       0,    // No SENDME cells sent yet
 		sendmeExpected:   nil,
-		replayProtection: cell.NewReplayProtection(),     // SECURITY-001: Initialize replay protection
-		deliverTimer:     deliverTimer,                   // AUDIT-MED-4 FIX: Reusable timer
+		replayProtection: cell.NewReplayProtection(), // SECURITY-001: Initialize replay protection
+		deliverTimer:     deliverTimer,               // AUDIT-MED-4 FIX: Reusable timer
 		destroyCh:        make(chan struct{}),
 	}
 }
@@ -888,7 +889,6 @@ func (c *Circuit) shouldSendCircuitSendme() bool {
 
 	return c.sendmeReceived >= 100
 }
-
 
 // Stream-level flow control methods
 

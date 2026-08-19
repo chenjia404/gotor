@@ -28,10 +28,30 @@ func (c *Circuit) maybeRecordSendmeTag(tag []byte) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// window==0 也是 100 的倍数（第 1000 个 DATA），必须入队。
-	if c.packageWindow%circWindowIncrement == 0 {
+	// window==0 也是 increment 的倍数（第 N 个 DATA），必须入队。
+	inc := c.sendmeIncrementLocked()
+	if c.packageWindow%inc == 0 {
 		c.sendmeExpected = append(c.sendmeExpected, cloneDigest(tag))
 	}
+}
+
+func (c *Circuit) sendmeIncrementLocked() int {
+	if c.sendmeInc > 0 {
+		return c.sendmeInc
+	}
+	return circWindowIncrement
+}
+
+// EnableCongestionControl 在 ntor-v3 协商到 CC_FIELD_RESPONSE 后启用 FlowCtrl=2 窗口。
+func (c *Circuit) EnableCongestionControl(sendmeInc int) {
+	if c == nil || sendmeInc < 1 || sendmeInc > 250 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sendmeInc = sendmeInc
+	c.packageWindow = defaultCCCwndInit
+	c.deliverWindow = defaultCCCwndInit
 }
 
 // decrementPackageWindowForSendme 原子减窗，并标明本 cell 是否落在 SENDME 边界。
@@ -43,7 +63,7 @@ func (c *Circuit) decrementPackageWindowForSendme() (record bool, err error) {
 		return false, fmt.Errorf("package window exhausted: cannot send more cells until SENDME received")
 	}
 	c.packageWindow--
-	return c.packageWindow%circWindowIncrement == 0, nil
+	return c.packageWindow%c.sendmeIncrementLocked() == 0, nil
 }
 
 func (c *Circuit) recordSendmeTag(tag []byte) {
@@ -65,8 +85,9 @@ func (c *Circuit) decrementDeliverWindowAndTakeSendme() (send bool, err error) {
 	}
 	c.deliverWindow--
 	c.sendmeReceived++
-	if c.sendmeReceived >= circWindowIncrement {
-		c.sendmeReceived -= circWindowIncrement
+	inc := c.sendmeIncrementLocked()
+	if c.sendmeReceived >= inc {
+		c.sendmeReceived -= inc
 		return true, nil
 	}
 	return false, nil
@@ -105,7 +126,7 @@ func (c *Circuit) processCircuitSendme(payload []byte) error {
 		return fmt.Errorf("SENDME digest mismatch")
 	}
 	c.sendmeExpected = c.sendmeExpected[1:]
-	c.packageWindow += circWindowIncrement
+	c.packageWindow += c.sendmeIncrementLocked()
 	return nil
 }
 
@@ -120,7 +141,7 @@ func (c *Circuit) sendCircuitSendme(tag []byte) error {
 
 	c.mu.Lock()
 	c.sendmeSent++
-	c.deliverWindow += circWindowIncrement
+	c.deliverWindow += c.sendmeIncrementLocked()
 	c.mu.Unlock()
 
 	sendmeCell, err := cell.NewRelayCell(0, cell.RelaySendme, payload)
@@ -135,4 +156,11 @@ func (c *Circuit) SendmeStats() (sent, expectedQueued int) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.sendmeSent, len(c.sendmeExpected)
+}
+
+// SendmeIncrement 返回当前电路级 SENDME 间隔（经典 100，或 FlowCtrl=2 的 sendme_inc）。
+func (c *Circuit) SendmeIncrement() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.sendmeIncrementLocked()
 }

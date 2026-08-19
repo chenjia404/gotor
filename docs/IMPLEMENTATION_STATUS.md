@@ -1,8 +1,8 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/certs-type7-rsa-0ece`  
-**原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + Tor Spec / C Tor / Arti 为准。
+**分支**：`cursor/ntor-v3-0ece`（已合并 `origin/main`，含 CERTS type 7 PR #18）  
+**原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + **现行** Tor Spec / C Tor / Arti 为准。
 
 状态定义：
 
@@ -14,36 +14,184 @@
 | MISSING | 无可用实现 |
 | UNVERIFIED | 代码存在，但尚未用真实 Tor Network / 官方向量证明 |
 
+**接手约定（给后续 AI）：**
+
+1. 按**最新** tor-spec / protover 兼容实现，不要按仓库旧注释或过期 ROADMAP。
+2. 100% Pure Go，禁止 CGO。入口 `cmd/tor-client`。
+3. 禁止 mock 当完成、禁止全零 key fallback、禁止为过测试放松协议校验。
+4. 默认 `go test ./...` 不得访问公网。真实验收：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration`。
+5. 回复、注释、文档用简体中文。提交说明写清原因、改哪里、影响。
+6. 一个 PR 只做一件互操作缺口。不要把无关分支历史混进同一 PR。
+7. 本文件的「未完成」节是后续工作清单。做完一项就把该项改成 WORKING，并写真实路径 / 字节数 / Guard 名。
+
 ---
 
 ## 总览（Client 主链路）
 
-第一轮目标是真实 3-hop + SOCKS5 + `check.torproject.org` `IsTor=true`。在该 E2E 通过之前，**Tor Client basic interoperability 不得标 WORKING**。
+第一轮目标（真实 3-hop + SOCKS5 + `check.torproject.org` `IsTor=true`）**已达到**。现行默认握手是 ntor-v3。
+
+对照 2026-02 共识 `recommended-client-protocols`：
+
+`Cons=2 Desc=2 DirCache=2 FlowCtrl=1-2 HSDir=2 HSIntro=4 HSRend=2 Link=4-5 Microdesc=2 Relay=2-4`
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| Directory / Consensus | PARTIAL | 生产验签已在真实网络通过（9/9 权威，10143 relays）。长期 fixture 与证书落盘仍弱 |
+| Directory / Consensus | PARTIAL | 生产验签已在真实网络通过（9/9 权威）。证书未落盘；缺官方长期 fixture；无 consensus diff（DirCache=2） |
 | Microdescriptor fetch/parse | PARTIAL | 解析与 digest 已按 spec 修正，真实网络可填充密钥；缺长期 fixture 回归 |
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
-| VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | WORKING | VERSIONS CircID=2、CERTS type4 验签、type 7 RSA 交叉签名强制校验、NETINFO 已在真实 Guard 握手通过；AUTH_CHALLENGE 客户端路径按 spec 跳过 |
-| CREATE2 / ntor / CREATED2 | WORKING | 真实 Guard CREATE2/CREATED2 已成功（72 字节密钥） |
-| EXTEND2 / EXTENDED2 | WORKING | 真实 Guard→Middle / Middle→Exit EXTEND2 已成功 |
-| Circuit crypto / digest | WORKING | 真实 RELAY_DROP / EXTEND2 / BEGIN / DATA 已证明 AES-CTR + SHA-1 digest 与 Guard 一致；仍缺官方 cell 向量 |
+| VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | WORKING | VERSIONS CircID=2、CERTS type4 验签、**type 7 RSA 交叉签名强制校验**、NETINFO 已在真实 Guard 通过；AUTH_CHALLENGE 客户端路径按 spec 跳过 |
+| CREATE2 / ntor / CREATED2 | WORKING | 默认 ntor-v3（HTYPE 0x0003，Ed25519 主身份）；真实 Guard CREATE2 + `CC_FIELD_RESPONSE` `sendme_inc=31`。缺密钥或 `Relay<4` 回退经典 ntor |
+| EXTEND2 / EXTENDED2 | WORKING | 真实 3-hop 三跳均为 ntor-v3 + FlowCtrl=2；SOCKS5 `IsTor=true`。IPv6 EXTEND2（Relay=3）未做 |
+| Circuit crypto / digest | WORKING | 真实 RELAY_DROP / EXTEND2 / BEGIN / DATA 已证明 **AES-CTR + SHA-1** 与 Guard 一致。CGO（Relay=6）未做 |
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
-| SENDME / flow control | WORKING | 电路级 SENDME v1 已在真实网络 256KB+ soak 通过；流级仍为空（spec）；FlowCtrl=2 未做 |
+| SENDME / flow control | PARTIAL | FlowCtrl=1 电路级 SENDME v1 已通过；FlowCtrl=2 只协商了 `sendme_inc`，**完整 Vegas 未做** |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
-| DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE `www.torproject.org` 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
-| Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功 |
-| Exit policy | PARTIAL | 已解析共识/microdesc `p` 行并按端口过滤；预建电路改选 443；完整策略与 IPv6 `p6` 未做 |
-| Onion Service v3 | BROKEN / MISSING | 本轮不实现；hs-ntor 未做；旧代码误用 circuit ntor |
-| Relay / Bridge | BROKEN / UNVERIFIED | 本轮不优先；服务端 ntor 仍可能用错 NODEID |
+| DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
+| Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family ID（Desc=4）未用 |
+| Exit policy | PARTIAL | 已解析 `p` 行并按端口过滤；完整策略与 IPv6 `p6` 未做 |
+| Relay=5 subproto_request | MISSING | ntor-v3 扩展 type 3（proposal 346）；CGO 的前置条件 |
+| Relay=6 CGO | MISSING | Counter Galois Onion（proposal 359）；最新电路加密方向 |
+| Conflux=1 | MISSING | 多路径（proposal 329）；mainnet 已广泛宣告，尚未 required |
+| Circuit padding (Padding=2) | PARTIAL | 有定时器骨架，无 HS setup machine（proposal 302） |
+| Onion Service v3 | BROKEN / MISSING | **明确不做**，直到 client 主链路剩余缺口完成 |
+| Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
 | Control Protocol | PARTIAL | 框架存在，非本轮验收 |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
 
 ---
 
-## 分类明细
+## 未完成（给后续 AI，按最新 Tor 优先）
+
+下列是**还没做完**、需要按现行 spec / C Tor / Arti 继续实现的项。不要把骨架或 mock 标成 WORKING。
+
+### P0 — 现行推荐客户端仍缺的互操作
+
+#### 1. FlowCtrl=2 Vegas（完整拥塞控制）
+
+- **状态**：PARTIAL。已协商 `CC_FIELD_REQUEST` / `CC_FIELD_RESPONSE`，把 SENDME 间隔改成 `sendme_inc`（真实 mainnet 常见 31），初始 cwnd=`cc_cwnd_init`=186。
+- **未做**：RTT 采样、BDP / queue_use、slow start、Vegas 增减窗、`inflight`、orconn 阻塞。
+- **Spec**：https://spec.torproject.org/proposals/324-rtt-congestion-control.html ；tor-spec flow-control
+- **C Tor**：`src/core/or/congestion_control_common.c`、`congestion_control_vegas.c`、`congestion_control_flow.c`
+- **Arti**：`crates/tor-proto` 下 congestion / ccparams
+- **现有代码**：`pkg/circuit/sendme.go`（`EnableCongestionControl`）、`pkg/circuit/circuit.go`（`sendmeInc`）、`pkg/crypto/ntorv3.go`（扩展编解码）
+- **共识参数**（从 signed `params` 读，不要写死除非与当前默认一致）：`cc_sendme_inc`、`cc_cwnd_init`、`cc_cwnd_min`、`cc_cwnd_inc`、`cc_cwnd_inc_rate`、`cc_cwnd_inc_pct_ss`、`cc_vegas_alpha/beta/gamma/delta`、`cc_vegas_bdp_mix`、`cc_ss_cap_*`
+- **验收**：
+  - 单测覆盖 Vegas 状态机（对照 C Tor / proposal 伪代码）
+  - 真实 soak ≥1MB（目标 10–100MB）电路不 DESTROY
+  - 不得为过测试关掉 SENDME v1 digest 校验
+- **禁止**：把「已协商 sendme_inc」写成 Vegas 已完成。
+
+#### 2. 更大流量 soak + SENDME 回归
+
+- **状态**：PARTIAL。已有 282432 字节 soak（`TestRealFlowControlSoak`）。
+- **未做**：1MB / 10MB / 100MB；并发多流；window=0 边界的真实网络证明。
+- **现有代码**：`integration/e2e_real_tor_test.go`
+- **验收**：电路存活、SENDME v1 digest FIFO 匹配、无重复 SENDME。
+
+### P1 — 最新电路加密方向（尚未 required，但 mainnet 已宣告）
+
+#### 3. Relay=5 `subproto_request`（proposal 346）
+
+- **状态**：MISSING。
+- **用途**：在 ntor-v3 扩展里请求电路能力。CGO 必须走这条路（请求 `Relay=6`，编码 `[02 06]`）。
+- **Spec**：https://spec.torproject.org/tor-spec/create-created-cells.html （Extension handshake: Subprotocol request）；https://spec.torproject.org/proposals/346-protovers-again.html
+- **扩展 ID**：ntor-v3 / hs-ntor 共用 type **3**
+- **编码**：若干 `{protocol_id u8, capability u8}`，按 protocol_id 再 capability 升序
+- **现有代码**：`pkg/crypto/ntorv3.go` 已有通用 `N_EXTENSIONS` 编解码；只需加 type 3 与选择逻辑
+- **选择条件**：对端 `pr` 含 `Relay=5`，且客户端确实要请求已实现的能力（例如 CGO）
+- **验收**：单测排序 / 拒绝未宣告能力；真实网络仅在请求已实现能力时开启
+
+#### 4. Relay=6 CGO（Counter Galois Onion）
+
+- **状态**：MISSING。当前 hop 加密仍是 AES-CTR + SHA-1 digest（Relay=2 时代算法）。
+- **Spec**：https://spec.torproject.org/proposals/359-cgo-redux.html
+- **要点**：POLYVAL + AES-256；`MSG_LEN=509`；`BLK_LEN=16`；非延展、前向保密、128-bit 认证。替换 hop 的 Df/Db/Kf/Kb 用法。
+- **协商**：ntor-v3 + `subproto_request` 请求 `Relay=6`；KDF 输出长度与 AES-CTR-SHA1 的 72 字节不同，必须对照 C Tor / Arti 的 CGO key schedule。
+- **C Tor / Arti**：以当时仓库里 `cgo` / `tor-proto` 实现为准，不要猜密钥长度。
+- **验收**：
+  - 官方向量（proposal / C Tor testdata）先过
+  - 再真实 3-hop：协商 CGO 后 RELAY_BEGIN / DATA / `IsTor=true`
+- **禁止**：未协商成功时偷偷回退到 AES-CTR 还宣称 CGO WORKING。
+- **注意**：2026-02 `recommended-client-protocols` 仍是 `Relay=2-4`。CGO 是最新方向，但 **不要** 在 Guard 未宣告 `Relay=5/6` 时强制请求。
+
+### P2 — 已广泛宣告、提升兼容与匿名性
+
+#### 5. Conflux=1（proposal 329）
+
+- **状态**：MISSING。
+- **Spec**：https://spec.torproject.org/proposals/329-traffic-splitting.html
+- **要点**：`RELAY_CONFLUX_LINK` / `LINKED` / `LINKED_ACK` / `SWITCH`；两（或更多）条电路绑定后按 seq /RTT 分流。
+- **选择**：仅当两条腿的 Guard/Middle/Exit 均宣告 `Conflux=1`。
+- **验收**：真实网络两条电路 LINK 成功，并经 SOCKS 拉到 `IsTor=true`。缺实现时不得把单电路标成 Conflux。
+
+#### 6. EXTEND2 IPv6（Relay=3）
+
+- **状态**：MISSING。当前 EXTEND2 只发 `[00]` IPv4。
+- **Spec**：tor-spec create-created-cells / EXTEND2 specifier `[01]` IPv6；subprotocol `RELAY_EXTEND_IPv6`
+- **现有代码**：`pkg/circuit/extension.go` `buildExtend2Data`
+- **验收**：对同时有 IPv4/IPv6 ORPort 的中继发出 `[01]`；真实 EXTENDED2 成功。无 IPv6 出口的环境不要标 WORKING。
+
+#### 7. Exit policy IPv6 `p6` + 完整 `p` 行
+
+- **状态**：PARTIAL。已解析摘要 `p` 行并按端口过滤。
+- **未做**：完整 accept/reject 列表、`p6`、IPv6 出口选路。
+- **现有代码**：`pkg/directory` policy 解析；path selector
+- **验收**：选路不会把只放行 80 的 exit 用于 443；IPv6-only 目标走 `p6`。
+
+#### 8. Circuit padding machine（Padding=2 / proposal 302）
+
+- **状态**：PARTIAL。`Circuit` 有 padding 间隔字段，不是 HS setup machine。
+- **Spec**：https://spec.torproject.org/padding-spec ；proposal 302
+- **验收**：对照 C Tor machine 状态表的单测。不要发明与 spec 不符的随机 padding 并宣称合规。
+
+#### 9. Consensus diff（DirCache=2）
+
+- **状态**：MISSING。每次拉整份 `consensus-microdesc`。
+- **Spec**：dir-spec consensus diffs
+- **验收**：有缓存时拉 diff 并能验签；失败回退整份文档。默认测试不访问公网。
+
+#### 10. 权威证书落盘 + 官方长期 fixture
+
+- **状态**：PARTIAL。生产会拉 `/tor/keys/fp/<id>` 并验签，进程内缓存。
+- **未做**：磁盘缓存、过期刷新、从 C Tor/Arti 导出的不可变 fixture。
+- **现有代码**：`pkg/directory` certcache
+- **验收**：离线 fixture 验签；证书过期必须失败。
+
+### P3 — 向量、选路、文档债务（不阻塞主链路，但不得宣称「已有官方向量」）
+
+#### 11. 官方 C Tor / Arti 原样向量
+
+- `testdata/ctor-vectors/crypto/ntor_handshake.json` 与 `testdata/arti-vectors/...` 是按**正确算法重生**的，不是从上游仓库原样导出。
+- 需要：从 C Tor / Arti 测试文件原样拷贝 ntor、ntor-v3、relay-cell、CGO 向量。
+- **禁止**据此宣称已有官方 cross-impl 向量。
+
+#### 12. Family ID（Desc=4）
+
+- **状态**：MISSING。microdesc 可能已有 family 行解析，但选路未按 family cert / family ID 避让。
+- **Spec**：dir-spec family IDs；proposal 321/355
+- **验收**：明确同一 family 的 Guard/Middle/Exit 不会被选到同一条电路。
+
+#### 13. 文档债务
+
+- `ROADMAP.md` 声称 ~98% 完成、Onion/Bridge 已完成：**过期且不实**。
+- `GAPS.md` 部分条目过期。
+- `docs/NTOR_HANDSHAKE.md` 正文仍有错误公式；文首已加警告。
+- `docs/MICRODESCRIPTOR_FETCHING.md` 仍可能写错 `a sha256=`（实际是 `m` 行）。
+
+### 明确不做（在 P0/P1 完成前不要开做）
+
+| 项 | 原因 | 已知坑 |
+|----|------|--------|
+| Onion Service v3 | 主链路最新协议尚未对齐 | hs-ntor 未做；`BuildRendezvous1Cell` 曾误用 circuit ntor + 32 字节 Ed25519 |
+| Relay 服务端 | 本仓库目标是 client | `pkg/relay/circuit_handler.go` 可能把 Ed25519 当 ntor NODEID |
+| Bridge / PT 生产路径 | 非本轮 | 框架存在，UNVERIFIED |
+
+若要做 HS：必须先实现 **hs-ntor**（不是 circuit ntor），再 HSDir v3、INTRODUCE/RENDEZVOUS。对照 rend-spec-v3 与 C Tor `hs_ntor.c` / Arti `hs_ntor`。
+
+---
+
+## 分类明细（已完成部分）
 
 ### Directory / Consensus — PARTIAL
 
@@ -53,17 +201,12 @@
 - Authority 列表已更新到当前公开 IP。
 - 生产 `FetchConsensus` 在 metadata 之外强制 `VerifyConsensusSignatures`：`/tor/keys/fp/<id>`、`dir-signing-key`、`dir-key-certification`、`dir-key-crosscert`、majority（5/9）。
 - `r` / `valid-*` / `params` 只解析 signed body；未签名前缀/后缀不得注入 relay 或改写有效期。
-- 真实网络：`TestRealConsensusSignatures` 验证 **9/9** 权威签名，共识含 10143 个 relay。
+- 真实网络：`TestRealConsensusSignatures` 验证 **9/9** 权威签名，共识含约 10143 个 relay。
 - 详见 `docs/interop/consensus.md`。
-- **缺口**：证书未落盘；缺官方长期 fixture。`docs/MICRODESCRIPTOR_FETCHING.md` 仍写错 `a sha256=` 行（实际是 `m` 行）。
 
-### Microdescriptor — PARTIAL（本轮已修解析 blocker）
+### Microdescriptor — PARTIAL（解析 blocker 已修）
 
-**曾经 BROKEN：**
-
-1. `id ed25519` 被读成下一行（spec 是同一行 `id ed25519 <base64>`）。
-2. digest 用带 padding 的 StdEncoding，无法匹配共识 `m` 行 raw base64。
-3. 串行拉取 + 过短 HTTP timeout。
+**曾经 BROKEN：** `id ed25519` 读成下一行；digest 带 padding；串行拉取 + 过短 timeout。
 
 **现在：** `pkg/directory/microdesc.go` 并行拉取、正确 digest、同 extra 行解析 ntor / ed25519 / family / policy。缺 key **报错**，不用 `make([]byte,32)`。
 
@@ -72,119 +215,92 @@
 ### Relay.IdentityKey / NtorOnionKey — PARTIAL
 
 - `NtorOnionKey`：microdescriptor `ntor-onion-key`。
-- `IdentityKey`：microdescriptor `id ed25519`（32 字节，给 EXTEND2 `[03]`）。
-- `RSAIdentity`：共识 `r` 行（20 字节，ntor NODEID + EXTEND2 `[02]`）。
+- `IdentityKey`：microdescriptor `id ed25519`（32 字节，给 EXTEND2 `[03]` 与 ntor-v3 ID）。
+- `RSAIdentity`：共识 `r` 行（20 字节，经典 ntor NODEID + EXTEND2 `[02]`）。
 - `HasNtorKeys()` / `HasExtendKeys()` 拒绝全零。
 
-### Link VERSIONS CircID 宽度 — 本轮已修（原 BROKEN）
+### Link VERSIONS CircID 宽度 — 已修
 
-TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 CircID，对端当成 PADDING。现已按 `CIRCID_LEN(0)=2` 发送/接收，协商后再切 4 字节。见 `docs/interop/link-versions.md`。
+VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop/link-versions.md`。
 
-### Link protocol / TLS — PARTIAL
+### Link protocol / CERTS — WORKING（含 type 7）
 
-- 生产 `connectToRelay` 在 TLS 之后调用 `protocol.PerformHandshake`。
 - 顺序：VERSIONS → CERTS →（跳过 AUTH_CHALLENGE/PADDING）→ NETINFO。
-- **不能**把 TLS 成功当成 identity 验证成功。CERTS 校验在 `pkg/protocol`。
-- `InsecureSkipVerify` 仍可能出现在 TLS 配置（Tor 用自签名 + CERTS）。须靠 CERTS/fingerprint，而不是关闭校验后宣称已验证。
-- 主身份是 Ed25519；type 7 用遗留 RSA-1024（type 2）做 PKCS#1 交叉签名，绑到共识指纹（`SHA256("Tor TLS RSA/Ed25519 cross-certificate" || KEY || EXP)`；C Tor 不含 SIGLEN）。电路握手仍是 Curve25519 ntor，不使用 RSA。
-- 真实握手测试：`integration/link_test.go`（`TOR_INTEGRATION_TEST=1`）。
+- **不能**把 TLS 成功当成 identity 验证成功。
+- 主身份是 Ed25519。type 7 用遗留 RSA-1024（type 2）做 PKCS#1 交叉签名，绑到共识指纹。
+- 哈希：`SHA256("Tor TLS RSA/Ed25519 cross-certificate" || KEY || EXP)`（**36 字节，不含 SIGLEN**）。cert-spec 字面含 SIGLEN，以 C Tor / 真实 CERTS 为准。
+- `rsa.VerifyPKCS1v15(pub, 0, hash, sig)`；缺 type 2 或验签失败为硬错误。
+- RSA **不**加密流量、**不**协商电路密钥。
+- 真实网络：`TestRealCertsType7RSA`（Guard `SENDNOOSEplz`）。
+- 详见 `docs/interop/certs.md`。
 
-### ntor / CREATE2 / EXTEND2 — WORKING（经典 ntor `0x0002`）
+### ntor / CREATE2 / EXTEND2 — WORKING（默认 ntor-v3 `0x0003`）
 
-**曾经 BROKEN（无法与 C Tor / Arti 互操作）：**
+实现见 `pkg/crypto/ntor.go`、`pkg/crypto/ntorv3.go`、`docs/interop/ntor.md`、`docs/interop/ntor-v3.md`。
 
-- NODEID 用 Ed25519 前 20 字节。
-- `AUTH = HKDF(secret_input)` 而不是 `HMAC(auth_input, t_mac)`。
-- 密钥直接 `HKDF(secret_input)` 而不是 `HKDF-Expand(KEY_SEED)`。
-- 缺 key 时 `make([]byte, 32)` fallback。
-- CircID 从 1 起，未置 MSB（link proto ≥4 发起方必须 MSB=1）。
-- EXTEND2 未带 `[02]` RSA / `[03]` Ed25519 specifier。
-- `SendRelayCell` 要求 `StateOpen`，build 期间是 `StateBuilding`。
-- 无连接级 cell mux，EXTENDED2 到不了等待者。
-- builder 在 CREATE2 前预加空 hop。
+**现行默认：** 有 Ed25519 且 `Relay=4`（或缺 pr）→ ntor-v3。`FlowCtrl=2` → `CC_FIELD_REQUEST`。经典 ntor `0x0002` 仅作回退。
 
-**现在对照：**
+生产 verification 必须是 `"circuit extend"`（14 字节，无 NUL）。空串或 proposal 332 测试串 `xyzzy` 都会让服务端 phase1 MAC 失败并 DESTROY reason=1。
 
-- Spec：https://spec.torproject.org/tor-spec/create-created-cells.html
-- C Tor：`src/core/crypto/onion_ntor.c`
-- Arti：`crates/tor-proto/src/crypto/handshake/ntor.rs`
+**真实网络（2026-08-19）：**
 
-实现见 `pkg/crypto/ntor.go`、`docs/interop/ntor.md`。
+- HTYPE=3，三跳 ntor-v3 + `sendme_inc=31`
+- `IsTor=true`，ExitIP=`185.244.192.184`（Quetzalcoatl）
+- soak 282432 字节未拆路
 
-**本轮已用真实网络验证：** Guard CREATE2、Middle/Exit EXTEND2、3-hop READY、SOCKS5 `IsTor=true`。ntor-v3 未实现（经典 ntor `0x0002` 仍被 relay 接受）。
+### Circuit crypto / Relay cell — WORKING（AES-CTR-SHA1 主路径）
 
-### Circuit crypto / Relay cell — WORKING（主路径）
+- 发送先 Exit 再 Middle 再 Guard；接收反向逐层 decrypt。
+- 真实 RELAY_DROP 不再触发 DESTROY。
+- **缺口**：官方 relay-cell 向量；CGO 见上文 P1。
 
-- 加解密顺序：发送先 Exit 再 Middle 再 Guard；接收反向逐层 decrypt。有本地 roundtrip 测试。
-- digest / recognized / stream ID / length 有实现。
-- 真实 RELAY_DROP 不再触发 DESTROY；EXTEND2 / BEGIN / DATA 已跑通。
-- **缺口**：缺官方 C Tor/Arti relay-cell 向量；cell tracer（`pkg/debug`，`GOTOR_CELL_TRACE=1`）默认关闭且不记用户 payload。
+### SENDME / Flow control — PARTIAL
 
-### SENDME / Flow control — WORKING（电路级 v1）
-
-- circuit window 1000 / +100；stream window 500 / +50。
-- 电路级 SENDME 发 version 1，DIGEST=触发 cell 的完整 20 字节滚动 SHA-1。
-- 发出 DATA 时在 `package_window % 100 == 0` 入队；收到 SENDME 必须 FIFO 匹配，否则拆路。
+- 未协商 CC：circuit window 1000 / +100；stream 500 / +50。
+- 电路级 SENDME v1：DIGEST=触发 cell 的完整 20 字节滚动 SHA-1；FIFO 匹配失败拆路。
+- 协商 CC 后间隔改为 `sendme_inc`，初始 cwnd=186。
 - 流级 SENDME 仍为空（spec）。
-- DATA padding 随机化。
-- 真实网络：`TestRealFlowControlSoak` 经 SOCKS 下载 282KB，电路未 DESTROY。
-- **缺口**：1MB–100MB soak、FlowCtrl=2（ntor-v3 congestion control）。
+- **缺口**：Vegas，见 P0。
 
-### SOCKS5 / DNS — WORKING（CONNECT + RESOLVE）
+### SOCKS5 / DNS — WORKING
 
-- SOCKS5 CONNECT：域名 / IPv4 / IPv6。
-- 域名走 Exit 解析（`socks5h` / RELAY_BEGIN hostname）。
-- 真实 `https://check.torproject.org/api/ip` 已返回 `IsTor=true`。
-- RELAY_RESOLVE：非 0 StreamID、arpa PTR、收集多条应答；0xF0/0xF1 Value 按字符串处理。
-- CONNECT 仍把 hostname 原样放进 RELAY_BEGIN（socks5h），不走本机 DNS。
-- 生产路径静态禁止 `net.Lookup*`。
-- 真实网络：`TestRealRelayResolve` 经 exit `artikel5ev8b` 解析 `www.torproject.org` → `204.8.99.144` + IPv6；PTR → `web-dal-07.torproject.org`；`.invalid` 回 `0xF1 Error resolving hostname`。本机 `DefaultResolver` 被指到不可达地址。
-- 详见 `docs/interop/dns.md`。
+- CONNECT 把 hostname 放进 RELAY_BEGIN（socks5h），生产路径禁止 `net.Lookup*`。
+- RESOLVE：非 0 StreamID、arpa PTR、多条应答。
+- 真实：`www.torproject.org` → `116.202.120.166` + IPv6；PTR → `web-fsn-02.torproject.org`。
 
 ### Guard / Path / Exit policy — PARTIAL
 
-- Guard 管理与带宽加权选路存在。
-- 选路不保证已有 microdesc key；client 在 build 前 `FetchMicrodescriptorsFor`，缺 key 则失败。
-- 预建电路按端口 443 选 exit；`p` 行摘要允许则过滤，禁止再把非 Exit 当 fallback。
-
-### Onion Service — BROKEN / MISSING（本轮不做）
-
-- 地址解析等骨架存在。
-- hs-ntor、经 circuit 的 HSDir、完整 INTRODUCE/RENDEZVOUS 未达到互操作。
-- `BuildRendezvous1Cell` 曾用 circuit ntor + 32 字节 Ed25519，与 spec 不符。
-
-### Relay / Bridge — BROKEN / UNVERIFIED（本轮不做）
-
-- OR listener / descriptor 骨架存在。
-- `pkg/relay/circuit_handler.go` 仍可能把 Ed25519 public 当 ntor NODEID。
+- build 前 `FetchMicrodescriptorsFor`，缺 key 则失败。
+- 预建按端口 443 选 exit；禁止把非 Exit 当 fallback。
 
 ---
 
-## 本轮已修的最高优先级 blocker
+## 已修的最高优先级 blocker（历史）
 
 | # | Blocker | Root cause | Spec / 参考 |
 |---|---------|------------|-------------|
-| 1 | ntor 无法与 mainnet 握手 | H 误实现为 HKDF；NODEID 用错 | tor-spec create-created-cells；C Tor `onion_ntor.c`；Arti `ntor.rs` |
+| 1 | ntor 无法与 mainnet 握手 | H 误实现为 HKDF；NODEID 用错 | create-created-cells；`onion_ntor.c`；Arti `ntor.rs` |
 | 2 | microdesc 密钥匹配失败 | digest padding；`id ed25519` 换行解析 | dir-spec microdescriptor |
 | 3 | zero-key fallback | 缺 key 仍 `make([]byte,32)` | 禁止静默 fallback |
-| 4 | 生产路径无 link handshake | 只做 TLS | tor-spec negotiating-channels |
+| 4 | 生产路径无 link handshake | 只做 TLS | negotiating-channels |
 | 5 | EXTENDED2 无人投递 | 无 mux | 连接上多 circuit cell 分发 |
 | 6 | Building 不能发 RELAY | `SendRelayCell` 只允许 Open | EXTEND2 必须在 build 期间发送 |
 | 7 | CircID 被拒 | MSB 未置 1 | link proto ≥4 |
 | 8 | EXTEND2 缺 identity specifier | 只发 IPv4 | `[00][02][03]` |
-| 9 | VERSIONS 超时 | CircID 用 4 字节，对端当成 PADDING | negotiating-channels CIRCID_LEN(v=0)=2 |
-| 10 | CERTS type 4 验签失败 | ExtLen 被当成含 type+flags；identity 误用 signing key | cert-spec；Arti `tor-cert` encode.rs |
-| 11 | EXTEND2 超时 | RELAY cell `Length` 未设，Encode 写出 0，Guard 无法解析 EXTEND2 | tor-spec relay-cells |
-| 12 | EXTEND2 DESTROY reason=1 | ntor 电路密钥对 KEY_SEED 二次 HKDF-Extract；AUTH 仍过，AES/digest 与 Guard 不一致 | C Tor onion_ntor.c IKM=secret_input；setting-circuit-keys |
-| 13 | 预建电路假就绪 | `buildInitialCircuits` sleep 1s 后宣称已建好；pool 要等 30s ticker 才动手 | Start 与 WaitUntilReady 分离；pool 立即 prebuild |
-| 14 | HTTPS 选到只放行 80 的 exit | `SelectPath(80)` 且只看 Exit flag | 预建用 443；解析 `p` 行摘要 |
-| 15 | 大流量 DESTROY / hang | 电路级 SENDME 发空 v0，现代 exit 拒收 | flow-control SENDME v1；C Tor sendme.c；Arti SendmeValidator |
-| 16 | 共识只数签名个数 | `VerifyConsensusSignatures` 从未被 `FetchConsensus` 调用；证书取第一把 RSA（identity） | dir-spec consensus-formats / authority-key-certificates；C Tor signed boundaries |
-| 17 | RELAY_RESOLVE 被 exit 丢掉 | StreamID=0（C Tor bug 7889）；PTR 发二进制而非 arpa 名 | remote-hostname-lookup；relay-cells |
-| 18 | 验签未绑定解析结果 | 整份 HTTP 文档都解析，签名只覆盖 prefix；可注入未签名 r 行 | 只解析 signed body；签名行另取 |
-| 19 | SENDME 竞态 / 重复发出 / window=0 漏 tag | 减窗与记 tag 分锁；inbound 突发重复 SENDME；`packageWindow > 0` | 原子减窗；凑满 100 立即占位；含 window=0 |
-| 20 | CREATE2 waiter 竞态与 mux 泄漏 | 先发 CREATE2 再登记 waiter；失败不关 mux | ExpectCreated2 在发送前；Close 停 mux |
-| 21 | CERTS type 7 未验 RSA 绑定 | 主身份已是 Ed25519，但未校验 type 2 遗留 RSA 对 type 7 的交叉签名，Ed25519 可被替换 | cert-spec RSA→Ed25519 cross-certificate；对照 type 2 |
+| 9 | VERSIONS 超时 | CircID 用 4 字节 | CIRCID_LEN(v=0)=2 |
+| 10 | CERTS type 4 验签失败 | ExtLen 含 type+flags；identity 误用 signing key | cert-spec；Arti `tor-cert` |
+| 11 | EXTEND2 超时 | RELAY `Length` 未设 | relay-cells |
+| 12 | EXTEND2 DESTROY reason=1 | 对 KEY_SEED 二次 HKDF-Extract | IKM=`secret_input` |
+| 13 | 预建电路假就绪 | sleep 1s 后宣称已建好 | Start 与 WaitUntilReady 分离 |
+| 14 | HTTPS 选到只放行 80 的 exit | `SelectPath(80)` 且只看 Exit flag | 预建 443；解析 `p` 行 |
+| 15 | 大流量 DESTROY | 电路级 SENDME 发空 v0 | SENDME v1 |
+| 16 | 共识只数签名个数 | `VerifyConsensusSignatures` 未被调用 | dir-spec authority certs |
+| 17 | RELAY_RESOLVE 被丢掉 | StreamID=0；PTR 发二进制 | remote-hostname-lookup |
+| 18 | 验签未绑定解析结果 | 解析了未签名后缀 | 只解析 signed body |
+| 19 | SENDME 竞态 / 重复发出 | 减窗与记 tag 分锁 | 原子减窗 |
+| 20 | CREATE2 waiter 竞态 | 先发后登记 waiter | ExpectCreated2 在发送前 |
+| 21 | 仍默认经典 ntor | 有扩展必须 ntor-v3 | onion_ntor_v3.c |
+| 22 | CERTS type 7 未验 RSA 绑定 | Ed25519 可被替换而指纹仍匹配 | cert-spec RSA→Ed25519 cross-cert |
 
 ---
 
@@ -192,37 +308,22 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 
 | 测试 | 作用 | 默认 `go test ./...` |
 |------|------|----------------------|
-| `pkg/crypto` ntor 单测 / 正确性 | HMAC + 20-byte NODEID | 运行 |
-| `pkg/directory` microdesc 单测 | 同行 identity、raw digest | 运行 |
-| `pkg/directory` 共识验签单测 | 自生成 RSA 证书 + 迷你共识；篡改必失败 | 运行 |
+| `pkg/crypto` ntor / ntor-v3 | 经典 HMAC NODEID；proposal 332 官方向量 | 运行 |
+| `pkg/directory` microdesc / 共识验签 | digest、自生成证书、篡改必失败 | 运行 |
 | `pkg/protocol` CERTS type 7 | RSA→Ed25519 交叉签名；缺 type 2 / 篡改必失败 | 运行 |
-| `integration/link_test.go` | 真实 TLS+handshake / type 7 RSA | 需 `-tags=integration` + `TOR_INTEGRATION_TEST=1` |
-| `integration/e2e_real_tor_test.go` | 共识验签 / CREATE2 / 3-hop / IsTor / SENDME soak / RELAY_RESOLVE | 同上 |
+| `integration/link_test.go` | 真实 TLS+handshake / type 7 RSA | `-tags=integration` + `TOR_INTEGRATION_TEST=1` |
+| `integration/e2e_real_tor_test.go` | 共识验签 / ntor-v3 CREATE2 / 3-hop / IsTor / soak / RESOLVE | 同上 |
 | `scripts/test-real-tor.sh` | 启动 client + socks5h curl | 手动 |
 
-`testdata/ctor-vectors/crypto/ntor_handshake.json` 与 `testdata/arti-vectors/...` 已按**正确算法重生**，目前不是从 C Tor/Arti 仓库原样导出。不得据此宣称已有官方 cross-impl 向量。
-
 ---
 
-## 文档债务
-
-- `ROADMAP.md` 声称 ~98% 完成、Onion/Bridge 已完成：**过期且不实**。
-- `GAPS.md` 部分条目（ntor placeholder、VerifyDigest）已被 AUDIT 标为过期，但 AUDIT 未发现 ntor 算法本身错误。
-- `docs/NTOR_HANDSHAKE.md` 正文仍有错误公式；文首已加警告。
-- `docs/MICRODESCRIPTOR_FETCHING.md` 的 `a` 行描述过期。
-
----
-
-## 第一轮完成标准（已达到：经典 ntor / AES-CTR-SHA1）
-
-只有同时满足以下全部条件，才能把 **Tor Client basic interoperability** 标为 WORKING：
+## 第一轮完成标准（已达到：ntor-v3 + AES-CTR-SHA1）
 
 1. 真实 Guard CREATE2 成功  
 2. Guard → Middle EXTEND2 成功  
 3. Guard → Middle → Exit circuit READY  
-4. SOCKS5 → `https://check.torproject.org/api/ip` 返回 `IsTor == true` 且 IP ≠ 本机公网 IP  
+4. SOCKS5 → `https://check.torproject.org/api/ip` 返回 `IsTor == true`  
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 CREATE2、EXTEND2、3-hop、`IsTor=true`、SENDME v1 soak（≥256KB）、RELAY_RESOLVE（本机 DNS 不可达）。  
-**Tor Client basic interoperability 可标 WORKING（经典 ntor / AES-CTR-SHA1 / SENDME v1 / RELAY_RESOLVE）**。ntor-v3、FlowCtrl=2、更大流量 soak 仍未做。
+**下一轮完成标准（尚未达到）：** FlowCtrl=2 Vegas + ≥1MB soak。再往后：Relay=5 协商、CGO、Conflux。
