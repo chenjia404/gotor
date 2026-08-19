@@ -3,7 +3,9 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -118,4 +120,76 @@ func TestRealOnionConnect(t *testing.T) {
 		t.Skip("rendezvous+hs-ntor OK; RELAY_BEGIN/CONNECTED pending crypto/path debug: " + err.Error())
 	}
 	t.Logf("RELAY_BEGIN CONNECTED on rendezvous stream=%d", sid)
+
+	// HTTP GET 经会合电路
+	req := "GET / HTTP/1.0\r\nHost: " + torProjectOnion + "\r\nUser-Agent: Tor\r\nAccept-Encoding: identity\r\n\r\n"
+	if err := circ.WriteToStream(sid, []byte(req)); err != nil {
+		t.Fatalf("WriteToStream HTTP: %v", err)
+	}
+	var body []byte
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		chunkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		chunk, err := circ.ReadFromStream(chunkCtx, sid)
+		cancel()
+		if err != nil {
+			if len(body) > 0 {
+				break
+			}
+			t.Fatalf("ReadFromStream: %v (got %d bytes so far)", err, len(body))
+		}
+		body = append(body, chunk...)
+		if bytes.Contains(body, []byte("\r\n\r\n")) {
+			// 有头；若有 Content-Length 可提前结束，否则读到超时/END
+			if len(body) > 512 && (bytes.Contains(body, []byte("200")) || bytes.Contains(body, []byte("301")) || bytes.Contains(body, []byte("302"))) {
+				if cl := httpContentLengthOnion(body); cl >= 0 && len(body) >= headerEndOnion(body)+cl {
+					body = body[:headerEndOnion(body)+cl]
+					break
+				}
+			}
+		}
+		if len(body) > 2<<20 {
+			break
+		}
+	}
+	_ = circ.EndStream(sid, 6)
+	if len(body) < 16 {
+		t.Fatalf("HTTP response too short: %d bytes", len(body))
+	}
+	t.Logf("onion HTTP response bytes=%d head=%q", len(body), truncateOnion(body, 120))
+	if !bytes.Contains(body, []byte("HTTP/1.")) {
+		t.Fatalf("not an HTTP response: %q", truncateOnion(body, 80))
+	}
+}
+
+func truncateOnion(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[:n]) + "..."
+}
+
+func headerEndOnion(raw []byte) int {
+	i := bytes.Index(raw, []byte("\r\n\r\n"))
+	if i < 0 {
+		return len(raw)
+	}
+	return i + 4
+}
+
+func httpContentLengthOnion(raw []byte) int {
+	end := bytes.Index(raw, []byte("\r\n\r\n"))
+	if end < 0 {
+		return -1
+	}
+	for _, line := range bytes.Split(raw[:end], []byte("\r\n")) {
+		if len(line) >= 15 && bytes.EqualFold(line[:15], []byte("Content-Length:")) {
+			n, err := strconv.Atoi(string(bytes.TrimSpace(line[15:])))
+			if err != nil {
+				return -1
+			}
+			return n
+		}
+	}
+	return -1
 }
