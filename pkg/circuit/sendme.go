@@ -3,6 +3,7 @@ package circuit
 import (
 	"crypto/subtle"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
@@ -11,6 +12,8 @@ import (
 const (
 	circWindowIncrement = 100
 	sendmeAcceptMin     = cell.SendmeVersion1
+	packageWindowWait   = 2 * time.Minute
+	sendWakePoll        = 25 * time.Millisecond
 )
 
 type sendmePending struct {
@@ -175,12 +178,113 @@ func (c *Circuit) processCircuitSendme(payload []byte) error {
 		if !expected.sentAt.IsZero() {
 			rtt = time.Since(expected.sentAt).Microseconds()
 		}
+		c.sampleOrconnBlockedLocked()
 		c.vegas.processSendme(rtt)
 		c.packageWindow = c.vegas.packageWindow()
+		c.wakeSenders()
 		return nil
 	}
 	c.packageWindow += c.sendmeIncrementLocked()
+	c.wakeSenders()
 	return nil
+}
+
+type writeBlocker interface {
+	WriteBlocked() bool
+}
+
+func (c *Circuit) sampleOrconnBlockedLocked() {
+	if c.vegas == nil {
+		return
+	}
+	wb, ok := c.conn.(writeBlocker)
+	if !ok {
+		return
+	}
+	c.vegas.blockedChan = wb.WriteBlocked()
+}
+
+func (c *Circuit) wakeSenders() {
+	if c == nil || c.sendWake == nil {
+		return
+	}
+	select {
+	case c.sendWake <- struct{}{}:
+	default:
+	}
+}
+
+func isPackageWindowExhausted(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "window exhausted")
+}
+
+func (c *Circuit) refundPackageWindow() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.vegas != nil {
+		if c.vegas.inflight > 0 {
+			c.vegas.inflight--
+		}
+		c.packageWindow = c.vegas.packageWindow()
+		return
+	}
+	c.packageWindow++
+}
+
+func (c *Circuit) waitForSendWake(deadline time.Time) error {
+	if st := c.GetState(); st == StateClosed || st == StateFailed {
+		return fmt.Errorf("circuit %s while waiting for SENDME", st)
+	}
+	remain := time.Until(deadline)
+	if remain <= 0 {
+		return fmt.Errorf("timeout waiting for package window")
+	}
+	wait := sendWakePoll
+	if remain < wait {
+		wait = remain
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-c.destroyCh:
+		return fmt.Errorf("circuit destroyed while waiting for SENDME")
+	case <-c.sendWake:
+		return nil
+	case <-timer.C:
+		return nil
+	}
+}
+
+// reserveDataWindows 为一条 RELAY_DATA 预留电路窗（以及非 CGO 的流窗）。
+// 窗口用尽时等待 SENDME，而不是立刻失败。
+func (c *Circuit) reserveDataWindows(streamID uint16, destCGO bool) (recordSendme bool, err error) {
+	deadline := time.Now().Add(packageWindowWait)
+	for {
+		recordSendme, err = c.decrementPackageWindowForSendme()
+		if err != nil {
+			if !isPackageWindowExhausted(err) {
+				return false, fmt.Errorf("circuit flow control: %w", err)
+			}
+			if err := c.waitForSendWake(deadline); err != nil {
+				return false, err
+			}
+			continue
+		}
+		if destCGO || streamID == 0 {
+			return recordSendme, nil
+		}
+		if err := c.decrementStreamPackageWindow(streamID); err != nil {
+			c.refundPackageWindow()
+			if !isPackageWindowExhausted(err) {
+				return false, fmt.Errorf("stream flow control: %w", err)
+			}
+			if err := c.waitForSendWake(deadline); err != nil {
+				return false, err
+			}
+			continue
+		}
+		return recordSendme, nil
+	}
 }
 
 func (c *Circuit) sendCircuitSendme(tag []byte) error {

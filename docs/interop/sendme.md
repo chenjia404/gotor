@@ -22,6 +22,7 @@ DIGEST 是 **20 字节**，不是 relay cell header 里的 4 字节 digest 字�
 
 记录时机：发出 DATA 后窗口落到 increment 倍数（经典 100；FlowCtrl=2 为 `sendme_inc`，按 `inflight`）。减窗与是否记 tag 在同一把锁里判定。
 发送时机：收到 DATA 后每 increment 个发一次；凑满时立刻清零计数，避免突发 DATA 重复发 SENDME。DIGEST 取**刚收到的那一格** cell 的 backward digest。
+发送窗用尽：`SendRelayCell` **等待** SENDME（最多 2 分钟），不立刻失败。流窗用尽同样等待；预留流窗失败时退还电路窗。
 
 不匹配或 unexpected SENDME：拆路（TORPROTOCOL）。
 

@@ -485,10 +485,25 @@ func TestCertificatePinningInfrastructure(t *testing.T) {
 	})
 
 	t.Run("verify_identity_pinning_no_identity", func(t *testing.T) {
-		// Should succeed when no identity is set (no pinning)
 		err := verifyRelayIdentityPinning([][]byte{}, nil, "")
 		if err != nil {
 			t.Errorf("Expected no error when pinning disabled, got: %v", err)
 		}
 	})
+}
+
+func TestWriteBlockedHeuristic(t *testing.T) {
+	c := &Connection{}
+	if c.WriteBlocked() {
+		t.Fatal("idle connection must not be write-blocked")
+	}
+	c.sendWaiters.Store(2)
+	if !c.WriteBlocked() {
+		t.Fatal("queued senders must report write-blocked")
+	}
+	c.sendWaiters.Store(0)
+	c.lastWriteNs.Store(orconnSlowWrite.Nanoseconds())
+	if !c.WriteBlocked() {
+		t.Fatal("slow TLS write must report write-blocked")
+	}
 }
