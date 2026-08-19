@@ -711,6 +711,7 @@ dGVzdHNpZ25hdHVyZWRhdGExMjM0NTY3ODkw
 func TestVerifyConsensusSignatures_ErrorCases(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(logger.NewDefault())
+	client.authorities = nil // 单测不得访问公网拉证书
 
 	tests := []struct {
 		name          string

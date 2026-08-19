@@ -932,6 +932,7 @@ func TestVerifyConsensusSignatures(t *testing.T) {
 	shortSig := base64.StdEncoding.EncodeToString(make([]byte, 64))
 
 	client := NewClient(nil)
+	client.authorities = nil // 单测不得访问公网拉证书
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1186,34 +1187,25 @@ func TestAuthorityCertCache(t *testing.T) {
 
 // TestParseAuthorityCert tests authority certificate parsing
 func TestParseAuthorityCert(t *testing.T) {
-	logger := logger.NewDefault()
+	a := generateTestAuthority(t, "gabelmoo")
 	cache := &AuthorityCertCache{
 		certs:  make(map[string]*AuthorityCert),
-		logger: logger.Component("certcache"),
+		logger: logger.NewDefault().Component("certcache"),
 	}
 
-	// Test parsing with a valid PKCS1 RSA public key (minimal 512-bit for testing)
-	// This is a real valid RSA key for testing purposes only
-	certData := `dir-source gabelmoo
-fingerprint ED03 BB61 6EB2 F60B EC80 1511 14BB 25CE F515 B226
-dir-key-expires 2027-01-01 00:00:00
------BEGIN RSA PUBLIC KEY-----
-MEgCQQC7VJTUt9Us8WXZHY/7/w4M1iSp3PNxCCPyOuLYmUxJ+NjF8uYGE00j+6C0
-y5TQJtSNlMLaPfJQr8PZQhClq5cJAgMBAAE=
------END RSA PUBLIC KEY-----`
-
-	cert, err := cache.parseAuthorityCert([]byte(certData), "ED03BB616EB2F60BEC80151114BB25CEF515B226")
+	cert, err := cache.parseAuthorityCert([]byte(a.certPEM), a.dir.V3Ident)
 	if err != nil {
 		t.Fatalf("parseAuthorityCert() error = %v", err)
 	}
 
-	if cert.Identity != "ED03BB616EB2F60BEC80151114BB25CEF515B226" {
-		t.Errorf("cert.Identity = %s, want ED03BB616EB2F60BEC80151114BB25CEF515B226", cert.Identity)
+	if cert.Identity != a.dir.V3Ident {
+		t.Errorf("cert.Identity = %s, want %s", cert.Identity, a.dir.V3Ident)
 	}
-
-	expectedExpires := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
-	if !cert.ExpiresAt.Equal(expectedExpires) {
-		t.Errorf("cert.ExpiresAt = %v, want %v", cert.ExpiresAt, expectedExpires)
+	if cert.IdentityKey == nil || cert.SigningKey == nil {
+		t.Fatal("parsed cert missing identity or signing key")
+	}
+	if cert.ExpiresAt.IsZero() {
+		t.Fatal("parsed cert missing expiry")
 	}
 }
 
@@ -1482,56 +1474,39 @@ func TestGetSubnet16(t *testing.T) {
 
 // TestAuthorityCertCacheGet tests certificate fetching with HTTP mock server
 func TestAuthorityCertCacheGet(t *testing.T) {
-	// Create test certificate data
-	certData := `dir-source testauth
-fingerprint AAAA BB61 6EB2 F60B EC80 1511 14BB 25CE F515 B226
-dir-key-expires 2027-01-01 00:00:00
------BEGIN RSA PUBLIC KEY-----
-MEgCQQC7VJTUt9Us8WXZHY/7/w4M1iSp3PNxCCPyOuLYmUxJ+NjF8uYGE00j+6C0
-y5TQJtSNlMLaPfJQr8PZQhClq5cJAgMBAAE=
------END RSA PUBLIC KEY-----`
+	a := generateTestAuthority(t, "cacheauth")
 
-	// Create test HTTP server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/tor/keys/authority" {
+		if r.URL.Path == "/tor/keys/fp/"+a.dir.V3Ident {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(certData))
-		} else {
-			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(a.certPEM))
+			return
 		}
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
 
-	logger := logger.NewDefault()
 	cache := &AuthorityCertCache{
 		certs:  make(map[string]*AuthorityCert),
-		logger: logger.Component("certcache"),
+		logger: logger.NewDefault().Component("certcache"),
 	}
 
 	ctx := context.Background()
 	httpClient := server.Client()
 	authorities := []string{server.URL + "/tor/status-vote/current/consensus"}
 
-	// First fetch - should retrieve from server
-	cert, err := cache.Get(ctx, "AAAABB616EB2F60BEC80151114BB25CEF515B226", httpClient, authorities)
+	cert, err := cache.Get(ctx, a.dir.V3Ident, httpClient, authorities)
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-
-	if cert == nil {
-		t.Fatal("Get() returned nil cert")
+	if cert.Identity != a.dir.V3Ident {
+		t.Errorf("cert.Identity = %s, want %s", cert.Identity, a.dir.V3Ident)
 	}
 
-	if cert.Identity != "AAAABB616EB2F60BEC80151114BB25CEF515B226" {
-		t.Errorf("cert.Identity = %s, want AAAABB616EB2F60BEC80151114BB25CEF515B226", cert.Identity)
-	}
-
-	// Second fetch - should return from cache
-	cert2, err := cache.Get(ctx, "AAAABB616EB2F60BEC80151114BB25CEF515B226", httpClient, authorities)
+	cert2, err := cache.Get(ctx, a.dir.V3Ident, httpClient, authorities)
 	if err != nil {
 		t.Fatalf("Get() second call error = %v", err)
 	}
-
 	if cert2 != cert {
 		t.Error("Get() should return cached certificate")
 	}

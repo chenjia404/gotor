@@ -14,7 +14,7 @@ func TestFetchConsensusMethod33Integration(t *testing.T) {
 	}
 
 	client := NewClient(nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// Fetch consensus (now using consensus-microdesc by default)
