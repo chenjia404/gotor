@@ -27,11 +27,11 @@
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
 | VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | WORKING | VERSIONS CircID=2、CERTS type4 验签、NETINFO 已在真实 Guard 握手通过；AUTH_CHALLENGE 客户端路径按 spec 跳过 |
-| CREATE2 / ntor / CREATED2 | PARTIAL | 默认已切 ntor-v3（HTYPE 0x0003，Ed25519 主身份）；经典 ntor 仍可回退。待真实网络验收 |
-| EXTEND2 / EXTENDED2 | PARTIAL | builder 对 Middle/Exit 同样优先 ntor-v3；待真实 3-hop 验收 |
+| CREATE2 / ntor / CREATED2 | WORKING | 默认 ntor-v3（HTYPE 0x0003，Ed25519 主身份）；真实 Guard CREATE2 + `CC_FIELD_RESPONSE` `sendme_inc=31`。缺密钥或 `Relay<4` 回退经典 ntor |
+| EXTEND2 / EXTENDED2 | WORKING | 真实 3-hop 三跳均为 ntor-v3 + FlowCtrl=2；SOCKS5 `IsTor=true` |
 | Circuit crypto / digest | WORKING | 真实 RELAY_DROP / EXTEND2 / BEGIN / DATA 已证明 AES-CTR + SHA-1 digest 与 Guard 一致；仍缺官方 cell 向量 |
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
-| SENDME / flow control | PARTIAL | 电路级 SENDME v1（间隔 100）已在真实网络通过；FlowCtrl=2 已能经 ntor-v3 协商 sendme_inc，完整 Vegas 未做 |
+| SENDME / flow control | PARTIAL | 电路级 SENDME v1 与协商后的 `sendme_inc=31` 已在真实 soak（282KB）通过；完整 FlowCtrl=2 Vegas（RTT / cwnd 调节）未做 |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE `www.torproject.org` 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功 |
@@ -88,7 +88,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 - `InsecureSkipVerify` 仍可能出现在 TLS 配置（Tor 用自签名 + CERTS）。须靠 CERTS/fingerprint，而不是关闭校验后宣称已验证。
 - 真实握手测试：`integration/link_test.go`（`TOR_INTEGRATION_TEST=1`）。
 
-### ntor / CREATE2 / EXTEND2 — PARTIAL（默认 ntor-v3 `0x0003`）
+### ntor / CREATE2 / EXTEND2 — WORKING（默认 ntor-v3 `0x0003`）
 
 **曾经 BROKEN（无法与 C Tor / Arti 互操作）：**
 
@@ -113,7 +113,15 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 **现行默认：** 有 Ed25519 主身份且 `Relay=4`（或缺 pr）时用 ntor-v3。`FlowCtrl=2` 时发送 `CC_FIELD_REQUEST`。
 经典 ntor `0x0002` 仅作回退。官方向量（proposal 332）已对齐。
 
-**此前已用真实网络验证（经典 ntor）：** Guard CREATE2、Middle/Exit EXTEND2、3-hop READY、SOCKS5 `IsTor=true`。
+**真实网络验收（2026-08-19，`TOR_INTEGRATION_TEST=1`）：**
+
+- `TestRealNtorV3` / `TestRealGuardCreate2`：HTYPE=3，Guard 协商 `FlowCtrl=2` `sendme_inc=31`
+- `TestRealThreeHopCircuit`：Guard → Middle → Exit 三跳均为 ntor-v3 + CC，电路 READY
+- `TestRealCheckTorProject`：路径 BiggerBetter → forest38 → Quetzalcoatl，`IsTor=true`，ExitIP=`185.244.192.184`
+- `TestRealFlowControlSoak`：282432 字节，电路未 DESTROY
+- `TestRealRelayResolve`：exit DFRI149 解析 `www.torproject.org` → `116.202.120.166` + IPv6；PTR → `web-fsn-02.torproject.org`
+
+生产 verification 必须是 `"circuit extend"`（14 字节，无 NUL）。空串会使服务端 phase1 MAC 失败并立即 DESTROY reason=1。
 
 ### Circuit crypto / Relay cell — WORKING（主路径）
 
@@ -122,15 +130,16 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 - 真实 RELAY_DROP 不再触发 DESTROY；EXTEND2 / BEGIN / DATA 已跑通。
 - **缺口**：缺官方 C Tor/Arti relay-cell 向量；cell tracer（`pkg/debug`，`GOTOR_CELL_TRACE=1`）默认关闭且不记用户 payload。
 
-### SENDME / Flow control — WORKING（电路级 v1）
+### SENDME / Flow control — PARTIAL（v1 + 协商 sendme_inc；Vegas 未做）
 
-- circuit window 1000 / +100；stream window 500 / +50。
+- 未协商 CC 时：circuit window 1000 / +100；stream window 500 / +50。
 - 电路级 SENDME 发 version 1，DIGEST=触发 cell 的完整 20 字节滚动 SHA-1。
-- 发出 DATA 时在 `package_window % 100 == 0` 入队；收到 SENDME 必须 FIFO 匹配，否则拆路。
+- 发出 DATA 时在 `package_window % sendmeInc == 0` 入队；收到 SENDME 必须 FIFO 匹配，否则拆路。
+- ntor-v3 + `FlowCtrl=2`：发送 `CC_FIELD_REQUEST`，把间隔改为对端 `sendme_inc`（真实 mainnet 常见 31），初始 cwnd=186。
 - 流级 SENDME 仍为空（spec）。
 - DATA padding 随机化。
-- 真实网络：`TestRealFlowControlSoak` 经 SOCKS 下载 282KB，电路未 DESTROY。
-- **缺口**：1MB–100MB soak、FlowCtrl=2（ntor-v3 congestion control）。
+- 真实网络：`TestRealFlowControlSoak` 在 ntor-v3 / `sendme_inc=31` 下经 SOCKS 下载 282432 字节，电路未 DESTROY。
+- **缺口**：完整 FlowCtrl=2 Vegas（RTT / cwnd 调节）、1MB–100MB soak。
 
 ### SOCKS5 / DNS — WORKING（CONNECT + RESOLVE）
 
@@ -140,7 +149,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 - RELAY_RESOLVE：非 0 StreamID、arpa PTR、收集多条应答；0xF0/0xF1 Value 按字符串处理。
 - CONNECT 仍把 hostname 原样放进 RELAY_BEGIN（socks5h），不走本机 DNS。
 - 生产路径静态禁止 `net.Lookup*`。
-- 真实网络：`TestRealRelayResolve` 经 exit `artikel5ev8b` 解析 `www.torproject.org` → `204.8.99.144` + IPv6；PTR → `web-dal-07.torproject.org`；`.invalid` 回 `0xF1 Error resolving hostname`。本机 `DefaultResolver` 被指到不可达地址。
+- 真实网络：`TestRealRelayResolve` 经 exit `DFRI149` 解析 `www.torproject.org` → `116.202.120.166` + IPv6；PTR → `web-fsn-02.torproject.org`；`.invalid` 回 `0xF1 Error resolving hostname`。本机 `DefaultResolver` 被指到不可达地址。
 - 详见 `docs/interop/dns.md`。
 
 ### Guard / Path / Exit policy — PARTIAL
@@ -225,5 +234,5 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 CREATE2、EXTEND2、3-hop、`IsTor=true`、SENDME v1 soak（≥256KB）、RELAY_RESOLVE（本机 DNS 不可达）。  
-默认路径已改为 **ntor-v3**（官方向量已对齐）；完整 Vegas 与更大流量 soak 仍未做。
+当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 ntor-v3 CREATE2/EXTEND2、3-hop、`IsTor=true`（ExitIP=`185.244.192.184`）、SENDME soak（282432 字节，`sendme_inc=31`）、RELAY_RESOLVE（本机 DNS 不可达）。  
+完整 FlowCtrl=2 Vegas 与更大流量 soak 仍未做。

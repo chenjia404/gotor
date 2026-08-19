@@ -1,10 +1,11 @@
 # EXTEND2 互操作
 
-**日期**：2026-08-18
+**日期**：2026-08-19
 
 ## 已验证（真实 Tor Network）
 
-- Guard CREATE2 / ntor / CREATED2（72 字节密钥）
+- Guard CREATE2 / ntor-v3（HTYPE `0x0003`）/ CREATED2（先 32 字节 ENC_KEY，再 72 字节电路密钥）
+- 经典 ntor `0x0002` 仅作缺 Ed25519 / `Relay<4` 时的回退
 - Link handshake（VERSIONS v5 + CERTS 验签 + NETINFO）
 - RELAY_DROP 不再触发 DESTROY（digest / AES-CTR 与 Guard 一致）
 - Guard → Middle EXTEND2 / EXTENDED2

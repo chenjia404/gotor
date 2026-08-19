@@ -41,7 +41,12 @@ Relay 宣告 `Relay=4` 才接受 ntor-v3。`FlowCtrl=2` 才协商拥塞控制。
 - 未宣告 FlowCtrl=2 时不请求 CC，继续经典 SENDME v1（间隔 100）
 - 缺 Ed25519 或 `Relay<4` 时回退经典 ntor
 
-## 验收
+## 验收（2026-08-19）
 
-- 单测：proposal 332 官方向量
-- 真实网络：`TestRealNtorV3`
+- 单测：proposal 332 官方向量（`TestNtorV3OfficialVector`）
+- 真实网络（`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration`）：
+  - `TestRealNtorV3` / `TestRealGuardCreate2`：HTYPE=3，协商 `FlowCtrl=2` `sendme_inc=31`
+  - `TestRealThreeHopCircuit`：三跳均为 ntor-v3 + CC，电路 READY
+  - `TestRealCheckTorProject`：BiggerBetter → forest38 → Quetzalcoatl，`IsTor=true`，ExitIP=`185.244.192.184`
+  - `TestRealFlowControlSoak`：282432 字节，电路未 DESTROY
+  - `TestRealRelayResolve`：exit DFRI149，`www.torproject.org` → `116.202.120.166` + IPv6
