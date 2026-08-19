@@ -2,6 +2,7 @@
 
 > **⚠️ 过期警告（2026-08-19）**：下文中的「~98% 完成」「Onion/Bridge 托管已完成」等表述**不可信**。  
 > 现行进度与互操作缺口以 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) 为准。  
+> **与官方 C Tor / Arti 是否兼容，以 [`docs/COMPAT_WITH_OFFICIAL_TOR.md`](docs/COMPAT_WITH_OFFICIAL_TOR.md) 的差距为准**，不要用下文完成度百分比。  
 > **客户端**主链路（含 v3 `.onion` HTTP、Padding=2、官方向量）已在 `IMPLEMENTATION_STATUS` 标 WORKING；  
 > Bridge/Relay **服务端**与洋葱**托管**仍非本仓库验收范围。
 

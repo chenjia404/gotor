@@ -290,6 +290,7 @@ Copyright (c) 2024, OPD AI. See [LICENSE](LICENSE) for full license text.
 - [Tor Protocol Specifications](https://spec.torproject.org/)
 - [The Tor Project](https://www.torproject.org/)
 - [Architecture Documentation](docs/ARCHITECTURE.md)
+- [与官方 Tor 的兼容差距](docs/COMPAT_WITH_OFFICIAL_TOR.md)
 - [API Reference](docs/API.md)
 - [Android SDK 指南](docs/ANDROID_SDK.md)
 - [Onion Service Hosting Guide](docs/ONION_SERVICE_HOSTING.md)
