@@ -257,6 +257,11 @@ func (c *Client) parseMicrodescriptors(data []byte, digestMap map[string][]*Rela
 			if fields.policy != nil {
 				relay.ExitPolicy = fields.policy
 			}
+			// consensus-method 28+ 把 IPv6 放在共识 a 行；更旧的 microdesc 仍可能带 a 行。
+			if fields.ipv6 != "" && relay.IPv6 == "" {
+				relay.IPv6 = fields.ipv6
+				relay.IPv6Port = fields.ipv6Port
+			}
 		}
 		matched++
 	}
@@ -296,6 +301,8 @@ type microdescFields struct {
 	identityKey []byte
 	family      []string
 	policy      *ExitPolicySummary
+	ipv6        string
+	ipv6Port    int
 }
 
 func parseMicrodescriptorFields(doc []byte) microdescFields {
@@ -327,6 +334,13 @@ func parseMicrodescriptorFields(doc []byte) microdescFields {
 		case "p":
 			if pol, err := ParseExitPolicySummary(line); err == nil {
 				out.policy = pol
+			}
+		case "a":
+			tmp := &Relay{}
+			applyALine(tmp, line)
+			if tmp.IPv6 != "" && out.ipv6 == "" {
+				out.ipv6 = tmp.IPv6
+				out.ipv6Port = tmp.IPv6Port
 			}
 		}
 	}
