@@ -548,10 +548,24 @@ func (s *ConfluxSet) sendMultiplexed(rc *cell.RelayCell) error {
 }
 
 func (s *ConfluxSet) pickLowRTTLocked() *confluxLeg {
+	if best := s.pickLowRTTFilterLocked(true); best != nil {
+		return best
+	}
+	// 两腿发送窗都用尽时仍选一腿，交给 reserveDataWindows 等 SENDME。
+	return s.pickLowRTTFilterLocked(false)
+}
+
+func (s *ConfluxSet) pickLowRTTFilterLocked(requireRoom bool) *confluxLeg {
 	var best *confluxLeg
 	var bestRTT time.Duration
 	for _, leg := range s.legs {
-		if leg == nil || leg.circ == nil || !leg.circ.hasSendRoom() {
+		if leg == nil || leg.circ == nil {
+			continue
+		}
+		if requireRoom && !leg.circ.hasSendRoom() {
+			continue
+		}
+		if st := leg.circ.GetState(); st != StateOpen && st != StateBuilding {
 			continue
 		}
 		rtt := s.legRTT(leg)
