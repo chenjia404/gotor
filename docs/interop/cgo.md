@@ -53,7 +53,10 @@ v1 的 `relay_cmd_expects_streamid_in_v1` **不含** SENDME，因此 CGO 电路�
 ntor-v3 type 3 请求 `[02 06]`，且仅当对端 `Relay=5` ∧ `Relay=6` ∧ `FlowCtrl=2`。
 请求后必须用 160 字节 KDF 建 CGO hop；**禁止**再按 72 字节切回 AES-CTR。
 
-## 真实网络
+## 真实网络（2026-08-19）
 
-待 `TOR_INTEGRATION_TEST=1` 跑 CREATE2 / 3-hop / `IsTor=true`。
-未通过前状态为 UNVERIFIED。
+- CREATE2：Guard `SENDNOOSEplz`，`cgo=true`
+- 3-hop：`llorona` → `Bluejaybrd` → `DFRI18`，三跳 CGO
+- SOCKS5 `https://check.torproject.org/api/ip`：`IsTor=true`，ExitIP=`192.42.116.21`
+  （`rafsnicesrelay` → `booth` → `NTH21R3`）
+- soak **1059120** 字节未拆路（`rafsnicesrelay` → `Art3mis` → `r0cket09i7`）
