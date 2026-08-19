@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -379,6 +380,159 @@ func TestRealFlowControlSoak(t *testing.T) {
 		t.Fatalf("only downloaded %d bytes, want >= %d (need enough DATA to exercise SENDME)", total, wantBytes)
 	}
 	t.Logf("soak OK bytes=%d (circuit survived authenticated SENDME + FlowCtrl=2 Vegas)", total)
+}
+
+func soakHTTPClient(t *testing.T, tor *client.SimpleClient, timeout time.Duration) *http.Client {
+	t.Helper()
+	httpClient, err := helpers.NewHTTPClient(tor, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpClient.Timeout = timeout
+	return httpClient
+}
+
+func soakDownload(t *testing.T, httpClient *http.Client, url string) (int64, error) {
+	t.Helper()
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return 0, err
+	}
+	n, err := io.Copy(io.Discard, resp.Body)
+	status := resp.StatusCode
+	resp.Body.Close()
+	if err != nil {
+		return n, err
+	}
+	if status != 200 {
+		return n, fmt.Errorf("HTTP %d (%d bytes)", status, n)
+	}
+	return n, nil
+}
+
+// TestRealFlowControlSoak10MB 单客户端连续下载至少 10MB，覆盖多次 SENDME 与 window=0 等待。
+func TestRealFlowControlSoak10MB(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	tor, err := client.ConnectWithContext(ctx)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer tor.Close()
+	if err := tor.WaitUntilReady(3 * time.Minute); err != nil {
+		t.Fatalf("WaitUntilReady: %v", err)
+	}
+
+	httpClient := soakHTTPClient(t, tor, 3*time.Minute)
+	const wantBytes = 10 * 1024 * 1024
+	var total int64
+	for i := 0; total < wantBytes && i < 400; i++ {
+		n, err := soakDownload(t, httpClient, fmt.Sprintf("https://www.torproject.org/?soak10=%d", i))
+		if err != nil {
+			t.Logf("GET: %v", err)
+			if total > 0 && strings.Contains(err.Error(), "DESTROY") {
+				t.Fatalf("circuit DESTROY after %d bytes: %v", total, err)
+			}
+			continue
+		}
+		total += n
+		t.Logf("downloaded %d bytes total=%d", n, total)
+	}
+	if total < wantBytes {
+		t.Fatalf("only downloaded %d bytes, want >= %d", total, wantBytes)
+	}
+	t.Logf("10MB soak OK bytes=%d", total)
+}
+
+// TestRealFlowControlMultiStream 同一 SOCKS 客户端上并发多流下载。
+func TestRealFlowControlMultiStream(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+
+	tor, err := client.ConnectWithContext(ctx)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer tor.Close()
+	if err := tor.WaitUntilReady(3 * time.Minute); err != nil {
+		t.Fatalf("WaitUntilReady: %v", err)
+	}
+
+	httpClient := soakHTTPClient(t, tor, 2*time.Minute)
+	const streams = 4
+	const perStream = 8
+	type result struct {
+		n   int64
+		err error
+	}
+	ch := make(chan result, streams)
+	for s := 0; s < streams; s++ {
+		go func(id int) {
+			var got int64
+			for i := 0; i < perStream; i++ {
+				n, err := soakDownload(t, httpClient, fmt.Sprintf("https://www.torproject.org/?ms=%d-%d", id, i))
+				if err != nil {
+					ch <- result{n: got, err: err}
+					return
+				}
+				got += n
+			}
+			ch <- result{n: got}
+		}(s)
+	}
+	var total int64
+	for i := 0; i < streams; i++ {
+		r := <-ch
+		if r.err != nil {
+			t.Logf("stream error after %d bytes: %v", r.n, r.err)
+		}
+		total += r.n
+	}
+	if total < 256*1024 {
+		t.Fatalf("multi-stream only got %d bytes", total)
+	}
+	t.Logf("multi-stream OK streams=%d bytes=%d", streams, total)
+}
+
+// TestRealFlowControlSoak100MB 可选的超大 soak。默认跳过，避免拖垮常规集成。
+func TestRealFlowControlSoak100MB(t *testing.T) {
+	requireRealTor(t)
+	if os.Getenv("TOR_SOAK_100MB") != "1" {
+		t.Skip("set TOR_SOAK_100MB=1 to run 100MB soak")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
+	defer cancel()
+
+	tor, err := client.ConnectWithContext(ctx)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer tor.Close()
+	if err := tor.WaitUntilReady(3 * time.Minute); err != nil {
+		t.Fatalf("WaitUntilReady: %v", err)
+	}
+
+	httpClient := soakHTTPClient(t, tor, 5*time.Minute)
+	const wantBytes = 100 * 1024 * 1024
+	var total int64
+	for i := 0; total < wantBytes && i < 4000; i++ {
+		n, err := soakDownload(t, httpClient, fmt.Sprintf("https://www.torproject.org/?soak100=%d", i))
+		if err != nil {
+			t.Logf("GET: %v", err)
+			continue
+		}
+		total += n
+		if i%20 == 0 {
+			t.Logf("100MB soak progress total=%d", total)
+		}
+	}
+	if total < wantBytes {
+		t.Fatalf("only downloaded %d bytes, want >= %d", total, wantBytes)
+	}
+	t.Logf("100MB soak OK bytes=%d", total)
 }
 
 // TestRealRelayResolve 在 3-hop 上发 RELAY_RESOLVE，并把本机 resolver 指到不可达地址，

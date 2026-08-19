@@ -291,6 +291,7 @@ type VegasSnapshot struct {
 	BDP         int
 	QueueUse    int
 	SendmeInc   int
+	BlockedChan bool
 	MinRTT      time.Duration
 	EWMA        time.Duration
 }
@@ -307,6 +308,7 @@ func (s *vegasState) snapshot() VegasSnapshot {
 		BDP:         s.bdp,
 		QueueUse:    s.queueUse(),
 		SendmeInc:   s.sendmeInc,
+		BlockedChan: s.blockedChan,
 		MinRTT:      time.Duration(s.minRTTUsec) * time.Microsecond,
 		EWMA:        time.Duration(s.ewmaRTTUsec) * time.Microsecond,
 	}

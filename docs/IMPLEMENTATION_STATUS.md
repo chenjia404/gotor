@@ -77,17 +77,20 @@
   - 共识 `params` 经 `LastConsensusParams` 注入（Exit 阈值 `cc_vegas_*_exit`）
   - 单测：`pkg/circuit/vegas_test.go`、`ccparams_test.go`
   - 真实 soak：`TestRealFlowControlSoak` **1059120** 字节，Guard `rafsnicesrelay` → Middle `janina1` → Exit `NTH66R5`，三跳 `sendme_inc=31`，电路未 DESTROY
-- **剩余**：orconn 写缓冲阻塞只留字段；下载为主的 soak 主要证明 SENDME 发射与电路存活，上传大窗调节见 P0.2
+- **剩余**：orconn 阻塞已按 TLS 写排队/慢写采样；更大 soak 见 P0.2
 - **Spec**：https://spec.torproject.org/proposals/324-rtt-congestion-control.html ；tor-spec flow-control
 - **C Tor**：`src/core/or/congestion_control_common.c`、`congestion_control_vegas.c`
 - **现有代码**：`pkg/circuit/vegas.go`、`pkg/circuit/ccparams.go`、`pkg/circuit/sendme.go`
 
 #### 2. 更大流量 soak + SENDME 回归
 
-- **状态**：PARTIAL。已有 **1059120** 字节 soak（`TestRealFlowControlSoak`）。
-- **未做**：10MB / 100MB；并发多流；window=0 边界的真实网络证明。
-- **现有代码**：`integration/e2e_real_tor_test.go`
-- **验收**：电路存活、SENDME v1 digest FIFO 匹配、无重复 SENDME。
+- **状态**：PARTIAL（代码已实现 window=0 等待 + orconn 阻塞启发式；10/100MB 真实验收待跑）。
+- **已做**：
+  - `SendRelayCell` 在电路/流窗口用尽时等待 SENDME，而不是立刻失败
+  - OR 连接 `WriteBlocked()`：发送排队或 TLS 写出 ≥25ms 视为 orconn_blocked，Vegas 采样后退出 SS / 按 beta 减窗
+  - 集成：`TestRealFlowControlSoak10MB`、`TestRealFlowControlMultiStream`、`TestRealFlowControlSoak100MB`（需 `TOR_SOAK_100MB=1`）
+- **验收**：电路存活、SENDME v1 digest FIFO 匹配、无重复 SENDME。10MB / 多流通过后标 WORKING。
+- **现有代码**：`pkg/circuit/sendme.go`、`pkg/connection/connection.go`、`integration/e2e_real_tor_test.go`
 
 ### P1 — 最新电路加密方向（尚未 required，但 mainnet 已宣告）
 
@@ -283,7 +286,7 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 - 协商 CC 后启用 TOR_VEGAS：间隔 `sendme_inc`，初始 cwnd=`cc_cwnd_init`（默认 124，不是 186）。
 - 流级 SENDME 仍为空（spec）。
 - **真实网络（2026-08-19）**：soak **1059120** 字节，`rafsnicesrelay` → `janina1` → `NTH66R5`，未拆路。
-- **剩余**：10–100MB soak；orconn 阻塞启发式。见 P0.2。
+- **剩余**：10–100MB 真实验收。orconn 阻塞启发式已接线。见 P0.2。
 
 ### SOCKS5 / DNS — WORKING
 
@@ -349,4 +352,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准（尚未达到）：** 更大 soak（10/100MB + 多流）。EXTEND2 IPv6 已在真实网络 NSPEC=4 + EXTENDED2 通过。
+**下一轮完成标准（尚未达到）：** 10MB / 多流 soak 真实验收。window=0 等待与 orconn 阻塞已实现。

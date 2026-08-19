@@ -88,7 +88,8 @@ type Circuit struct {
 	destroyCh      chan struct{}
 	destroyOnce    sync.Once
 	destroyReason  byte
-	conflux        *ConfluxSet // 非 nil 表示本电路正在或已经参与 Conflux 套
+	conflux        *ConfluxSet   // 非 nil 表示本电路正在或已经参与 Conflux 套
+	sendWake       chan struct{} // SENDME / 拆路时叫醒等窗的发送方
 }
 
 // Hop represents a single hop in a circuit (one relay)
@@ -158,6 +159,7 @@ func NewCircuit(id uint32) *Circuit {
 		replayProtection: cell.NewReplayProtection(), // SECURITY-001: Initialize replay protection
 		deliverTimer:     deliverTimer,               // AUDIT-MED-4 FIX: Reusable timer
 		destroyCh:        make(chan struct{}),
+		sendWake:         make(chan struct{}, 1),
 	}
 }
 
@@ -900,6 +902,7 @@ func (c *Circuit) incrementPackageWindow() {
 
 	// Per tor-spec.txt §7.4, each SENDME increments the window by 100
 	c.packageWindow += 100
+	c.wakeSenders()
 }
 
 // decrementDeliverWindow decrements the circuit-level deliver window
@@ -1109,6 +1112,7 @@ func (c *Circuit) incrementStreamPackageWindow(streamID uint16) {
 	}
 
 	stream.IncrementPackageWindow()
+	c.wakeSenders()
 }
 
 // deliverToStream delivers a relay cell to the appropriate stream via the stream manager
@@ -1181,19 +1185,11 @@ func (c *Circuit) sendRelayCellLocal(relayCell *cell.RelayCell) error {
 	// Per tor-spec.txt §7.4, only DATA cells count against the package window
 	recordSendme := false
 	if relayCell.Command == cell.RelayData {
-		// Circuit-level flow control：减窗与「是否记 SENDME tag」同一把锁判定。
+		// window=0 时等待 SENDME，而不是立刻失败（大上传 / Vegas cwnd 用尽）。
 		var err error
-		recordSendme, err = c.decrementPackageWindowForSendme()
+		recordSendme, err = c.reserveDataWindows(relayCell.StreamID, destCGO)
 		if err != nil {
-			return fmt.Errorf("circuit flow control: %w", err)
-		}
-
-		// v1/CGO 没有流级 SENDME（C Tor relay_cmd_expects_streamid_in_v1
-		// 不含 SENDME）。FlowCtrl=2 用电路级 SENDME + XON/XOFF。
-		if !destCGO && relayCell.StreamID > 0 {
-			if err := c.decrementStreamPackageWindow(relayCell.StreamID); err != nil {
-				return fmt.Errorf("stream flow control: %w", err)
-			}
+			return err
 		}
 	}
 

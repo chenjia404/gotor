@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
@@ -70,7 +71,13 @@ type Connection struct {
 	requireCERTS        bool          // If true, fail handshake on CERTS validation failure
 	readyCh             chan struct{} // AUDIT-MED-3 FIX: Channel closed when the connection reaches a terminal state
 	circIDLen           int           // 2 before VERSIONS；协商到 v≥4 后为 4
+	sendWaiters         atomic.Int32  // 正在等/持有 sendMu 的发送方
+	lastWriteNs         atomic.Int64  // 最近一次 TLS 写出耗时
 }
+
+// orconnOutbufSlow 对应 C Tor 写缓冲堵住：单次 EncodeLink 超过该值视为阻塞。
+// proposal 324 用 orconn_blocked 退出 Slow Start / 按 beta 减窗。
+const orconnSlowWrite = 25 * time.Millisecond
 
 // Config holds connection configuration
 type Config struct {
@@ -328,6 +335,9 @@ func (c *Connection) Connect(ctx context.Context, cfg *Config) error {
 
 // SendCell sends a cell over the connection
 func (c *Connection) SendCell(cell *cell.Cell) error {
+	c.sendWaiters.Add(1)
+	defer c.sendWaiters.Add(-1)
+
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 
@@ -341,13 +351,25 @@ func (c *Connection) SendCell(cell *cell.Cell) error {
 	default:
 	}
 
+	start := time.Now()
 	if err := cell.EncodeLink(c.tlsConn, c.circIDWidth()); err != nil {
+		c.lastWriteNs.Store(time.Since(start).Nanoseconds())
 		c.logger.Error("Failed to send cell", "error", err, "command", cell.Command)
 		return fmt.Errorf("failed to send cell: %w", err)
 	}
+	c.lastWriteNs.Store(time.Since(start).Nanoseconds())
 
 	c.logger.Debug("Sent cell", "command", cell.Command, "circuit_id", cell.CircID)
 	return nil
+}
+
+// WriteBlocked 表示 OR 连接写出被堵住（有人在等 sendMu，或最近一次写过慢）。
+// 供 FlowCtrl=2 Vegas 采样 orconn_blocked，纯 Go，不碰 CGO。
+func (c *Connection) WriteBlocked() bool {
+	if c.sendWaiters.Load() > 1 {
+		return true
+	}
+	return time.Duration(c.lastWriteNs.Load()) >= orconnSlowWrite
 }
 
 // ReceiveCell receives a cell from the connection
