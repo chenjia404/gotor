@@ -395,7 +395,7 @@ func TestFamilyDiversityEnforcement(t *testing.T) {
 		{
 			Nickname:    "Relay1",
 			Fingerprint: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-			Address:     "10.0.1.1:9001",              // Different /16 subnet
+			Address:     "10.0.1.1:9001",                      // Different /16 subnet
 			Flags:       []string{"Running", "Valid", "Fast"}, // Not Exit flag
 			Bandwidth:   1000000,
 			Family:      []string{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}, // Related to Guard1

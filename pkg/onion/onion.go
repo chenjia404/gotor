@@ -17,15 +17,18 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"net/http"
+	mrand "math/rand"
+	"net"
 	"strings"
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 
+	"github.com/opd-ai/go-tor/pkg/cell"
+	"github.com/opd-ai/go-tor/pkg/crypto"
+	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/security"
 )
@@ -323,13 +326,20 @@ type CellSender interface {
 	ReceiveRelayCell(ctx context.Context, circuitID uint32, timeout time.Duration) ([]byte, error)
 }
 
-// RendezvousState stores the cryptographic state for a rendezvous in progress (AUDIT-006).
-// It contains the client's ephemeral key pair and associated circuit information
-// for completing the rendezvous protocol per rend-spec-v3.txt.
+// CellSenderWithCommand 可选：按命令过滤接收。
+type CellSenderWithCommand interface {
+	CellSender
+	ReceiveRelayCellCommand(ctx context.Context, circuitID uint32, wantCmd byte, timeout time.Duration) ([]byte, error)
+}
+
+// RendezvousState stores the cryptographic state for a rendezvous in progress.
+// hs-ntor：客户端持有 x、B（intro EncKey 公钥）、AUTH_KEY、subcred。
 type RendezvousState struct {
 	EphemeralPrivate [32]byte // Client's ephemeral private key (x)
 	EphemeralPublic  [32]byte // Client's ephemeral public key (X)
-	OnionKey         [32]byte // Service's onion key from INTRODUCE1
+	IntroEncKeyB     [32]byte // Introduction point ENC_KEY public (B)
+	IntroAuthKey     [32]byte // Introduction point AUTH_KEY (Ed25519)
+	Subcredential    [32]byte // N_hs_subcred
 	CircuitID        uint32   // Rendezvous circuit ID
 }
 
@@ -340,11 +350,15 @@ type Client struct {
 	logger          *logger.Logger
 	hsdir           *HSDir
 	consensus       []*HSDirectory              // Available HSDirs from consensus
+	networkRelays   []*directory.Relay          // 全网共识（引言/会合匹配用）
 	circuitBuilder  CircuitBuilder              // Circuit builder for creating circuits
 	cellSender      CellSender                  // Cell sender for relay communication
 	rendezvousState map[uint32]*RendezvousState // AUDIT-006: Track ephemeral keys per circuit
 	rendezvousMu    sync.Mutex                  // Protects rendezvousState map
 	authStore       *ClientAuthStore            // Client authorization credentials for private onion services
+	// AfterIntroduce1 在 INTRODUCE1 发送成功后调用（用于 Padding=2 HS setup 机）。
+	// introCircuitID 为引言点电路；失败只记日志，不中断连接。
+	AfterIntroduce1 func(ctx context.Context, introCircuitID uint32) error
 }
 
 // NewClient creates a new onion service client
@@ -373,10 +387,34 @@ func (c *Client) SetCellSender(sender CellSender) {
 	c.cellSender = sender
 }
 
+// SetBegindir 为底层 HSDir 启用 BEGIN_DIR 拉取。
+func (c *Client) SetBegindir(f *BegindirFetcher) {
+	if c != nil && c.hsdir != nil {
+		c.hsdir.SetBegindir(f)
+	}
+}
+
+// SetSharedRandom 注入共识 shared-rand（供 HSDir 哈希环）。
+func (c *Client) SetSharedRandom(current, previous []byte) {
+	if c != nil && c.hsdir != nil {
+		c.hsdir.SetSharedRandom(current, previous)
+	}
+}
+
 // UpdateHSDirs updates the list of available HSDirs from consensus
 func (c *Client) UpdateHSDirs(relays []*HSDirectory) {
 	c.consensus = relays
 	c.logger.Info("Updated HSDir list", "count", len(relays))
+}
+
+// SetNetworkRelays 注入共识 relay（供会合点选择与引言点匹配）。
+func (c *Client) SetNetworkRelays(relays []*directory.Relay) {
+	c.networkRelays = relays
+}
+
+// NetworkRelays 返回已注入的共识节点。
+func (c *Client) NetworkRelays() []*directory.Relay {
+	return c.networkRelays
 }
 
 // StoreRendezvousState stores the ephemeral key state for a rendezvous (AUDIT-006)
@@ -516,41 +554,12 @@ func computeDescriptorID(blindedPubkey []byte) []byte {
 	return h.Sum(nil)
 }
 
-// ComputeBlindedPubkey computes the blinded public key for a given time period
-// Per Tor spec: blinded_key = h("Derive temporary signing key" || pubkey || time_period)
-func ComputeBlindedPubkey(pubkey ed25519.PublicKey, timePeriod uint64) []byte {
-	h := sha3.New256()
-	h.Write([]byte("Derive temporary signing key"))
-	h.Write(pubkey)
-
-	// Convert time period to bytes (8 bytes, big-endian)
-	timePeriodBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(timePeriodBytes, timePeriod)
-	h.Write(timePeriodBytes)
-
-	return h.Sum(nil)
+// ComputeDescriptorID 导出供集成测试计算负责 HSDir。
+func ComputeDescriptorID(blindedPubkey []byte) []byte {
+	return computeDescriptorID(blindedPubkey)
 }
 
-// GetTimePeriod computes the current time period for descriptor rotation
-// Per Tor spec: time_period = (unix_time + offset) / period_length
-// For v3: period_length = 1440 minutes (24 hours), offset = 12 hours
-func GetTimePeriod(now time.Time) uint64 {
-	const periodLength = 24 * 60 * 60 // 24 hours in seconds
-	const offset = 12 * 60 * 60       // 12 hours in seconds
-
-	unixTime := now.Unix()
-	// Safe conversion: validate unixTime is non-negative before arithmetic
-	if unixTime < 0 {
-		// Invalid timestamp, return 0
-		return 0
-	}
-	// Perform calculation in int64 space, then safely convert
-	timePeriod := (unixTime + offset) / periodLength
-	if timePeriod < 0 {
-		return 0
-	}
-	return uint64(timePeriod)
-}
+// ComputeBlindedPubkey / GetTimePeriod 见 keyblind.go（完整 KEYBLIND）。
 
 // ParseDescriptor parses a raw v3 onion service descriptor
 // Implements parsing according to rend-spec-v3.txt section 2.4
@@ -631,7 +640,7 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 			}
 			if len(certLines) > 0 {
 				certB64 := strings.Join(certLines, "")
-				certData, err := base64.StdEncoding.DecodeString(certB64)
+				certData, err := decodeDescriptorBase64(certB64)
 				if err == nil {
 					desc.DescriptorSigningKeyCert = certData
 				}
@@ -649,22 +658,34 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 
 		case "introduction-point":
 			// Start of introduction point block
+			// 格式：introduction-point SP base64(link-specifiers)
+			if inIntroPointBlock && currentIntroPoint != nil {
+				desc.IntroPoints = append(desc.IntroPoints, *currentIntroPoint)
+			}
 			inIntroPointBlock = true
 			currentIntroPoint = &IntroductionPoint{
 				LinkSpecifiers: make([]LinkSpecifier, 0),
+			}
+			if args != "" {
+				if linkData, err := decodeDescriptorBase64(args); err == nil {
+					parseLinkSpecifiers(linkData, currentIntroPoint)
+				}
 			}
 
 		case "onion-key":
 			// Introduction point onion key
 			if inIntroPointBlock && currentIntroPoint != nil {
-				// Next line should be the key type
-				if i+1 < len(lines) {
+				// 同行：onion-key ntor <b64>
+				keyParts := strings.Fields(args)
+				if len(keyParts) >= 2 && keyParts[0] == "ntor" {
+					if decoded, err := decodeDescriptorBase64(keyParts[1]); err == nil {
+						currentIntroPoint.OnionKey = decoded
+					}
+				} else if i+1 < len(lines) {
 					keyType := strings.TrimSpace(string(lines[i+1]))
 					if strings.HasPrefix(keyType, "ntor ") {
-						// Key is base64 encoded
 						keyData := strings.TrimPrefix(keyType, "ntor ")
-						decoded, err := base64.StdEncoding.DecodeString(keyData)
-						if err == nil {
+						if decoded, err := decodeDescriptorBase64(keyData); err == nil {
 							currentIntroPoint.OnionKey = decoded
 						}
 					}
@@ -672,14 +693,11 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 			}
 
 		case "auth-key":
-			// Introduction point authentication key
+			// auth-key 后跟 ED25519 CERT；提取 certified_key
 			if inIntroPointBlock && currentIntroPoint != nil {
-				// Key data follows
-				if i+1 < len(lines) {
-					keyData := strings.TrimSpace(string(lines[i+1]))
-					decoded, err := base64.StdEncoding.DecodeString(keyData)
-					if err == nil {
-						currentIntroPoint.AuthKey = decoded
+				if cert := extractFollowingEd25519Cert(lines, i+1); len(cert) > 0 {
+					if parsed, err := parseCertificate(cert); err == nil && len(parsed.SigningKey) == 32 {
+						currentIntroPoint.AuthKey = parsed.SigningKey
 					}
 				}
 			}
@@ -687,10 +705,9 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 		case "enc-key":
 			// Introduction point encryption key
 			if inIntroPointBlock && currentIntroPoint != nil {
-				// Key type and data
 				keyParts := strings.Fields(args)
 				if len(keyParts) >= 2 && keyParts[0] == "ntor" {
-					decoded, err := base64.StdEncoding.DecodeString(keyParts[1])
+					decoded, err := decodeDescriptorBase64(keyParts[1])
 					if err == nil {
 						currentIntroPoint.EncKey = decoded
 					}
@@ -707,8 +724,8 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 			}
 
 		case "signature":
-			// Descriptor signature - marks end of descriptor
-			decoded, err := base64.StdEncoding.DecodeString(args)
+			// Descriptor signature - marks end of descriptor（常无 padding）
+			decoded, err := decodeDescriptorBase64(args)
 			if err == nil {
 				desc.Signature = decoded
 			}
@@ -730,119 +747,73 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 	return desc, nil
 }
 
-// DecryptDescriptor decrypts the superencrypted layer of a v3 onion service descriptor
-// Per rend-spec-v3.txt section 2.5.1.2, the outer layer is encrypted with XChaCha20-Poly1305
-// using keys derived from the blinded public key.
-//
-// Parameters:
-//   - descriptor: The parsed descriptor with encrypted superencrypted section
-//   - address: The onion service address (contains public key for key derivation)
-//   - timePeriod: The time period number for the descriptor
-//
-// Returns:
-//   - Decrypted descriptor with parsed introduction points
-//   - Error if decryption fails
-func DecryptDescriptor(descriptor *Descriptor, address *Address, timePeriod uint64) (*Descriptor, error) {
-	if descriptor == nil {
-		return nil, fmt.Errorf("descriptor is nil")
-	}
-	if address == nil {
-		return nil, fmt.Errorf("address is nil")
-	}
-	if len(address.Pubkey) != 32 {
-		return nil, fmt.Errorf("invalid public key length: %d", len(address.Pubkey))
-	}
+const (
+	// HSDescriptorSignaturePrefix 描述符 Ed25519 签名前缀（rend-spec）。
+	HSDescriptorSignaturePrefix = "Tor onion service descriptor sig v3"
+)
 
-	// Find the superencrypted section in the raw descriptor
-	raw := descriptor.RawDescriptor
-	superencryptedMarker := []byte("superencrypted")
-	superencryptedIdx := bytes.Index(raw, superencryptedMarker)
-	if superencryptedIdx == -1 {
-		// No encrypted section - descriptor might already be decrypted
-		return descriptor, nil
+// HSDescriptorSignedMaterial 返回验签/签名用的完整消息。
+func HSDescriptorSignedMaterial(bodyBeforeSignatureLine []byte) []byte {
+	out := make([]byte, 0, len(HSDescriptorSignaturePrefix)+len(bodyBeforeSignatureLine))
+	out = append(out, HSDescriptorSignaturePrefix...)
+	out = append(out, bodyBeforeSignatureLine...)
+	return out
+}
+
+// decodeDescriptorBase64 尝试 Std / RawStd，并去掉空白。
+func decodeDescriptorBase64(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, "\r", "")
+	if s == "" {
+		return nil, fmt.Errorf("empty base64")
 	}
-
-	// Extract encrypted data between "-----BEGIN MESSAGE-----" and "-----END MESSAGE-----"
-	beginMarker := []byte("-----BEGIN MESSAGE-----")
-	endMarker := []byte("-----END MESSAGE-----")
-
-	beginIdx := bytes.Index(raw[superencryptedIdx:], beginMarker)
-	if beginIdx == -1 {
-		return nil, fmt.Errorf("superencrypted section missing BEGIN MESSAGE marker")
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return b, nil
 	}
-	beginIdx += superencryptedIdx + len(beginMarker)
-
-	endIdx := bytes.Index(raw[beginIdx:], endMarker)
-	if endIdx == -1 {
-		return nil, fmt.Errorf("superencrypted section missing END MESSAGE marker")
+	if b, err := base64.RawStdEncoding.DecodeString(s); err == nil {
+		return b, nil
 	}
-	endIdx += beginIdx
+	// 补 padding
+	pad := (4 - len(s)%4) % 4
+	if pad > 0 {
+		s2 := s + strings.Repeat("=", pad)
+		if b, err := base64.StdEncoding.DecodeString(s2); err == nil {
+			return b, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid base64")
+}
 
-	// Extract and decode base64 encrypted data
-	encryptedB64 := bytes.TrimSpace(raw[beginIdx:endIdx])
-	encryptedData, err := base64.StdEncoding.DecodeString(string(encryptedB64))
+// extractFollowingEd25519Cert 从 lines[start:] 提取 PEM 风格 ED25519 CERT 正文并解码。
+func extractFollowingEd25519Cert(lines [][]byte, start int) []byte {
+	certLines := make([]string, 0)
+	inCert := false
+	for j := start; j < len(lines); j++ {
+		line := strings.TrimSpace(string(lines[j]))
+		if strings.HasPrefix(line, "-----BEGIN") {
+			inCert = true
+			continue
+		}
+		if strings.HasPrefix(line, "-----END") {
+			break
+		}
+		if inCert && line != "" {
+			certLines = append(certLines, line)
+		}
+		// 非证书块且已遇到其他关键词则停止
+		if !inCert && line != "" && !strings.HasPrefix(line, "-----") {
+			break
+		}
+	}
+	if len(certLines) == 0 {
+		return nil
+	}
+	b, err := decodeDescriptorBase64(strings.Join(certLines, ""))
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode encrypted data: %w", err)
+		return nil
 	}
-
-	// Per rend-spec-v3.txt section 2.5.1.2:
-	// The encrypted data format is: SALT (16 bytes) || ENCRYPTED (variable) || MAC (16 bytes)
-	// Using XChaCha20-Poly1305 (24-byte nonce derived from SALT and SECRET_INPUT)
-
-	if len(encryptedData) < 32 {
-		return nil, fmt.Errorf("encrypted data too short: %d bytes", len(encryptedData))
-	}
-
-	salt := encryptedData[:16]
-	ciphertext := encryptedData[16:]
-
-	// Derive encryption keys per rend-spec-v3.txt section 2.5.1.2
-	// SECRET_INPUT = blinded_pubkey
-	// SECRET_DATA = SALT
-	// Keys = HKDF-SHA256(SECRET_INPUT, SALT, "hsdir-superencrypted-data", 32)
-
-	blindedPubkey := ComputeBlindedPubkey(ed25519.PublicKey(address.Pubkey), timePeriod)
-	keys, err := deriveDescriptorKeys(blindedPubkey, salt, "hsdir-superencrypted-data")
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive encryption keys: %w", err)
-	}
-	defer security.SecureZeroMemory(keys) // Clean up key material
-
-	// XChaCha20-Poly1305 requires 24-byte nonce
-	// Derive nonce from SALT using HKDF
-	nonce, err := deriveDescriptorKeys(blindedPubkey, salt, "hsdir-superencrypted-nonce")
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive nonce: %w", err)
-	}
-	defer security.SecureZeroMemory(nonce)
-
-	if len(nonce) < chacha20poly1305.NonceSizeX {
-		return nil, fmt.Errorf("derived nonce too short: %d bytes", len(nonce))
-	}
-
-	// Create XChaCha20-Poly1305 cipher
-	aead, err := chacha20poly1305.NewX(keys[:32])
-	if err != nil {
-		return nil, fmt.Errorf("failed to create XChaCha20-Poly1305 cipher: %w", err)
-	}
-
-	// Decrypt the ciphertext
-	plaintext, err := aead.Open(nil, nonce[:chacha20poly1305.NonceSizeX], ciphertext, nil)
-	if err != nil {
-		return nil, fmt.Errorf("decryption failed: %w", err)
-	}
-
-	// Parse the decrypted plaintext to extract introduction points
-	// The plaintext contains the introduction-point section per rend-spec-v3.txt
-	decryptedDesc, err := parseDecryptedLayer(plaintext)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse decrypted layer: %w", err)
-	}
-
-	// Merge introduction points into the original descriptor
-	descriptor.IntroPoints = decryptedDesc.IntroPoints
-
-	return descriptor, nil
+	return b
 }
 
 // deriveDescriptorKeys derives keys for descriptor encryption/decryption
@@ -899,11 +870,16 @@ func parseDecryptedLayer(data []byte) (*Descriptor, error) {
 			currentIntroPoint = &IntroductionPoint{
 				LinkSpecifiers: make([]LinkSpecifier, 0),
 			}
+			if args != "" {
+				if linkData, err := decodeDescriptorBase64(args); err == nil {
+					parseLinkSpecifiers(linkData, currentIntroPoint)
+				}
+			}
 
 		case "link-specifiers":
 			// Link specifiers are base64-encoded
 			if inIntroPointBlock && currentIntroPoint != nil && args != "" {
-				linkData, err := base64.StdEncoding.DecodeString(args)
+				linkData, err := decodeDescriptorBase64(args)
 				if err == nil {
 					parseLinkSpecifiers(linkData, currentIntroPoint)
 				}
@@ -912,11 +888,16 @@ func parseDecryptedLayer(data []byte) (*Descriptor, error) {
 		case "onion-key":
 			// Introduction point onion key (ntor)
 			if inIntroPointBlock && currentIntroPoint != nil {
-				if i+1 < len(lines) {
+				keyParts := strings.Fields(args)
+				if len(keyParts) >= 2 && keyParts[0] == "ntor" {
+					if decoded, err := decodeDescriptorBase64(keyParts[1]); err == nil && len(decoded) == 32 {
+						currentIntroPoint.OnionKey = decoded
+					}
+				} else if i+1 < len(lines) {
 					keyLine := strings.TrimSpace(string(lines[i+1]))
 					if strings.HasPrefix(keyLine, "ntor ") {
 						keyData := strings.TrimPrefix(keyLine, "ntor ")
-						decoded, err := base64.StdEncoding.DecodeString(keyData)
+						decoded, err := decodeDescriptorBase64(keyData)
 						if err == nil && len(decoded) == 32 {
 							currentIntroPoint.OnionKey = decoded
 						}
@@ -925,13 +906,11 @@ func parseDecryptedLayer(data []byte) (*Descriptor, error) {
 			}
 
 		case "auth-key":
-			// Introduction point authentication key
+			// Introduction point authentication key（ED25519 CERT）
 			if inIntroPointBlock && currentIntroPoint != nil {
-				if i+1 < len(lines) {
-					keyData := strings.TrimSpace(string(lines[i+1]))
-					decoded, err := base64.StdEncoding.DecodeString(keyData)
-					if err == nil && len(decoded) == 32 {
-						currentIntroPoint.AuthKey = decoded
+				if cert := extractFollowingEd25519Cert(lines, i+1); len(cert) > 0 {
+					if parsed, err := parseCertificate(cert); err == nil && len(parsed.SigningKey) == 32 {
+						currentIntroPoint.AuthKey = parsed.SigningKey
 					}
 				}
 			}
@@ -941,7 +920,7 @@ func parseDecryptedLayer(data []byte) (*Descriptor, error) {
 			if inIntroPointBlock && currentIntroPoint != nil {
 				keyParts := strings.Fields(args)
 				if len(keyParts) >= 2 && keyParts[0] == "ntor" {
-					decoded, err := base64.StdEncoding.DecodeString(keyParts[1])
+					decoded, err := decodeDescriptorBase64(keyParts[1])
 					if err == nil && len(decoded) == 32 {
 						currentIntroPoint.EncKey = decoded
 					}
@@ -1042,8 +1021,8 @@ func VerifyDescriptorSignature(descriptor *Descriptor, address *Address) error {
 		return fmt.Errorf("signature line not found in descriptor")
 	}
 
-	// The signed message is everything up to (but not including) the signature line
-	signedMessage := raw[:signatureIdx]
+	// 签名覆盖：PREFIX || (signature 行之前的全部原文)
+	signedMessage := HSDescriptorSignedMaterial(raw[:signatureIdx])
 
 	// AUDIT-002 FIX: Implement full certificate chain validation
 	// Per rend-spec-v3.txt section 2.1:
@@ -1062,10 +1041,9 @@ func VerifyDescriptorSignature(descriptor *Descriptor, address *Address) error {
 		return fmt.Errorf("failed to parse descriptor signing key certificate: %w", err)
 	}
 
-	// Verify certificate type (should be type 4 for Ed25519 signing key signed with Ed25519 identity)
-	// Per cert-spec.txt section 2.1
-	if cert.CertType != 4 {
-		return fmt.Errorf("invalid certificate type: %d, expected 4 (Ed25519 signing key)", cert.CertType)
+	// Cert type 8 = BLINDED_ID_V_SIGNING（HS 外层）；4 = 旧测试用 IDENTITY_V_SIGNING
+	if cert.CertType != 8 && cert.CertType != 4 {
+		return fmt.Errorf("invalid certificate type: %d, expected 8 (HS blinded) or 4", cert.CertType)
 	}
 
 	// Check certificate expiration
@@ -1073,10 +1051,19 @@ func VerifyDescriptorSignature(descriptor *Descriptor, address *Address) error {
 		return fmt.Errorf("certificate expired at %v", cert.ExpiresAt)
 	}
 
-	// Step 2: Verify certificate signature with identity key (onion address public key)
-	// The certificate's signature covers all fields before the signature field
-	if !ed25519.Verify(ed25519.PublicKey(address.Pubkey), cert.SignedData, cert.Signature) {
-		return fmt.Errorf("certificate signature verification failed: identity key did not sign certificate")
+	// Step 2: 证书由致盲身份公钥（type 8）或主身份（type 4）签名
+	var signer ed25519.PublicKey
+	if cert.CertType == 8 {
+		blinded := descriptor.BlindedPubkey
+		if len(blinded) != 32 {
+			blinded = ComputeBlindedPubkey(ed25519.PublicKey(address.Pubkey), GetTimePeriod(time.Now()))
+		}
+		signer = ed25519.PublicKey(blinded)
+	} else {
+		signer = ed25519.PublicKey(address.Pubkey)
+	}
+	if !ed25519.Verify(signer, cert.SignedData, cert.Signature) {
+		return fmt.Errorf("certificate signature verification failed: signer did not sign certificate")
 	}
 
 	// Step 3: Extract the descriptor signing key from the certificate
@@ -1274,7 +1261,7 @@ func EncodeDescriptor(desc *Descriptor) ([]byte, error) {
 			fmt.Fprintf(&buf, "%s\n", base64.StdEncoding.EncodeToString(intro.AuthKey))
 		}
 
-		// Write enc key
+		// Write enc key（描述符中为公钥 B）
 		if len(intro.EncKey) > 0 {
 			fmt.Fprintf(&buf, "enc-key ntor %s\n", base64.StdEncoding.EncodeToString(intro.EncKey))
 		}
@@ -1316,13 +1303,17 @@ type HSDirectory struct {
 	Fingerprint string
 	Address     string
 	ORPort      int
-	DirPort     int  // Directory port for HTTP requests
-	HSDir       bool // Has HSDir flag
+	DirPort     int              // Directory port for HTTP requests；0 表示仅 ORPort（需 BEGIN_DIR）
+	HSDir       bool             // Has HSDir flag
+	Relay       *directory.Relay // 可选：共识条目，供 BEGIN_DIR 取密钥
 }
 
 // HSDir provides Hidden Service Directory operations
 type HSDir struct {
-	logger *logger.Logger
+	logger            *logger.Logger
+	begindir          *BegindirFetcher
+	sharedRandCurrent []byte
+	sharedRandPrev    []byte
 }
 
 // NewHSDir creates a new HSDir protocol handler
@@ -1336,7 +1327,23 @@ func NewHSDir(log *logger.Logger) *HSDir {
 	}
 }
 
-// SelectHSDirs selects responsible HSDirs for a given descriptor ID
+// SetSharedRandom 注入共识 SRV（各 32 字节）。
+func (h *HSDir) SetSharedRandom(current, previous []byte) {
+	if h == nil {
+		return
+	}
+	h.sharedRandCurrent = append([]byte(nil), current...)
+	h.sharedRandPrev = append([]byte(nil), previous...)
+}
+
+// SetBegindir 启用经 ORPort 的 BEGIN_DIR 拉取（现代网络几乎必需）。
+func (h *HSDir) SetBegindir(f *BegindirFetcher) {
+	if h != nil {
+		h.begindir = f
+	}
+}
+
+// SelectHSDirs 旧 XOR 启发式（仅兼容单测）；生产请用 SelectResponsibleHSDirs。
 // Per Tor spec (rend-spec-v3.txt section 2.2.3):
 // The responsible HSDirs are chosen by:
 // 1. Computing descriptor_id = H(blinded_pubkey || time_period || replica)
@@ -1453,7 +1460,8 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 	}
 
 	// Compute current time period
-	timePeriod := GetTimePeriod(time.Now())
+	now := time.Now()
+	timePeriod := GetTimePeriod(now)
 
 	// Compute blinded public key
 	blindedPubkey := ComputeBlindedPubkey(ed25519.PublicKey(addr.Pubkey), timePeriod)
@@ -1461,94 +1469,116 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 	// Compute descriptor ID
 	descriptorID := computeDescriptorID(blindedPubkey)
 
+	srv := SelectSRVForFetch(now, timePeriod, h.sharedRandCurrent, h.sharedRandPrev)
+	selectedHSDirs := SelectResponsibleHSDirs(blindedPubkey, hsdirs, srv, timePeriod, 0, 0)
+	if len(selectedHSDirs) == 0 {
+		// 尝试另一份 SRV
+		alt := h.sharedRandPrev
+		if UseCurrentSRVForFetch(now) {
+			alt = h.sharedRandCurrent
+		}
+		if len(alt) == 32 && (len(srv) != 32 || string(alt) != string(srv)) {
+			selectedHSDirs = SelectResponsibleHSDirs(blindedPubkey, hsdirs, alt, timePeriod, 0, 0)
+			srv = alt
+		}
+	}
+	if len(selectedHSDirs) == 0 {
+		// 无 Ed25519 身份时回退旧启发式（仍可能 503）
+		h.logger.Warn("HSDir ring empty (need microdesc identities); falling back to XOR select")
+		for replica := 0; replica < 2; replica++ {
+			selectedHSDirs = append(selectedHSDirs, h.SelectHSDirs(descriptorID, hsdirs, replica)...)
+		}
+	} else {
+		// 合并另一 SRV 的负责节点，提高命中率（重叠描述符窗口）
+		var alt []byte
+		if UseCurrentSRVForFetch(now) {
+			alt = h.sharedRandPrev
+		} else {
+			alt = h.sharedRandCurrent
+		}
+		if len(alt) == 32 {
+			extra := SelectResponsibleHSDirs(blindedPubkey, hsdirs, alt, timePeriod, 0, 0)
+			seen := map[string]struct{}{}
+			for _, d := range selectedHSDirs {
+				seen[d.Fingerprint] = struct{}{}
+			}
+			for _, d := range extra {
+				if _, ok := seen[d.Fingerprint]; !ok {
+					selectedHSDirs = append(selectedHSDirs, d)
+					seen[d.Fingerprint] = struct{}{}
+				}
+			}
+		}
+	}
+
 	h.logger.Debug("Fetching descriptor",
 		"address", addr.String(),
 		"time_period", timePeriod,
-		"descriptor_id", fmt.Sprintf("%x", descriptorID[:8]))
+		"descriptor_id", fmt.Sprintf("%x", descriptorID[:8]),
+		"responsible", len(selectedHSDirs),
+		"srv_prefix", fmt.Sprintf("%x", srv[:minInt(4, len(srv))]))
 
 	// AUDIT-003 FIX: Add retry backoff logic
 	var lastErr error
 	maxRetries := 3
 	baseBackoff := 100 * time.Millisecond
 
-	// Try both replicas (Tor uses 2 replicas for redundancy)
-	for replica := 0; replica < 2; replica++ {
-		// Select responsible HSDirs for this replica
-		selectedHSDirs := h.SelectHSDirs(descriptorID, hsdirs, replica)
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := baseBackoff * time.Duration(1<<uint(attempt-1))
+			h.logger.Debug("Retrying after backoff",
+				"attempt", attempt+1,
+				"backoff", backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context cancelled during backoff: %w", ctx.Err())
+			}
+		}
 
-		// Try each HSDir with retries and backoff
-		for attempt := 0; attempt < maxRetries; attempt++ {
-			// Apply exponential backoff for retries (not on first attempt)
-			if attempt > 0 {
-				backoff := baseBackoff * time.Duration(1<<uint(attempt-1))
-				h.logger.Debug("Retrying after backoff",
+		for _, hsdir := range selectedHSDirs {
+			desc, err := h.fetchFromHSDir(ctx, hsdir, blindedPubkey, -1)
+			if err != nil {
+				h.logger.Debug("Failed to fetch from HSDir",
+					"hsdir", hsdir.Fingerprint,
 					"attempt", attempt+1,
-					"backoff", backoff,
-					"replica", replica)
-
-				select {
-				case <-time.After(backoff):
-				case <-ctx.Done():
-					return nil, fmt.Errorf("context cancelled during backoff: %w", ctx.Err())
-				}
+					"error", err)
+				lastErr = err
+				continue
 			}
 
-			for _, hsdir := range selectedHSDirs {
-				desc, err := h.fetchFromHSDir(ctx, hsdir, descriptorID, replica)
-				if err != nil {
-					h.logger.Debug("Failed to fetch from HSDir",
-						"hsdir", hsdir.Fingerprint,
-						"replica", replica,
-						"attempt", attempt+1,
-						"error", err)
-					lastErr = err
-					continue
-				}
+			h.logger.Info("Successfully fetched descriptor",
+				"address", addr.String(),
+				"hsdir", hsdir.Fingerprint,
+				"attempt", attempt+1)
 
-				// Successfully fetched descriptor
-				h.logger.Info("Successfully fetched descriptor",
+			desc.Address = addr
+			desc.BlindedPubkey = blindedPubkey
+			desc.DescriptorID = descriptorID
+
+			if err := VerifyDescriptorSignature(desc, addr); err != nil {
+				h.logger.Warn("Descriptor signature verification failed",
 					"address", addr.String(),
 					"hsdir", hsdir.Fingerprint,
-					"replica", replica,
-					"attempt", attempt+1)
-
-				// Set metadata
-				desc.Address = addr
-				desc.BlindedPubkey = blindedPubkey
-				desc.DescriptorID = descriptorID
-
-				// MED-002 FIX: Verify descriptor signature before accepting
-				// This prevents accepting forged or tampered descriptors
-				if err := VerifyDescriptorSignature(desc, addr); err != nil {
-					h.logger.Warn("Descriptor signature verification failed",
-						"address", addr.String(),
-						"hsdir", hsdir.Fingerprint,
-						"error", err)
-					lastErr = fmt.Errorf("descriptor signature verification failed: %w", err)
-					continue // Try next HSDir
-				}
-
-				h.logger.Debug("Descriptor signature verified successfully",
-					"address", addr.String())
-
-				// Decrypt the descriptor's superencrypted layer
-				decryptedDesc, err := DecryptDescriptor(desc, addr, timePeriod)
-				if err != nil {
-					h.logger.Warn("Descriptor decryption failed (may not be encrypted)",
-						"address", addr.String(),
-						"hsdir", hsdir.Fingerprint,
-						"error", err)
-					// Continue with encrypted descriptor if decryption fails
-					// Some test descriptors might not be encrypted
-					return desc, nil
-				}
-
-				h.logger.Debug("Descriptor decrypted successfully",
-					"address", addr.String(),
-					"intro_points", len(decryptedDesc.IntroPoints))
-
-				return decryptedDesc, nil
+					"error", err)
+				lastErr = fmt.Errorf("descriptor signature verification failed: %w", err)
+				continue
 			}
+
+			decryptedDesc, err := DecryptDescriptor(desc, addr, timePeriod)
+			if err != nil {
+				h.logger.Warn("Descriptor decryption failed (may not be encrypted)",
+					"address", addr.String(),
+					"hsdir", hsdir.Fingerprint,
+					"error", err)
+				return desc, nil
+			}
+
+			h.logger.Debug("Descriptor decrypted successfully",
+				"address", addr.String(),
+				"intro_points", len(decryptedDesc.IntroPoints))
+
+			return decryptedDesc, nil
 		}
 	}
 
@@ -1559,82 +1589,51 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 	return nil, fmt.Errorf("failed to fetch descriptor from any HSDir")
 }
 
-// fetchFromHSDir fetches a descriptor from a specific HSDir using HTTP
-// Implements the HSDir protocol per dir-spec.txt section 4.3
-// AUDIT-003 FIX: Removed mock fallbacks, returns proper errors with retry support
-func (h *HSDir) fetchFromHSDir(ctx context.Context, hsdir *HSDirectory, descriptorID []byte, replica int) (*Descriptor, error) {
+// fetchFromHSDir 仅经 BEGIN_DIR（匿名电路）拉取描述符。
+// 禁止明文 DirPort HTTP：会把客户端真实出口 IP 与盲化洋葱身份绑定在同一请求中。
+func (h *HSDir) fetchFromHSDir(ctx context.Context, hsdir *HSDirectory, blindedPubkey []byte, replica int) (*Descriptor, error) {
+	if len(blindedPubkey) != 32 {
+		return nil, fmt.Errorf("blinded pubkey must be 32 bytes")
+	}
+	// URL：/tor/hs/3/<base64(blinded-public-key)>（rend-spec 2.2.6）
+	blindedB64 := base64.RawStdEncoding.EncodeToString(blindedPubkey)
+	httpPath := "/tor/hs/3/" + blindedB64
+
 	h.logger.Debug("Fetching descriptor from HSDir",
 		"hsdir", hsdir.Fingerprint,
-		"descriptor_id", fmt.Sprintf("%x", descriptorID[:8]),
+		"blinded_b64", blindedB64[:minInt(16, len(blindedB64))],
 		"replica", replica)
 
-	// Build descriptor URL
-	// Format: /tor/hs/3/<base64-descriptor-id>
-	descriptorIDBase64 := base64.RawURLEncoding.EncodeToString(descriptorID)
-	url := fmt.Sprintf("http://%s:%d/tor/hs/3/%s", hsdir.Address, hsdir.DirPort, descriptorIDBase64)
-
-	h.logger.Debug("Building HSDir request", "url", url)
-
-	// AUDIT-003 FIX: Make timeout configurable (AUDIT-MED-7 related)
-	// Default 5s timeout - should be configurable in production
-	timeout := 5 * time.Second
-	client := &http.Client{
-		Timeout: timeout,
+	if h.begindir == nil {
+		return nil, fmt.Errorf("HSDir %s: BEGIN_DIR unavailable (required for anonymous descriptor fetch)", hsdir.Fingerprint)
+	}
+	if hsdir.Relay == nil || !hsdir.Relay.HasNtorKeys() {
+		return nil, fmt.Errorf("HSDir %s: missing relay microdesc keys for BEGIN_DIR", hsdir.Fingerprint)
 	}
 
-	// Create request with context
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	body, err := h.begindir.Fetch(ctx, hsdir.Relay, httpPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create HSDir request: %w", err)
+		return nil, fmt.Errorf("BEGIN_DIR fetch from %s: %w", hsdir.Fingerprint, err)
+	}
+	if body == nil {
+		return nil, fmt.Errorf("HSDir %s: empty BEGIN_DIR response", hsdir.Fingerprint)
 	}
 
-	// Set User-Agent header to match Tor client
-	req.Header.Set("User-Agent", "Tor/0.4.7.0")
-
-	// Execute request
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch descriptor from %s: %w", hsdir.Fingerprint, err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			h.logger.Error("Failed to close response body", "function", "fetchFromHSDir", "error", err)
-		}
-	}()
-
-	// Check status code
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HSDir %s returned status %d", hsdir.Fingerprint, resp.StatusCode)
-	}
-
-	// LOW-006 FIX: Read response body with size limit to prevent resource exhaustion
-	// Use io.LimitReader to cap the maximum descriptor size we'll accept
-	limitedReader := io.LimitReader(resp.Body, MaxDescriptorSize+1)
-	body, err := io.ReadAll(limitedReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read descriptor from %s: %w", hsdir.Fingerprint, err)
-	}
-
-	// Check if descriptor exceeded size limit
 	if len(body) > MaxDescriptorSize {
 		return nil, fmt.Errorf("descriptor from %s exceeds maximum size (%d > %d bytes)",
 			hsdir.Fingerprint, len(body), MaxDescriptorSize)
 	}
 
-	// Parse the descriptor
 	desc, err := ParseDescriptor(body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse descriptor from %s: %w", hsdir.Fingerprint, err)
 	}
-
-	// Set descriptor ID
-	desc.DescriptorID = descriptorID
-
+	desc.DescriptorID = computeDescriptorID(blindedPubkey)
 	h.logger.Info("Successfully fetched descriptor",
 		"hsdir", hsdir.Fingerprint,
 		"intro_points", len(desc.IntroPoints),
-		"revision", desc.RevisionCounter)
-
+		"revision", desc.RevisionCounter,
+		"via", "BEGIN_DIR")
 	return desc, nil
 }
 
@@ -1705,10 +1704,13 @@ type IntroduceRequest struct {
 	IntroPoint          *IntroductionPoint // Target introduction point
 	RendezvousCookie    []byte             // Rendezvous cookie (20 bytes)
 	RendezvousPoint     string             // Rendezvous point fingerprint
-	RendezvousCircuitID uint32             // AUDIT-006: Circuit ID for storing handshake state
-	OnionKey            []byte             // Client's ephemeral onion key
-	EphemeralPrivate    [32]byte           // AUDIT-006: Client's ephemeral private key (for handshake)
-	EphemeralPublic     [32]byte           // AUDIT-006: Client's ephemeral public key
+	RendezvousCircuitID uint32             // Circuit ID for storing handshake state
+	RendezvousOnionKey  []byte             // RP ntor onion key (32 bytes)
+	RendezvousLinkSpecs []LinkSpecifier    // RP link specs for service EXTEND
+	OnionKey            []byte             // Legacy field; hs-ntor 用 EphemeralPublic
+	EphemeralPrivate    [32]byte           // Client's ephemeral private key x
+	EphemeralPublic     [32]byte           // Client's ephemeral public key X
+	Subcredential       []byte             // N_hs_subcred（32 字节）
 }
 
 // BuildIntroduce1Cell constructs an INTRODUCE1 cell for the introduction protocol
@@ -1789,78 +1791,80 @@ func (ip *IntroductionProtocol) BuildIntroduce1Cell(req *IntroduceRequest) ([]by
 	return buf.Bytes(), nil
 }
 
-// buildEncryptedData constructs the encrypted portion of INTRODUCE1
-// SPEC-006/SEC-M003: INTRODUCE1 encryption implementation
-// Implements ntor-based encryption per rend-spec-v3.txt §3.2.3
+// buildEncryptedData 构造 INTRODUCE1 的 ENCRYPTED = X || C || M（hs-ntor）。
+// 明文（rend-spec PROCESS_INTRO2）：
 //
-// The encryption process:
-// 1. Generate ephemeral client key pair (x, X)
-// 2. Perform Diffie-Hellman with introduction point's EncKey: shared = X25519(x, EncKey)
-// 3. Derive encryption keys using HKDF-SHA256
-// 4. Encrypt plaintext using AES-CTR
-// 5. Prepend client's ephemeral public key X for intro point to decrypt
-//
-// Wire format of encrypted data:
-//
-//	CLIENT_PK (32 bytes) || ENCRYPTED_DATA (variable length)
-//
-// Where ENCRYPTED_DATA contains:
-//
-//	RENDEZVOUS_COOKIE (20 bytes) || ONION_KEY (32 bytes) || LINK_SPECIFIERS (variable)
+//	COOKIE | N_EXT=0 | ONION_KEY_TYPE=1 | LEN | KEY | NSPEC | LSPECs
 func (ip *IntroductionProtocol) buildEncryptedData(req *IntroduceRequest) ([]byte, error) {
-	// AUDIT-003: Validate required fields - no mock fallbacks
-	// Check IntroPoint first to avoid potential nil pointer issues
 	if req.IntroPoint == nil {
 		return nil, fmt.Errorf("introduction point is required")
 	}
 	if len(req.IntroPoint.EncKey) != 32 {
 		return nil, fmt.Errorf("introduction point encryption key must be 32 bytes, got %d", len(req.IntroPoint.EncKey))
 	}
-	if len(req.OnionKey) == 0 {
-		return nil, fmt.Errorf("onion key is required for INTRODUCE1 cell")
+	if len(req.IntroPoint.AuthKey) != 32 {
+		return nil, fmt.Errorf("introduction point auth key must be 32 bytes")
+	}
+	if len(req.Subcredential) != 32 {
+		return nil, fmt.Errorf("subcredential must be 32 bytes")
+	}
+	if len(req.RendezvousOnionKey) != 32 {
+		return nil, fmt.Errorf("rendezvous onion key must be 32 bytes")
+	}
+	if len(req.RendezvousLinkSpecs) == 0 {
+		return nil, fmt.Errorf("rendezvous link specifiers required")
 	}
 
-	// Build plaintext payload
-	var plaintext bytes.Buffer
-
-	// RENDEZVOUS_COOKIE (20 bytes)
-	plaintext.Write(req.RendezvousCookie)
-
-	// ONION_KEY (32 bytes for x25519)
-	plaintext.Write(req.OnionKey)
-
-	// LINK_SPECIFIERS for rendezvous point
-	// Format: N_SPEC [1 byte] || LINK_SPEC_1 || ... || LINK_SPEC_N
-	plaintext.WriteByte(0) // N_SPEC = 0 (simplified for current phase)
-
-	plaintextData := plaintext.Bytes()
-
-	// Encrypt the data using introduction point's encryption key
-	// AUDIT-006: Now captures the ephemeral private key for handshake verification
-	encryptedData, clientPubKey, clientPrivKey, err := ip.encryptIntroduce1Data(plaintextData, req.IntroPoint.EncKey)
+	xPriv, err := crypto.GenerateCurve25519PrivateKey()
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt INTRODUCE1 data: %w", err)
+		return nil, fmt.Errorf("generate ephemeral x: %w", err)
+	}
+	copy(req.EphemeralPrivate[:], xPriv)
+
+	var plaintext bytes.Buffer
+	plaintext.Write(req.RendezvousCookie)
+	plaintext.WriteByte(0)              // N_EXTENSIONS
+	plaintext.WriteByte(0x01)           // ONION_KEY_TYPE = NTOR
+	plaintext.Write([]byte{0x00, 0x20}) // ONION_KEY_LEN = 32
+	plaintext.Write(req.RendezvousOnionKey)
+	if len(req.RendezvousLinkSpecs) > 255 {
+		return nil, fmt.Errorf("too many link specifiers")
+	}
+	plaintext.WriteByte(byte(len(req.RendezvousLinkSpecs)))
+	for _, ls := range req.RendezvousLinkSpecs {
+		if len(ls.Data) > 255 {
+			return nil, fmt.Errorf("link specifier too long")
+		}
+		plaintext.WriteByte(ls.Type)
+		plaintext.WriteByte(byte(len(ls.Data)))
+		plaintext.Write(ls.Data)
+	}
+	// 填充到约 246 字节（与当前 Tor 行为接近）
+	for plaintext.Len() < 246 {
+		plaintext.WriteByte(0)
 	}
 
-	// AUDIT-006: Store the ephemeral private key in the request for later use
-	// This will be used in CompleteRendezvous to verify the handshake
-	if req.RendezvousCircuitID > 0 && len(clientPrivKey) == 32 {
-		// Store the private key for handshake verification
-		copy(req.EphemeralPrivate[:], clientPrivKey)
-		copy(req.EphemeralPublic[:], clientPubKey)
+	var header bytes.Buffer
+	header.Write(make([]byte, 20))
+	header.WriteByte(0x02)
+	header.Write([]byte{0x00, 0x20})
+	header.Write(req.IntroPoint.AuthKey)
+	header.WriteByte(0)
+
+	encrypted, err := BuildIntroduce1Encrypted(
+		header.Bytes(), plaintext.Bytes(), xPriv,
+		req.IntroPoint.EncKey, req.IntroPoint.AuthKey, req.Subcredential,
+	)
+	if err != nil {
+		return nil, err
 	}
+	copy(req.EphemeralPublic[:], encrypted[:32])
 
-	// Build final encrypted payload: CLIENT_PK || ENCRYPTED_DATA
-	var result bytes.Buffer
-	result.Write(clientPubKey) // 32 bytes
-	result.Write(encryptedData)
-
-	ip.logger.Debug("INTRODUCE1 data encrypted",
-		"plaintext_len", len(plaintextData),
-		"encrypted_len", len(encryptedData),
-		"total_len", result.Len())
-
-	return result.Bytes(), nil
+	ip.logger.Debug("INTRODUCE1 encrypted (hs-ntor)",
+		"plaintext_len", plaintext.Len(),
+		"encrypted_len", len(encrypted),
+		"rp_lspecs", len(req.RendezvousLinkSpecs))
+	return encrypted, nil
 }
 
 // encryptIntroduce1Data encrypts the INTRODUCE1 data using the introduction point's public key
@@ -1954,33 +1958,37 @@ func (ip *IntroductionProtocol) CreateIntroductionCircuit(ctx context.Context, i
 	ip.logger.Info("Creating introduction circuit",
 		"link_specifiers_count", len(introPoint.LinkSpecifiers))
 
-	// If we have a circuit builder, use it to create a real circuit
-	if circuitBuilder != nil {
-		// Extract relay information from link specifiers
-		// For now, we need to convert IntroductionPoint to HSDirectory
-		// In a production system, link specifiers would contain full relay info
-		relay := &HSDirectory{
-			Fingerprint: "", // Would be extracted from link specifiers
-			Address:     "", // Would be extracted from link specifiers
-			ORPort:      0,  // Would be extracted from link specifiers
-			HSDir:       false,
-		}
-
-		// Build circuit with 5 second timeout
-		circuitID, err := circuitBuilder.BuildCircuitToRelay(ctx, relay, 5*time.Second)
-		if err != nil {
-			ip.logger.Error("Failed to build introduction circuit", "error", err)
-			return 0, fmt.Errorf("failed to build circuit: %w", err)
-		}
-
-		ip.logger.Info("Introduction circuit created",
-			"circuit_id", circuitID)
-		return circuitID, nil
+	if circuitBuilder == nil {
+		return 0, fmt.Errorf("circuit builder is required to create introduction circuit")
 	}
 
-	// AUDIT-003: No mock fallbacks in production code
-	// A circuit builder is required to create an introduction circuit
-	return 0, fmt.Errorf("circuit builder is required to create introduction circuit")
+	resolved, err := ResolveFromIntroPoint(introPoint)
+	if err != nil {
+		return 0, fmt.Errorf("resolve intro link specs: %w", err)
+	}
+	relay := resolved.ToHSDirectory()
+	if adapter, ok := circuitBuilder.(*CircuitAdapter); ok {
+		if matched := MatchConsensusRelay(resolved, adapter.relays); matched != nil {
+			relay = &HSDirectory{
+				Fingerprint: matched.GetFingerprintHex(),
+				Address:     matched.Address,
+				ORPort:      matched.ORPort,
+				Relay:       matched,
+			}
+		}
+	}
+	if relay == nil || relay.Address == "" {
+		return 0, fmt.Errorf("could not resolve introduction point address")
+	}
+
+	circuitID, err := circuitBuilder.BuildCircuitToRelay(ctx, relay, 90*time.Second)
+	if err != nil {
+		ip.logger.Error("Failed to build introduction circuit", "error", err)
+		return 0, fmt.Errorf("failed to build circuit: %w", err)
+	}
+
+	ip.logger.Info("Introduction circuit created", "circuit_id", circuitID)
+	return circuitID, nil
 }
 
 // SendIntroduce1 sends an INTRODUCE1 cell over a circuit
@@ -1993,23 +2001,17 @@ func (ip *IntroductionProtocol) SendIntroduce1(ctx context.Context, circuitID ui
 		"circuit_id", circuitID,
 		"data_size", len(introduce1Data))
 
-	// If we have a cell sender, use it to send the cell
-	if cellSender != nil {
-		const relayCommandIntroduce1 = 0x22 // Per Tor spec
-
-		// Send the INTRODUCE1 cell over the circuit
-		if err := cellSender.SendRelayCell(ctx, circuitID, relayCommandIntroduce1, introduce1Data); err != nil {
-			ip.logger.Error("Failed to send INTRODUCE1 cell", "error", err)
-			return fmt.Errorf("failed to send INTRODUCE1: %w", err)
-		}
-
-		ip.logger.Info("INTRODUCE1 cell sent successfully")
-		return nil
+	if cellSender == nil {
+		return fmt.Errorf("cell sender is required to send INTRODUCE1 cell")
 	}
 
-	// AUDIT-003: No mock fallbacks in production code
-	// A cell sender is required to send the INTRODUCE1 cell
-	return fmt.Errorf("cell sender is required to send INTRODUCE1 cell")
+	if err := cellSender.SendRelayCell(ctx, circuitID, cell.RelayIntroduce1, introduce1Data); err != nil {
+		ip.logger.Error("Failed to send INTRODUCE1 cell", "error", err)
+		return fmt.Errorf("failed to send INTRODUCE1: %w", err)
+	}
+
+	ip.logger.Info("INTRODUCE1 cell sent successfully")
+	return nil
 }
 
 // ConnectToOnionService orchestrates the full connection process to an onion service
@@ -2031,8 +2033,9 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 		return 0, fmt.Errorf("failed to generate rendezvous cookie: %w", err)
 	}
 
-	// Step 3: Establish rendezvous point
-	rendezvousCircuitID, rendezvousPoint, err := c.EstablishRendezvousPoint(ctx, rendezvousCookie, c.consensus)
+	// Step 3: Establish rendezvous point（从全网 Fast 节点选，而非仅 HSDir）
+	rendCandidates := c.rendezvousCandidates()
+	rendezvousCircuitID, rendezvousPoint, err := c.EstablishRendezvousPoint(ctx, rendezvousCookie, rendCandidates)
 	if err != nil {
 		return 0, fmt.Errorf("failed to establish rendezvous point: %w", err)
 	}
@@ -2058,18 +2061,24 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 
 	c.logger.Debug("Introduction circuit created", "circuit_id", introCircuitID)
 
-	// Step 6: Generate ephemeral onion key for client authentication
-	onionKey := make([]byte, 32)
-	if _, err := rand.Read(onionKey); err != nil {
-		return 0, fmt.Errorf("failed to generate onion key: %w", err)
+	// Step 6: 计算 subcredential 并构造 INTRODUCE1（hs-ntor）
+	timePeriod := GetTimePeriod(time.Now())
+	blinded := ComputeBlindedPubkey(ed25519.PublicKey(addr.Pubkey), timePeriod)
+	subcred := ComputeHSSubcredential(addr.Pubkey, blinded)
+
+	rpOnionKey, rpLinkSpecs, err := linkSpecsForRelay(rendezvousPoint)
+	if err != nil {
+		return 0, fmt.Errorf("rendezvous link specs: %w", err)
 	}
 
-	// Step 7: Build and send INTRODUCE1 cell
 	req := &IntroduceRequest{
-		IntroPoint:       introPoint,
-		RendezvousCookie: rendezvousCookie,
-		RendezvousPoint:  rendezvousPoint.Fingerprint,
-		OnionKey:         onionKey,
+		IntroPoint:          introPoint,
+		RendezvousCookie:    rendezvousCookie,
+		RendezvousPoint:     rendezvousPoint.Fingerprint,
+		RendezvousCircuitID: rendezvousCircuitID,
+		Subcredential:       subcred,
+		RendezvousOnionKey:  rpOnionKey,
+		RendezvousLinkSpecs: rpLinkSpecs,
 	}
 
 	introduce1Data, err := intro.BuildIntroduce1Cell(req)
@@ -2077,13 +2086,33 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 		return 0, fmt.Errorf("failed to build INTRODUCE1 cell: %w", err)
 	}
 
+	// 保存 hs-ntor 状态供 RENDEZVOUS2 验完握手
+	if len(introPoint.EncKey) == 32 && len(introPoint.AuthKey) == 32 {
+		st := &RendezvousState{CircuitID: rendezvousCircuitID}
+		copy(st.EphemeralPrivate[:], req.EphemeralPrivate[:])
+		copy(st.EphemeralPublic[:], req.EphemeralPublic[:])
+		copy(st.IntroEncKeyB[:], introPoint.EncKey)
+		copy(st.IntroAuthKey[:], introPoint.AuthKey)
+		copy(st.Subcredential[:], subcred)
+		c.StoreRendezvousState(rendezvousCircuitID, st)
+	}
+
 	c.logger.Debug("INTRODUCE1 cell built", "size", len(introduce1Data))
 
 	if err := intro.SendIntroduce1(ctx, introCircuitID, introduce1Data, c.cellSender); err != nil {
+		c.RemoveRendezvousState(rendezvousCircuitID)
 		return 0, fmt.Errorf("failed to send INTRODUCE1: %w", err)
 	}
 
 	c.logger.Debug("INTRODUCE1 cell sent")
+
+	// Padding=2：引言电路上启动 HS setup 机（失败不阻断连接）
+	if c.AfterIntroduce1 != nil {
+		if err := c.AfterIntroduce1(ctx, introCircuitID); err != nil {
+			c.logger.Warn("AfterIntroduce1 circpad hook failed",
+				"circuit_id", introCircuitID, "error", err)
+		}
+	}
 
 	// Step 8: Wait for RENDEZVOUS2 and complete the connection
 	if err := c.CompleteRendezvous(ctx, rendezvousCircuitID); err != nil {
@@ -2122,16 +2151,37 @@ func (rp *RendezvousProtocol) SelectRendezvousPoint(relays []*HSDirectory) (*HSD
 		return nil, fmt.Errorf("no relays available for rendezvous point selection")
 	}
 
-	// For Phase 7.3.4, select the first available relay
-	// In a full implementation, this would:
-	// 1. Filter relays that support being rendezvous points
-	// 2. Exclude relays that are already in our circuit
-	// 3. Randomly select from remaining relays
-	// 4. Consider relay stability and performance metrics
-	selected := relays[0]
+	candidates := make([]*HSDirectory, 0, len(relays))
+	for _, r := range relays {
+		if r == nil || r.ORPort <= 0 || r.Address == "" {
+			continue
+		}
+		if r.Relay != nil {
+			if !r.Relay.IsRunning() || !r.Relay.IsValid() || !r.Relay.HasExtendKeys() {
+				continue
+			}
+			// 会合点通常选 Fast；有 Stable 更佳
+			if !r.Relay.HasFlag("Fast") {
+				continue
+			}
+		}
+		candidates = append(candidates, r)
+	}
+	if len(candidates) == 0 {
+		// 回退：任意有 ORPort 的条目
+		for _, r := range relays {
+			if r != nil && r.ORPort > 0 && r.Address != "" {
+				candidates = append(candidates, r)
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no suitable rendezvous candidates")
+	}
+	selected := candidates[mrand.Intn(len(candidates))]
 
 	rp.logger.Debug("Selected rendezvous point",
-		"relays_available", len(relays),
+		"candidates", len(candidates),
 		"selected_fingerprint", selected.Fingerprint)
 
 	return selected, nil
@@ -2180,7 +2230,7 @@ func (rp *RendezvousProtocol) CreateRendezvousCircuit(ctx context.Context, rende
 	// If we have a circuit builder, use it to create a real circuit
 	if circuitBuilder != nil {
 		// Build circuit to the rendezvous point with 5 second timeout
-		circuitID, err := circuitBuilder.BuildCircuitToRelay(ctx, rendezvousPoint, 5*time.Second)
+		circuitID, err := circuitBuilder.BuildCircuitToRelay(ctx, rendezvousPoint, 90*time.Second)
 		if err != nil {
 			rp.logger.Error("Failed to build rendezvous circuit", "error", err)
 			return 0, fmt.Errorf("failed to build circuit: %w", err)
@@ -2206,36 +2256,26 @@ func (rp *RendezvousProtocol) SendEstablishRendezvous(ctx context.Context, circu
 		"circuit_id", circuitID,
 		"data_size", len(establishData))
 
-	// If we have a cell sender, use it to send the cell
-	if cellSender != nil {
-		const relayCommandEstablishRendezvous = 0x21 // Per Tor spec
-
-		// Send the ESTABLISH_RENDEZVOUS cell over the circuit
-		if err := cellSender.SendRelayCell(ctx, circuitID, relayCommandEstablishRendezvous, establishData); err != nil {
-			rp.logger.Error("Failed to send ESTABLISH_RENDEZVOUS cell", "error", err)
-			return fmt.Errorf("failed to send ESTABLISH_RENDEZVOUS: %w", err)
-		}
-
-		// Wait for RENDEZVOUS_ESTABLISHED acknowledgment with timeout
-		ackCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-
-		const relayCommandRendezvousEstablished = 0x27
-		ackData, err := cellSender.ReceiveRelayCell(ackCtx, circuitID, 5*time.Second)
-		if err != nil {
-			rp.logger.Warn("Did not receive RENDEZVOUS_ESTABLISHED (continuing anyway)", "error", err)
-			// Don't fail - the rendezvous point might have accepted it
-		} else {
-			rp.logger.Debug("Received RENDEZVOUS_ESTABLISHED", "data_len", len(ackData))
-		}
-
-		rp.logger.Info("ESTABLISH_RENDEZVOUS completed successfully")
-		return nil
+	if cellSender == nil {
+		return fmt.Errorf("cell sender is required to send ESTABLISH_RENDEZVOUS cell")
 	}
 
-	// AUDIT-003: No mock fallbacks in production code
-	// A cell sender is required to send the ESTABLISH_RENDEZVOUS cell
-	return fmt.Errorf("cell sender is required to send ESTABLISH_RENDEZVOUS cell")
+	if err := cellSender.SendRelayCell(ctx, circuitID, cell.RelayEstablishRendezvous, establishData); err != nil {
+		rp.logger.Error("Failed to send ESTABLISH_RENDEZVOUS cell", "error", err)
+		return fmt.Errorf("failed to send ESTABLISH_RENDEZVOUS: %w", err)
+	}
+
+	ackCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ackData, err := cellSender.ReceiveRelayCell(ackCtx, circuitID, 30*time.Second)
+	if err != nil {
+		rp.logger.Warn("Did not receive RENDEZVOUS_ESTABLISHED (continuing anyway)", "error", err)
+	} else {
+		rp.logger.Debug("Received RENDEZVOUS_ESTABLISHED", "data_len", len(ackData))
+	}
+
+	rp.logger.Info("ESTABLISH_RENDEZVOUS completed successfully")
+	return nil
 }
 
 // Rendezvous1Request represents a RENDEZVOUS1 request
@@ -2307,34 +2347,104 @@ func (rp *RendezvousProtocol) ParseRendezvous2Cell(data []byte) ([]byte, error) 
 func (rp *RendezvousProtocol) WaitForRendezvous2(ctx context.Context, circuitID uint32, cellSender CellSender) ([]byte, error) {
 	rp.logger.Info("Waiting for RENDEZVOUS2 cell", "circuit_id", circuitID)
 
-	// If we have a cell sender, use it to receive the cell
-	if cellSender != nil {
-		// Wait for RENDEZVOUS2 cell with 30 second timeout (onion services can be slow)
-		const relayCommandRendezvous2 = 0x25
-
-		waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-
-		handshakeData, err := cellSender.ReceiveRelayCell(waitCtx, circuitID, 30*time.Second)
-		if err != nil {
-			rp.logger.Error("Failed to receive RENDEZVOUS2 cell", "error", err)
-			return nil, fmt.Errorf("failed to receive RENDEZVOUS2: %w", err)
-		}
-
-		// Parse the RENDEZVOUS2 cell
-		parsedData, err := rp.ParseRendezvous2Cell(handshakeData)
-		if err != nil {
-			rp.logger.Error("Failed to parse RENDEZVOUS2 cell", "error", err)
-			return nil, fmt.Errorf("failed to parse RENDEZVOUS2: %w", err)
-		}
-
-		rp.logger.Info("Received RENDEZVOUS2 cell", "handshake_data_len", len(parsedData))
-		return parsedData, nil
+	if cellSender == nil {
+		return nil, fmt.Errorf("cell sender is required to receive RENDEZVOUS2 cell")
 	}
 
-	// AUDIT-003: No mock fallbacks in production code
-	// A cell sender is required to receive the RENDEZVOUS2 cell
-	return nil, fmt.Errorf("cell sender is required to receive RENDEZVOUS2 cell")
+	waitCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	var handshakeData []byte
+	var err error
+	if sc, ok := cellSender.(CellSenderWithCommand); ok {
+		handshakeData, err = sc.ReceiveRelayCellCommand(waitCtx, circuitID, cell.RelayRendezvous2, 60*time.Second)
+	} else {
+		handshakeData, err = cellSender.ReceiveRelayCell(waitCtx, circuitID, 60*time.Second)
+	}
+	if err != nil {
+		rp.logger.Error("Failed to receive RENDEZVOUS2 cell", "error", err)
+		return nil, fmt.Errorf("failed to receive RENDEZVOUS2: %w", err)
+	}
+
+	parsedData, err := rp.ParseRendezvous2Cell(handshakeData)
+	if err != nil {
+		rp.logger.Error("Failed to parse RENDEZVOUS2 cell", "error", err)
+		return nil, fmt.Errorf("failed to parse RENDEZVOUS2: %w", err)
+	}
+
+	rp.logger.Info("Received RENDEZVOUS2 cell", "handshake_data_len", len(parsedData))
+	return parsedData, nil
+}
+
+// rendezvousCandidates 从全网 Fast 节点构造会合候选（带 Relay 指针）。
+func (c *Client) rendezvousCandidates() []*HSDirectory {
+	out := make([]*HSDirectory, 0, 64)
+	seen := make(map[string]struct{})
+	for _, r := range c.networkRelays {
+		if r == nil || !r.IsRunning() || !r.IsValid() || !r.HasExtendKeys() {
+			continue
+		}
+		if !r.HasFlag("Fast") {
+			continue
+		}
+		fp := r.GetFingerprintHex()
+		if fp == "" {
+			fp = r.Fingerprint
+		}
+		if _, ok := seen[fp]; ok {
+			continue
+		}
+		seen[fp] = struct{}{}
+		out = append(out, &HSDirectory{
+			Fingerprint: fp,
+			Address:     r.Address,
+			ORPort:      r.ORPort,
+			Relay:       r,
+		})
+	}
+	return out
+}
+
+// linkSpecsForRelay 为会合点构造 INTRODUCE 明文所需的 ntor 密钥与 link-specifiers。
+func linkSpecsForRelay(h *HSDirectory) ([]byte, []LinkSpecifier, error) {
+	if h == nil || h.Relay == nil {
+		return nil, nil, fmt.Errorf("rendezvous relay missing")
+	}
+	r := h.Relay
+	if !r.HasNtorKeys() {
+		return nil, nil, fmt.Errorf("rendezvous relay missing ntor key")
+	}
+	specs := make([]LinkSpecifier, 0, 4)
+	if ip := net.ParseIP(r.Address); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			payload := make([]byte, 6)
+			copy(payload, v4)
+			binary.BigEndian.PutUint16(payload[4:], uint16(r.ORPort))
+			specs = append(specs, LinkSpecifier{Type: LSTypeIPv4, Data: payload})
+		}
+	}
+	if r.IPv6 != "" {
+		if ip6 := net.ParseIP(r.IPv6); ip6 != nil {
+			payload := make([]byte, 18)
+			copy(payload, ip6.To16())
+			port := r.IPv6Port
+			if port == 0 {
+				port = r.ORPort
+			}
+			binary.BigEndian.PutUint16(payload[16:], uint16(port))
+			specs = append(specs, LinkSpecifier{Type: LSTypeIPv6, Data: payload})
+		}
+	}
+	if len(r.RSAIdentity) == 20 {
+		specs = append(specs, LinkSpecifier{Type: LSTypeLegacyID, Data: append([]byte(nil), r.RSAIdentity...)})
+	}
+	if len(r.IdentityKey) == 32 {
+		specs = append(specs, LinkSpecifier{Type: LSTypeEd25519ID, Data: append([]byte(nil), r.IdentityKey...)})
+	}
+	if len(specs) == 0 {
+		return nil, nil, fmt.Errorf("no link specifiers for rendezvous")
+	}
+	return append([]byte(nil), r.NtorOnionKey...), specs, nil
 }
 
 // EstablishRendezvousPoint orchestrates establishing a rendezvous point
@@ -2380,74 +2490,94 @@ func (c *Client) EstablishRendezvousPoint(ctx context.Context, rendezvousCookie 
 	return circuitID, rendezvousPoint, nil
 }
 
-// CompleteRendezvous completes the rendezvous protocol
-// This waits for RENDEZVOUS2 and establishes the final connection
+// CompleteRendezvous completes the rendezvous protocol with hs-ntor.
 func (c *Client) CompleteRendezvous(ctx context.Context, rendezvousCircuitID uint32) error {
 	c.logger.Info("Completing rendezvous protocol", "circuit_id", rendezvousCircuitID)
 
-	// AUDIT-006: Retrieve the stored ephemeral key state
 	state, ok := c.GetRendezvousState(rendezvousCircuitID)
-	if !ok {
-		c.logger.Warn("No rendezvous state found for circuit", "circuit_id", rendezvousCircuitID)
-		// Continue with reduced security for backward compatibility
-		// In production, this should be an error
+	if !ok || state == nil {
+		return fmt.Errorf("no rendezvous hs-ntor state for circuit %d", rendezvousCircuitID)
 	}
 
-	// Wait for RENDEZVOUS2 cell from the hidden service
 	rendezvous := NewRendezvousProtocol(c.logger)
 	handshakeData, err := rendezvous.WaitForRendezvous2(ctx, rendezvousCircuitID, c.cellSender)
 	if err != nil {
+		c.RemoveRendezvousState(rendezvousCircuitID)
 		return fmt.Errorf("failed to receive RENDEZVOUS2: %w", err)
 	}
 
 	c.logger.Debug("Received RENDEZVOUS2", "handshake_data_len", len(handshakeData))
-
-	// AUDIT-006: Implement full handshake verification per rend-spec-v3.txt
-	if state != nil && len(handshakeData) >= 32 {
-		c.logger.Debug("Verifying RENDEZVOUS2 handshake")
-
-		// The handshakeData should contain the service's ephemeral public key (Y)
-		// Per rend-spec-v3.txt, we perform X25519 key exchange:
-		// shared_secret = X25519(client_private, service_public)
-
-		if len(handshakeData) < 32 {
-			c.RemoveRendezvousState(rendezvousCircuitID)
-			return fmt.Errorf("invalid RENDEZVOUS2 handshake data length: %d", len(handshakeData))
-		}
-
-		var servicePublic [32]byte
-		copy(servicePublic[:], handshakeData[:32])
-
-		// Perform X25519 Diffie-Hellman
-		var sharedSecret [32]byte
-		curve25519.ScalarMult(&sharedSecret, &state.EphemeralPrivate, &servicePublic)
-
-		// Derive session keys using HKDF-SHA256
-		// Per rend-spec-v3.txt, derive keys for forward and backward encryption
-		info := []byte("tor-hs-rendezvous-keys")
-		sessionKeys, err := deriveKey(sharedSecret[:], info, 64) // 32 bytes each direction
-		if err != nil {
-			c.RemoveRendezvousState(rendezvousCircuitID)
-			return fmt.Errorf("failed to derive session keys: %w", err)
-		}
-
-		c.logger.Info("Handshake verified successfully",
-			"forward_key_len", len(sessionKeys)/2,
-			"backward_key_len", len(sessionKeys)/2)
-
-		// TODO: Store session keys for stream encryption (sessionKeys[0:32], sessionKeys[32:64])
-		// This would be used by the circuit layer for encrypting/decrypting stream data
-		// For now, we securely zero them since circuit encryption is handled elsewhere
-		defer security.SecureZeroMemory(sessionKeys)
-
-		// Securely zero the shared secret
-		security.SecureZeroMemory(sharedSecret[:])
-
-		// Clean up the rendezvous state (which zeros the private key)
+	if len(handshakeData) < crypto.HsNtorResponseLen {
 		c.RemoveRendezvousState(rendezvousCircuitID)
+		return fmt.Errorf("invalid RENDEZVOUS2 length: %d, want >= %d", len(handshakeData), crypto.HsNtorResponseLen)
 	}
 
-	c.logger.Info("Rendezvous protocol completed successfully")
+	tryRend := func(r []byte) ([]byte, error) {
+		return crypto.HsNtorClientRend(
+			state.EphemeralPrivate[:],
+			state.IntroEncKeyB[:],
+			state.IntroAuthKey[:],
+			r,
+		)
+	}
+	// HANDSHAKE_INFO = Y||AUTH（64）；兼容多余前/后缀
+	candidates := [][]byte{handshakeData[:crypto.HsNtorResponseLen]}
+	if len(handshakeData) > crypto.HsNtorResponseLen {
+		candidates = append(candidates, handshakeData[len(handshakeData)-crypto.HsNtorResponseLen:])
+	}
+	if len(handshakeData) == crypto.HsNtorResponseLen {
+		candidates = [][]byte{handshakeData}
+	}
+	var seed []byte
+	var rendErr error
+	for _, resp := range candidates {
+		seed, rendErr = tryRend(resp)
+		if rendErr == nil {
+			break
+		}
+	}
+	if rendErr != nil {
+		c.RemoveRendezvousState(rendezvousCircuitID)
+		return fmt.Errorf("hs-ntor client rend (len=%d): %w", len(handshakeData), rendErr)
+	}
 
+	keyMaterial, err := crypto.HsNtorExpandCircuitKeys(seed)
+	if err != nil {
+		c.RemoveRendezvousState(rendezvousCircuitID)
+		return fmt.Errorf("hs-ntor expand keys: %w", err)
+	}
+	defer security.SecureZeroMemory(keyMaterial)
+	defer security.SecureZeroMemory(seed)
+
+	c.logger.Info("hs-ntor rendezvous verified",
+		"key_material_len", len(keyMaterial),
+		"circuit_id", rendezvousCircuitID)
+
+	// 安装会合末跳加密（SHA3-256 + AES-256）
+	if installer, ok := c.circuitBuilder.(interface {
+		InstallHSHop(circuitID uint32, keyMaterial []byte) error
+	}); ok {
+		kmCopy := append([]byte(nil), keyMaterial...)
+		if err := installer.InstallHSHop(rendezvousCircuitID, kmCopy); err != nil {
+			c.RemoveRendezvousState(rendezvousCircuitID)
+			return fmt.Errorf("install HS hop: %w", err)
+		}
+	} else if adapter, ok := c.cellSender.(*CircuitAdapter); ok {
+		kmCopy := append([]byte(nil), keyMaterial...)
+		if err := adapter.InstallHSHop(rendezvousCircuitID, kmCopy); err != nil {
+			c.RemoveRendezvousState(rendezvousCircuitID)
+			return fmt.Errorf("install HS hop: %w", err)
+		}
+	}
+
+	c.RemoveRendezvousState(rendezvousCircuitID)
+	c.logger.Info("Rendezvous protocol completed successfully")
 	return nil
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

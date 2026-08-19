@@ -1,5 +1,9 @@
 # Microdescriptor Fetching (SPEC-001)
 
+> **警告（2026-08）**：下文示例曾误写 `a sha256=`。现行共识 microdesc 摘要在 **`m` 行**，
+> OR 地址在 **`a` 行**。正确解析见 [docs/interop/microdescriptor.md](interop/microdescriptor.md)
+> 与 `pkg/directory/microdesc.go`。
+
 ## Overview
 
 This document describes the implementation of relay key extraction from Tor directory microdescriptors, completed in January 2026 as part of SPEC-001.
@@ -16,15 +20,19 @@ These keys are not included in the consensus document itself. Instead, the conse
 
 ### Consensus Parsing
 
-The consensus document contains "a" lines with microdescriptor digests:
+The consensus document contains **`m` lines** with microdescriptor digests (not `a` lines):
 
 ```
 r TestRelay AAAAAAAAAAAAAAAAAAAAAA BBBBBBBBBBBBB 2024-01-01 00:00:00 192.168.1.1 9001 0
-a sha256=dGVzdGRpZ2VzdA==
+a [2001:db8::1]:9001
+m dGVzdGRpZ2VzdA
 s Fast Guard Running Stable Valid
 ```
 
-The parser now extracts the `sha256=` digest and stores it in `Relay.MicrodescDigest`.
+- `a`：额外 OR 地址（含 IPv6）
+- `m`：无 padding base64 的 microdescriptor digest
+
+The parser extracts the `m` digest and stores it in `Relay.MicrodescDigest`.
 
 ### Microdescriptor Fetching
 

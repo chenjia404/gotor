@@ -252,10 +252,16 @@ func (s *Stream) Close() error {
 	return nil
 }
 
+// streamKey 标识一条流。Tor StreamID 在每条电路内独立编号，不得做进程内全局唯一。
+type streamKey struct {
+	circuitID uint32
+	streamID  uint16
+}
+
 // Manager manages multiple streams across circuits
 type Manager struct {
-	streams   map[uint16]*Stream
-	nextID    uint16
+	streams   map[streamKey]*Stream
+	nextID    map[uint32]uint16 // 每条电路各自的下一候选 StreamID（CreateStream 用）
 	mu        sync.RWMutex
 	logger    *logger.Logger
 	closeChan chan struct{}
@@ -269,8 +275,8 @@ func NewManager(log *logger.Logger) *Manager {
 	}
 
 	return &Manager{
-		streams:   make(map[uint16]*Stream),
-		nextID:    1,
+		streams:   make(map[streamKey]*Stream),
+		nextID:    make(map[uint32]uint16),
 		logger:    log.Component("stream-manager"),
 		closeChan: make(chan struct{}),
 	}
@@ -287,18 +293,30 @@ func (m *Manager) CreateStream(circuitID uint32, target string, port uint16) (*S
 	default:
 	}
 
-	// Allocate stream ID
-	streamID := m.nextID
-	m.nextID++
-	if m.nextID == 0 {
-		m.nextID = 1 // Skip 0
+	next := m.nextID[circuitID]
+	if next == 0 {
+		next = 1
 	}
-
-	return m.addStreamLocked(streamID, circuitID, target, port)
+	start := next
+	for {
+		id := next
+		next++
+		if next == 0 {
+			next = 1
+		}
+		key := streamKey{circuitID: circuitID, streamID: id}
+		if _, exists := m.streams[key]; !exists {
+			m.nextID[circuitID] = next
+			return m.addStreamLocked(id, circuitID, target, port)
+		}
+		if next == start {
+			return nil, fmt.Errorf("no free stream IDs on circuit %d", circuitID)
+		}
+	}
 }
 
 // CreateStreamWithID 用电路分配器给出的非 0 StreamID 建流。
-// SOCKS BEGIN 与 RELAY_RESOLVE 必须共用电路上的 ID 空间。
+// SOCKS BEGIN 与 RELAY_RESOLVE 必须共用**该电路**上的 ID 空间；不同电路可复用同一 StreamID。
 func (m *Manager) CreateStreamWithID(id uint16, circuitID uint32, target string, port uint16) (*Stream, error) {
 	if id == 0 {
 		return nil, fmt.Errorf("stream ID 0 is reserved (not a valid BEGIN/RESOLVE stream)")
@@ -313,22 +331,24 @@ func (m *Manager) CreateStreamWithID(id uint16, circuitID uint32, target string,
 	default:
 	}
 
-	if _, exists := m.streams[id]; exists {
-		return nil, fmt.Errorf("stream ID %d already in use", id)
+	key := streamKey{circuitID: circuitID, streamID: id}
+	if _, exists := m.streams[key]; exists {
+		return nil, fmt.Errorf("stream ID %d already in use on circuit %d", id, circuitID)
 	}
-	if id >= m.nextID {
-		next := id + 1
-		if next == 0 {
-			next = 1
+	next := m.nextID[circuitID]
+	if next == 0 || id >= next {
+		n := id + 1
+		if n == 0 {
+			n = 1
 		}
-		m.nextID = next
+		m.nextID[circuitID] = n
 	}
 	return m.addStreamLocked(id, circuitID, target, port)
 }
 
 func (m *Manager) addStreamLocked(streamID uint16, circuitID uint32, target string, port uint16) (*Stream, error) {
 	stream := NewStream(streamID, circuitID, target, port, m.logger)
-	m.streams[streamID] = stream
+	m.streams[streamKey{circuitID: circuitID, streamID: streamID}] = stream
 
 	m.logger.Info("Stream created",
 		"stream_id", streamID,
@@ -339,35 +359,36 @@ func (m *Manager) addStreamLocked(streamID uint16, circuitID uint32, target stri
 	return stream, nil
 }
 
-// GetStream retrieves a stream by ID
-func (m *Manager) GetStream(streamID uint16) (*Stream, error) {
+// GetStream 按电路与 StreamID 取流。
+func (m *Manager) GetStream(circuitID uint32, streamID uint16) (*Stream, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	stream, exists := m.streams[streamID]
+	stream, exists := m.streams[streamKey{circuitID: circuitID, streamID: streamID}]
 	if !exists {
-		return nil, fmt.Errorf("stream not found: %d", streamID)
+		return nil, fmt.Errorf("stream not found: circuit=%d stream=%d", circuitID, streamID)
 	}
 
 	return stream, nil
 }
 
-// RemoveStream removes a stream from management
-func (m *Manager) RemoveStream(streamID uint16) error {
+// RemoveStream 从管理器移除指定电路上的流。
+func (m *Manager) RemoveStream(circuitID uint32, streamID uint16) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	stream, exists := m.streams[streamID]
+	key := streamKey{circuitID: circuitID, streamID: streamID}
+	stream, exists := m.streams[key]
 	if !exists {
-		return fmt.Errorf("stream not found: %d", streamID)
+		return fmt.Errorf("stream not found: circuit=%d stream=%d", circuitID, streamID)
 	}
 
 	if err := stream.Close(); err != nil {
-		m.logger.Error("Failed to close stream during removal", "function", "RemoveStream", "stream_id", streamID, "error", err)
+		m.logger.Error("Failed to close stream during removal", "function", "RemoveStream", "stream_id", streamID, "circuit_id", circuitID, "error", err)
 	}
-	delete(m.streams, streamID)
+	delete(m.streams, key)
 
-	m.logger.Info("Stream removed", "stream_id", streamID)
+	m.logger.Info("Stream removed", "stream_id", streamID, "circuit_id", circuitID)
 
 	return nil
 }
@@ -378,8 +399,8 @@ func (m *Manager) GetStreamsForCircuit(circuitID uint32) []*Stream {
 	defer m.mu.RUnlock()
 
 	var streams []*Stream
-	for _, stream := range m.streams {
-		if stream.CircuitID == circuitID {
+	for key, stream := range m.streams {
+		if key.circuitID == circuitID {
 			streams = append(streams, stream)
 		}
 	}
@@ -395,17 +416,37 @@ func (m *Manager) Close() error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
-		for id, stream := range m.streams {
+		for key, stream := range m.streams {
 			if err := stream.Close(); err != nil {
-				m.logger.Error("Failed to close stream during shutdown", "function", "Close", "stream_id", id, "error", err)
+				m.logger.Error("Failed to close stream during shutdown", "function", "Close", "stream_id", key.streamID, "circuit_id", key.circuitID, "error", err)
 			}
-			delete(m.streams, id)
+			delete(m.streams, key)
 		}
 
 		m.logger.Info("Stream manager closed")
 	})
 
 	return nil
+}
+
+// CircuitBound 是绑定到单条电路的流视图，供 circuit.SetStreamManager 使用。
+// GetStream(uint16) 只在该电路的 ID 空间内查找，符合 Tor「StreamID 按电路独立」语义。
+type CircuitBound struct {
+	mgr       *Manager
+	circuitID uint32
+}
+
+// BoundToCircuit 返回仅操作指定电路流的视图。
+func (m *Manager) BoundToCircuit(circuitID uint32) *CircuitBound {
+	return &CircuitBound{mgr: m, circuitID: circuitID}
+}
+
+// GetStream 实现电路侧 streamGetter 接口。
+func (b *CircuitBound) GetStream(streamID uint16) (interface{}, error) {
+	if b == nil || b.mgr == nil {
+		return nil, fmt.Errorf("stream manager not bound")
+	}
+	return b.mgr.GetStream(b.circuitID, streamID)
 }
 
 // Count returns the number of active streams

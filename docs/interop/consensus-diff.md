@@ -1,7 +1,7 @@
 # Consensus diff（DirCache=2）
 
 **日期**：2026-08-19  
-**状态**：PARTIAL（纯 Go 实现 + httptest；未跑真实权威/缓存）
+**状态**：WORKING（纯 Go + 真实权威 limited-ed 验收）
 
 对照：
 
@@ -13,7 +13,7 @@
 
 | 路径 | 作用 |
 |------|------|
-| `pkg/directory/consdiff.go` | 解析 / 应用 limited ed；SHA3-256 FromDigest / ToDigest |
+| `pkg/directory/consdiff.go` | 解析 / 应用 limited ed；SHA3-256 FromDigest / ToDigest；去掉 `@type` 前缀 |
 | `pkg/directory/directory.go` | 有缓存时发 `X-Or-Diff-From-Consensus`；失败回退整份 |
 
 SHA3 使用 `golang.org/x/crypto/sha3`，无 CGO、无 `import "C"`。
@@ -33,11 +33,15 @@ SHA3 使用 `golang.org/x/crypto/sha3`，无 CGO、无 `import "C"`。
 - **ToDigest**：应用后**整份**新共识（含签名）的 SHA3-256
 - HTTP 头 `X-Or-Diff-From-Consensus` 发送小写 hex；比较用大小写不敏感
 
+## CollecTor `@type` 前缀
+
+CollecTor 导出常带 `@type network-status-microdesc-consensus-3 1.0` 首行。权威 Diff 行号相对**无此前缀**的原文。`stripConsensusPreamble` / `ingestConsensusDocument` 必须去掉该前缀，否则首个 `directory-signature` 行号 +1，真实 `N,$d` 失败。
+
 ## 回退
 
 同一权威上，下列情况去掉 header 重拉整份 `consensus-microdesc`：
 
-- 带 header 的请求非 200
+- 带 header 的请求非 200（含 304）
 - 响应是 diff 但 apply / FromDigest / ToDigest 失败
 - apply 成功但 metadata / 验签失败
 
@@ -52,4 +56,6 @@ SHA3 使用 `golang.org/x/crypto/sha3`，无 CGO、无 `import "C"`。
 
 ## 真实验收
 
-待 `TOR_INTEGRATION_TEST=1` 在真实 DirCache=2 镜像上验证：第二次拉取为 diff、验签通过、失败路径回退整份。
+`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration -run TestRealConsensusDiff`
+
+**结果（2026-08-19）**：PASS。灌入 CollecTor `2026-08-19-10-00-00-consensus-microdesc` 后，权威 `moria1` 返回 limited-ed；apply + 验签得 **10193** relays；二次 FetchConsensus 回退整份成功。

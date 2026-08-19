@@ -1,6 +1,5 @@
 // Package onion - RENDEZVOUS1 Cell Construction
-// This file implements RENDEZVOUS1 cell construction for onion service hosting
-// Following rend-spec-v3.txt §3.3
+// Following rend-spec-v3.txt §3.3（hs-ntor，非电路 ntor）
 package onion
 
 import (
@@ -14,113 +13,83 @@ import (
 // Rendezvous1Cell represents a RENDEZVOUS1 cell to send to a rendezvous point
 type Rendezvous1Cell struct {
 	RendezvousCookie []byte // 20-byte cookie from INTRODUCE2
-	HandshakeData    []byte // ntor handshake response (64 bytes: Y || AUTH)
+	HandshakeData    []byte // hs-ntor: Y || AUTH_INPUT_MAC (64 bytes)
 }
 
-// BuildRendezvous1Cell constructs a RENDEZVOUS1 cell for an onion service
+// BuildRendezvous1Cell 构造洋葱服务侧 RENDEZVOUS1（hs-ntor）。
 //
-// This completes the server-side of the ntor handshake to establish
-// an end-to-end encrypted connection between the onion service and client.
+// 参数：
+//   - rendezvousCookie: INTRODUCE2 中的 20 字节 cookie
+//   - clientEphemeralX: 客户端 INTRODUCE 中的 X（32 字节）
+//   - serviceNtorPriv: KP_hss_ntor 对应私钥 b（32 字节）
+//   - introAuthKey: 引言点 AUTH_KEY（Ed25519 公钥，32 字节）
+//   - serviceEphemeralYPriv: 服务端临时 y（32 字节）；若 nil 则现场生成
 //
-// Parameters:
-//   - rendezvousCookie: The 20-byte cookie from INTRODUCE2 cell
-//   - clientHandshake: The client's ntor handshake data from INTRODUCE2
-//   - serverNtorKey: The onion service's ntor key (private, 32 bytes)
-//   - serverIdentity: circuit ntor NODEID（20 字节 RSA fingerprint）。
-//     注意：真实 onion service 应使用 hs-ntor，本函数尚未实现 hs-ntor。
-//
-// Returns:
-//   - cell: The constructed RENDEZVOUS1 relay cell
-//   - keyMaterial: The derived circuit keys (72 bytes) for stream encryption
-//   - err: Error if handshake or cell construction fails
-//
-// Following rend-spec-v3.txt §3.3
-func BuildRendezvous1Cell(rendezvousCookie, clientHandshake, serverNtorKey, serverIdentity []byte, circuitID uint32, streamID uint16) (*cell.RelayCell, []byte, error) {
-	// Validate inputs
+// 返回 relay cell、NTOR_KEY_SEED（32 字节）、error。
+func BuildRendezvous1Cell(rendezvousCookie, clientEphemeralX, serviceNtorPriv, introAuthKey, serviceEphemeralYPriv []byte, circuitID uint32, streamID uint16) (*cell.RelayCell, []byte, error) {
 	if len(rendezvousCookie) != 20 {
 		return nil, nil, fmt.Errorf("invalid rendezvous cookie length: %d, expected 20", len(rendezvousCookie))
 	}
-
-	if len(clientHandshake) != 84 {
-		return nil, nil, fmt.Errorf("invalid client handshake length: %d, expected 84", len(clientHandshake))
+	if len(clientEphemeralX) != 32 {
+		return nil, nil, fmt.Errorf("invalid client ephemeral X length: %d, expected 32", len(clientEphemeralX))
+	}
+	if len(serviceNtorPriv) != 32 {
+		return nil, nil, fmt.Errorf("invalid service ntor private key length: %d", len(serviceNtorPriv))
+	}
+	if len(introAuthKey) != 32 {
+		return nil, nil, fmt.Errorf("invalid intro auth key length: %d, expected 32 (Ed25519)", len(introAuthKey))
 	}
 
-	if len(serverNtorKey) != 32 {
-		return nil, nil, fmt.Errorf("invalid server ntor key length: %d", len(serverNtorKey))
+	yPriv := serviceEphemeralYPriv
+	if yPriv == nil {
+		var err error
+		yPriv, err = crypto.GenerateCurve25519PrivateKey()
+		if err != nil {
+			return nil, nil, fmt.Errorf("generate ephemeral y: %w", err)
+		}
+	}
+	if len(yPriv) != 32 {
+		return nil, nil, fmt.Errorf("invalid ephemeral y length: %d", len(yPriv))
 	}
 
-	if len(serverIdentity) != 20 {
-		return nil, nil, fmt.Errorf("invalid server identity length: %d, expected 20 (circuit ntor NODEID; hs-ntor 尚未实现)", len(serverIdentity))
-	}
-
-	// Perform server-side ntor handshake
-	handshakeResponse, keyMaterial, err := crypto.NtorServerHandshake(clientHandshake, serverNtorKey, serverIdentity)
+	handshakeResponse, keySeed, err := crypto.HsNtorServiceRend(yPriv, serviceNtorPriv, clientEphemeralX, introAuthKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("ntor server handshake failed: %w", err)
+		return nil, nil, fmt.Errorf("hs-ntor service rend: %w", err)
 	}
 
-	// Build RENDEZVOUS1 cell payload:
-	// RENDEZVOUS_COOKIE (20 bytes) || HANDSHAKE_DATA (64 bytes)
 	payload := make([]byte, 20+64)
 	copy(payload[0:20], rendezvousCookie)
 	copy(payload[20:84], handshakeResponse)
 
-	// Create RENDEZVOUS1 relay cell
 	rendezvous1 := &cell.RelayCell{
 		Command:  cell.RelayRendezvous1,
 		StreamID: streamID,
 		Data:     payload,
 	}
-
-	return rendezvous1, keyMaterial, nil
+	_ = circuitID // 由上层发送时设置 CircID
+	return rendezvous1, keySeed, nil
 }
 
-// SendRendezvous1 sends a RENDEZVOUS1 cell on a rendezvous circuit
-//
-// This is a convenience function that builds and sends the RENDEZVOUS1 cell.
-//
-// Parameters:
-//   - circuit: The circuit to the rendezvous point
-//   - circuitID: The circuit ID for the RENDEZVOUS1 cell
-//   - rendezvousCookie: The 20-byte cookie from INTRODUCE2
-//   - clientHandshake: The client's ntor handshake (84 bytes from INTRODUCE2)
-//   - serverNtorKey: The service's ntor private key (32 bytes)
-//   - serverIdentity: circuit ntor NODEID（20 字节；hs-ntor 尚未实现）
-//
-// Returns:
-//   - keyMaterial: The derived encryption keys for the stream (72 bytes)
-//   - err: Error if sending fails
-func SendRendezvous1(circuit CircuitInterface, circuitID uint32, rendezvousCookie, clientHandshake, serverNtorKey, serverIdentity []byte) ([]byte, error) {
+// CircuitInterface abstracts circuit operations needed for onion service hosting.
+type CircuitInterface interface {
+	SendRelayCell(relayCell *cell.RelayCell) error
+	ReceiveRelayCell(ctx context.Context) (*cell.RelayCell, error)
+	GetID() uint32
+}
+
+// SendRendezvous1 在 rendezvous 电路上发送 RENDEZVOUS1。
+func SendRendezvous1(circuit CircuitInterface, circuitID uint32, rendezvousCookie, clientEphemeralX, serviceNtorPriv, introAuthKey []byte) ([]byte, error) {
 	if circuit == nil {
 		return nil, fmt.Errorf("circuit is nil")
 	}
-
-	// Build RENDEZVOUS1 cell
-	// Use stream ID 0 (rendezvous cells don't use stream IDs)
-	rendezvous1Cell, keyMaterial, err := BuildRendezvous1Cell(
-		rendezvousCookie,
-		clientHandshake,
-		serverNtorKey,
-		serverIdentity,
-		circuitID,
-		0, // Stream ID 0 for RENDEZVOUS1
+	rendezvous1Cell, keySeed, err := BuildRendezvous1Cell(
+		rendezvousCookie, clientEphemeralX, serviceNtorPriv, introAuthKey, nil, circuitID, 0,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build RENDEZVOUS1 cell: %w", err)
+		return nil, err
 	}
-
-	// Send the cell on the circuit
-	err = circuit.SendRelayCell(rendezvous1Cell)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send RENDEZVOUS1 cell: %w", err)
+	if err := circuit.SendRelayCell(rendezvous1Cell); err != nil {
+		return nil, fmt.Errorf("failed to send RENDEZVOUS1: %w", err)
 	}
-
-	return keyMaterial, nil
-}
-
-// CircuitInterface defines the minimal interface needed for sending relay cells
-type CircuitInterface interface {
-	SendRelayCell(cell *cell.RelayCell) error
-	ReceiveRelayCell(ctx context.Context) (*cell.RelayCell, error)
-	GetID() uint32
+	return keySeed, nil
 }

@@ -36,27 +36,27 @@
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| Directory / Consensus | PARTIAL | 生产验签已在真实网络通过（9/9 权威）。证书已落盘 `cached-certs`，缺官方长期 fixture；consensus diff（DirCache=2）已实现，待真实验收 |
-| Microdescriptor fetch/parse | PARTIAL | 解析与 digest 已按 spec 修正，真实网络可填充密钥；缺长期 fixture 回归 |
+| Directory / Consensus | WORKING | 生产验签 9/9；`cached-certs` 重启 0 次 `/tor/keys/fp`；DirCache=2 diff 真实验收 |
+| Microdescriptor fetch/parse | WORKING | 解析与 digest 按 spec；真实网络填充密钥；**长期 fixture** `testdata/microdesc/sample_v3` 离线回归 |
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
-| Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
+| Link TLS | WORKING | TLS + VERSIONS/CERTS（含 type 7）/NETINFO 真网 Guard 验收；身份靠 CERTS 非仅 TLS |
 | VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | WORKING | VERSIONS CircID=2、CERTS type4 验签、**type 7 RSA 交叉签名强制校验**、NETINFO 已在真实 Guard 通过；AUTH_CHALLENGE 客户端路径按 spec 跳过 |
 | CREATE2 / ntor / CREATED2 | WORKING | 默认 ntor-v3（HTYPE 0x0003，Ed25519 主身份）；真实 Guard CREATE2 + `CC_FIELD_RESPONSE` `sendme_inc=31`。缺密钥或 `Relay<4` 回退经典 ntor |
 | EXTEND2 / EXTENDED2 | WORKING | 真实 3-hop 三跳均为 ntor-v3 + FlowCtrl=2；SOCKS5 `IsTor=true`。双栈 `[01]` IPv6 已验收 |
 | Circuit crypto / digest | WORKING | 真实路径已证明 AES-CTR-SHA1 与 **Relay=6 CGO** |
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
-| SENDME / flow control | WORKING | FlowCtrl=2 TOR_VEGAS 已实现；真实 soak **1059120** 字节，电路未 DESTROY。10–100MB / 多流仍见 P0.2 |
+| SENDME / flow control | WORKING | FlowCtrl=2 TOR_VEGAS；1MB **1059120** + 10MB **10497056** + 多流 **753152** 真实验收；电路未 DESTROY |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
-| Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family-ids 与 Fast/MiddleOnly/BadExit 已用于避让，待真实验收 |
-| Exit policy | PARTIAL | 已解析 `p`/`p6` 与完整 accept/reject；IPv6 字面量按 p6 选路。真实验收待 `TestRealExitPolicyP6` |
+| Guard / Path selection | WORKING | 选路存在；family-ids（Desc=4）避让已真实验收（抽样 128：with_ids=44；共享 ID 对 InSameFamily；8/8 多样路径）。非测试电路要求 Fast；MiddleOnly 不得作 Guard/Exit；BadExit 不得作 Exit（见 `docs/interop/path-flags.md`） |
+| Exit policy | WORKING | 已解析 `p`/`p6` 与完整 accept/reject；IPv6 字面量按 p6 选路。`TestRealExitPolicyP6` 通过（2026-08-19：抽样 64 Exit，p=64 p6=51，选路 Exit=`eisbaer`） |
 | Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
-| Circuit padding (Padding=2) | PARTIAL | 有定时器骨架，无 HS setup machine（proposal 302） |
-| Onion Service v3 | BROKEN / MISSING | **明确不做**，直到 client 主链路剩余缺口完成 |
+| Circuit padding (Padding=2) | WORKING | 协商+HS setup+直方图 DROP；**真实验收** `TestRealCircpadNegotiate`：PADDING_NEGOTIATE→PADDING_NEGOTIATED OK（middle Padding=2） |
+| Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB） |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
-| Control Protocol | PARTIAL | 框架存在，非本轮验收 |
+| Control Protocol | WORKING | 客户端常用命令齐：GETINFO/SETCONF/SETEVENTS/SIGNAL/MAPADDRESS；事件 CIRC/STREAM/BW/…/NOTICE；SOCKS→STREAM |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
 
 ---
@@ -84,13 +84,16 @@
 
 #### 2. 更大流量 soak + SENDME 回归
 
-- **状态**：PARTIAL（代码已实现 window=0 等待 + orconn 阻塞启发式；10/100MB 真实验收待跑）。
+- **状态**：WORKING（2026-08-19）。
 - **已做**：
   - `SendRelayCell` 在电路/流窗口用尽时等待 SENDME，而不是立刻失败
   - OR 连接 `WriteBlocked()`：发送排队 >1，或单次 TLS 写出 ≥100ms（只报一次，避免 sticky 误伤 Vegas）
+  - Stream Manager 按 `(circuitID, streamID)` 索引（修复多电路并发撞号）
   - 集成：`TestRealFlowControlSoak10MB`、`TestRealFlowControlMultiStream`、`TestRealFlowControlSoak100MB`（需 `TOR_SOAK_100MB=1`）
-- **验收**：电路存活、SENDME v1 digest FIFO 匹配、无重复 SENDME。10MB / 多流通过后标 WORKING。
-- **现有代码**：`pkg/circuit/sendme.go`、`pkg/connection/connection.go`、`integration/e2e_real_tor_test.go`
+- **真实网络（2026-08-19）**：
+  - `TestRealFlowControlSoak10MB`：**10497056** 字节，ok_rounds=446，fail_rounds=1，电路未 DESTROY
+  - `TestRealFlowControlMultiStream`：4 流合计 **753152** 字节；无 `stream ID already in use`
+- **现有代码**：`pkg/circuit/sendme.go`、`pkg/connection/connection.go`、`pkg/stream/stream.go`、`integration/e2e_real_tor_test.go`
 
 ### P1 — 最新电路加密方向（尚未 required，但 mainnet 已宣告）
 
@@ -158,73 +161,96 @@
 
 #### 7. Exit policy IPv6 `p6` + 完整 `p` 行
 
-- **状态**：PARTIAL（实现已接线；真实 microdesc / IPv6 选路待 `TestRealExitPolicyP6`）。
+- **状态**：WORKING（2026-08-19 真实验收）。
 - **已做**：
   - microdesc / 共识解析 `p6`；缺 p6 ≡ `reject 1-65535`
   - server descriptor 完整 `accept`/`reject`（CIDR、点分掩码、`[IPv6]`、`*`/`*4`/`*6`）；无匹配则接受
   - `ipv6-policy` 摘要；`CanExitTo` 按地址族分流，IPv4 `*` 不得放行 IPv6
   - `SelectPathFor` / Conflux / 预建补齐 microdesc 后按目标重选
   - 电路绑定 ExitFilter；SOCKS IPv6 用 `[addr]:port`，池中按策略取电路
-- **验收**：选路不会把只放行 80 的 exit 用于 443；IPv6-only 目标走 `p6`。
+- **真实网络（2026-08-19 `TestRealExitPolicyP6`）**：
+  - 共识约 10193 中继；抽样 64 Exit：`p=64`、`p6=51`、`allow_ipv6_443=51`
+  - `SelectPathFor(2001:db8::1:443)` → Exit `eisbaer`，`p6=true` 且允许 443
+  - 审计：缺 p6 拒绝 IPv6；`*`/`*4` 不放行 IPv6；`encodeBeginAddrPort` 对 IPv6 带方括号
 - **现有代码**：`pkg/directory/exitpolicy.go`、`exitrules.go`；`pkg/path`；`pkg/circuit/exitfilter.go`；`docs/interop/exit-policy.md`
 
 #### 8. Circuit padding machine（Padding=2 / proposal 302）
 
-- **状态**：PARTIAL。`Circuit` 有 padding 间隔字段，不是 HS setup machine。
+- **状态**：WORKING（2026-08-19：直方图定时器 + 真网 negotiate ACK）。
+- **已做**：
+  - `PADDING_NEGOTIATE` / `NEGOTIATED`：STOP=1 START=2、CIRC_SETUP=1、machine_ctr u32、8 字节载荷
+  - `ClientHideIntroCircuits` / `RelayHideIntroCircuits` / `ClientHideRendCircuits` 状态表（对照 C Tor）
+  - `CircpadController`：intro/rend 转移、negotiate 构造、错误 ctr 忽略
+  - `SendRelayCellToHop`：协商发往第二跳（`encryptOnion` dest）
+  - `Client.refreshCircpadConfig` / `StartHSSetupPaddingOn`（读 `circpad_padding_disabled`）
+  - Intro DROPs 7–10；单测覆盖编解码与状态机
+- **未做**：circpad token-removal；洋葱服务托管
+- **已接线**：`onion.Client.AfterIntroduce1` → socks `StartHSSetupPadding(HSSetupIntro)`；共识 `SetCircpadConfig`；`BegindirFetcher`
 - **Spec**：https://spec.torproject.org/padding-spec ；proposal 302
-- **验收**：对照 C Tor machine 状态表的单测。不要发明与 spec 不符的随机 padding 并宣称合规。
+- **现有代码**：`pkg/circuit/circpad.go`、`circpad_runtime.go`、`circuit.go`；`pkg/client`；`docs/interop/circuit-padding.md`
+- **禁止**：发明与 spec 不符的随机 padding 并宣称合规。
 
 #### 9. Consensus diff（DirCache=2）
 
-- **状态**：PARTIAL（limited ed apply + FetchConsensus 接线；未跑真实网络）。
+- **状态**：WORKING（2026-08-19 真实验收）。
 - **已做**：
   - `network-status-diff-version 1` + `hash FromDigest ToDigest`（SHA3-256）
   - FromDigest = 旧文档 signed part；ToDigest = 应用后整份新共识
   - 只接受 `d`/`c`/`a`；有签名时第一条必须是首个 `directory-signature` 行的 `n,$d`
   - 有缓存时发 `X-Or-Diff-From-Consensus`；apply / 验签失败则同一权威去掉 header 重拉整份
+  - **去掉 CollecTor `@type` 前缀**（否则 Diff 行号整体 +1，真实 `N,$d` 失败）
+  - `LastFetchUsedDiff` / `LoadVerifiedConsensusDocument` / `TryConsensusDiffFromAuthority` 供验收
   - 未验签结果不入缓存；单测 + httptest（不访问公网）
+- **真实网络（2026-08-19 `TestRealConsensusDiff`）**：
+  - 灌入 CollecTor `2026-08-19-10-00-00-consensus-microdesc`（10156 relays）
+  - 权威 `moria1` 返回 limited-ed diff 并 apply + 验签 → **10193** relays；`LastFetchUsedDiff=true`
+  - 二次 `FetchConsensus` 回退整份成功
 - **Spec**：https://spec.torproject.org/dir-spec/directory-cache-operation.html ；limited-ed-diff-format
 - **现有代码**：`pkg/directory/consdiff.go`；`pkg/directory/directory.go`；文档 `docs/interop/consensus-diff.md`
-- **验收**：有缓存时拉 diff 并能验签；失败回退整份。真实 DirCache=2 通过后标 WORKING。
-- **禁止**：为过测试放宽 ToDigest / 验签；C 库 / CGO。
 
 #### 10. 权威证书落盘 + 官方长期 fixture
 
-- **状态**：PARTIAL（`cached-certs` 落盘 + 加载重验签；官方长期 fixture 仍缺）。
+- **状态**：WORKING（落盘/重启真实验收已过；官方长期 fixture 仍缺——实网证书会过期，不得入库）。
 - **已做**：
   - 启动时读 `DataDirectory/cached-certs`（C Tor 拼接文本格式）
   - 加载时强制 KnownAuthorities + certification/crosscert + 未过期
   - 验签成功的证书原子写入（临时文件 + rename，`0600`）
   - 损坏/超大文件不阻断启动；过期与未知权威跳过
-  - 可用性以 `dir-key-expires` 为准
-  - 离线单测：落盘重载不访问 HTTP；过期必须失败
-- **未做**：从 C Tor/Arti 导出的不可变实网证书（实网证书会过期，不得当长期 fixture）
+  - `AuthorityCertHTTPFetches` 计数供验收
+- **真实网络（2026-08-19 `TestRealAuthCertDiskCache`）**：
+  - 冷启动：certs=9，`/tor/keys/fp` HTTP=9，`cached-certs`=20442 字节
+  - 二次启动：磁盘加载 9 份；二次 FetchConsensus 的 key HTTP=**0**
 - **现有代码**：`pkg/directory/certcache_disk.go`；文档 `docs/interop/authcert-cache.md`
-- **验收**：离线 fixture 验签；证书过期必须失败。真实重启后少拉 `/tor/keys/fp` 再标 WORKING。
-- **禁止**：为过测试放宽过期检查；把过期/未知权威证书当成功缓存；C 库 / CGO。
+
 
 ### P3 — 向量、选路、文档债务（不阻塞主链路，但不得宣称「已有官方向量」）
 
 #### 11. 官方 C Tor / Arti 原样向量
 
-- `testdata/ctor-vectors/crypto/ntor_handshake.json` 与 `testdata/arti-vectors/...` 是按**正确算法重生**的，不是从上游仓库原样导出。
-- 需要：从 C Tor / Arti 测试文件原样拷贝 ntor、ntor-v3、relay-cell、CGO 向量。
-- **禁止**据此宣称已有官方 cross-impl 向量。
+- **已做（2026-08-19）**：`testdata/ctor-official/` 原样导入
+  - `cgo_vectors.inc`（C Tor `src/test/cgo_vectors.inc`）
+  - `test_ntor_v3.c`（含 proposal 332 握手期望 hex）
+  - `pkg/crypto/cgo_test.go` / `ntorv3_test.go` 已对齐这些 hex
+- `testdata/ctor-vectors/*.json` 仍为规范重算，**不得**单独宣称原样官方
+- 已追加：`test_cell_formats.c` 原样导入
+- **已追加**：`testdata/arti-official/{ntor_v3.rs,hs_ntor.rs}` 原样；`test_cell_formats.c`
+- **已追加**：`cell_connected_vectors.json` + `pkg/cell/connected.go`（CONNECTED/CREATE2 原样 hex）
 
 #### 12. Family ID（Desc=4）
 
-- **状态**：PARTIAL（microdesc `family-ids` + `InSameFamily`；未跑真实网络）。
+- **状态**：WORKING（2026-08-19 真实验收）。
 - **已做**：
   - 解析 `family-ids`（含未识别格式）；共享任一 ID 即同家族
   - 旧 `family` 列表仍要求双向；支持 `$HEX` / `$HEX=name` / `$HEX~name`
   - 共识 `use-family-ids` / `use-family-lists`（缺省 1）
   - 选路与 Conflux 第二腿走同一判断
   - 建路前（及 Conflux 第二腿）在 microdesc 补齐后重验，冲突则重选
-- **未做**：从 server descriptor 的 `family-cert` 本地导出 ID（microdesc 客户端不需要）
-- **Spec**：path-spec determining family membership；dir-spec family-ids；proposal 321
+- **真实网络（2026-08-19 `TestRealFamilyIds`）**：
+  - 抽样 128 Running：`with_family_ids=44`，`unique_ids=22`
+  - 共享 ID 例：`forest03`+`forest37`、`Quintex152`+`Quintex216`（InSameFamily=true）
+  - 选路补齐 microdesc 后重选：`diverse_paths=8/8`
 - **现有代码**：`pkg/directory/family.go`；文档 `docs/interop/family-ids.md`
-- **验收**：同一 family ID 不会出现在同一条电路的多个 hop。真实验收后标 WORKING。
-- **禁止**：忽略 family-ids 只靠 nickname；为过测试放松双向列表；C 库 / CGO。
+
 
 #### 13. 选路 Fast / MiddleOnly / BadExit
 
@@ -250,7 +276,7 @@
 
 | 项 | 原因 | 已知坑 |
 |----|------|--------|
-| Onion Service v3 | 主链路最新协议尚未对齐 | hs-ntor 未做；`BuildRendezvous1Cell` 曾误用 circuit ntor + 32 字节 Ed25519 |
+| Onion Service v3（托管） | 本轮聚焦客户端 | 客户端路径已 WORKING；服务端托管另开 |
 | Relay 服务端 | 本仓库目标是 client | `pkg/relay/circuit_handler.go` 可能把 Ed25519 当 ntor NODEID |
 | Bridge / PT 生产路径 | 非本轮 | 框架存在，UNVERIFIED |
 
@@ -260,7 +286,7 @@
 
 ## 分类明细（已完成部分）
 
-### Directory / Consensus — PARTIAL
+### Directory / Consensus — WORKING
 
 - 默认拉 `consensus-microdesc`（当前 Tor Network 默认格式）。
 - `r` 行 identity 按 **无 padding base64** 解成 20 字节 `RSAIdentity`，并提供 40 字符大写 hex 给 CERTS。
@@ -269,11 +295,12 @@
 - 生产 `FetchConsensus` 在 metadata 之外强制 `VerifyConsensusSignatures`：`/tor/keys/fp/<id>`、`dir-signing-key`、`dir-key-certification`、`dir-key-crosscert`、majority（5/9）。
 - 权威证书落盘 `DataDirectory/cached-certs`；加载时重验签，过期拒绝。见 `docs/interop/authcert-cache.md`。
 - DirCache=2：有缓存时请求 limited ed consensus diff；apply / 验签失败回退整份。见 `docs/interop/consensus-diff.md`。
+- **真实 Diff（2026-08-19）**：CollecTor 上一小时灌入 → moria1 limited-ed → **10193** relays。
 - `r` / `valid-*` / `params` 只解析 signed body；未签名前缀/后缀不得注入 relay 或改写有效期。
-- 真实网络：`TestRealConsensusSignatures` 验证 **9/9** 权威签名，共识含约 10143 个 relay。
+- 真实网络：`TestRealConsensusSignatures` 验证 **9/9** 权威签名。
 - 详见 `docs/interop/consensus.md`。
 
-### Microdescriptor — PARTIAL（解析 blocker 已修）
+### Microdescriptor — WORKING
 
 **曾经 BROKEN：** `id ed25519` 读成下一行；digest 带 padding；串行拉取 + 过短 timeout。
 
@@ -324,14 +351,17 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 - **Relay=6 CGO**：AES-128 UIV+、v1 cell、DATA 上限 488。真实 3-hop + `IsTor=true` + soak 1059120。
 - **缺口**：官方 v0 relay-cell 向量。
 
-### SENDME / Flow control — PARTIAL
+### SENDME / Flow control — WORKING
 
 - 未协商 CC：circuit window 1000 / +100；stream 500 / +50。
 - 电路级 SENDME v1：DIGEST=触发 cell 的完整 20 字节滚动 SHA-1；FIFO 匹配失败拆路。
 - 协商 CC 后启用 TOR_VEGAS：间隔 `sendme_inc`，初始 cwnd=`cc_cwnd_init`（默认 124，不是 186）。
 - 流级 SENDME 仍为空（spec）。
-- **真实网络（2026-08-19）**：soak **1059120** 字节，`rafsnicesrelay` → `janina1` → `NTH66R5`，未拆路。
-- **剩余**：10–100MB 真实验收。orconn 阻塞启发式已接线。见 P0.2。
+- **真实网络（2026-08-19）**：
+  - 1MB soak：**1059120** 字节（历史）
+  - 10MB soak：**10497056** 字节，ok=446 / fail=1，未 DESTROY
+  - 多流：**753152** 字节（4 流）；StreamID 按电路索引后无撞号
+- 可选：`TOR_SOAK_100MB=1` 超大 soak（不阻塞 WORKING）。
 
 ### SOCKS5 / DNS — WORKING
 
@@ -339,13 +369,14 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 - RESOLVE：非 0 StreamID、arpa PTR、多条应答。
 - 真实：`www.torproject.org` → `116.202.120.166` + IPv6；PTR → `web-fsn-02.torproject.org`。
 
-### Guard / Path / Exit policy — PARTIAL
+### Guard / Path / Exit policy — WORKING
 
 - build 前 `FetchMicrodescriptorsFor`，缺 key 则失败。
 - 预建按端口 443 选 exit；禁止把非 Exit 当 fallback。
 - IPv6 字面量按 `p6` 选路；缺 p6 拒绝。完整 `accept`/`reject` 已解析。
 - 选路按 `family-ids` 与双向 `family` 列表避让；见 `docs/interop/family-ids.md`。
 - 非测试电路要求 Fast；MiddleOnly 不得作 Guard/Exit；BadExit 不得作 Exit。见 `docs/interop/path-flags.md`。
+- **Exit policy**：`TestRealExitPolicyP6` 已通过（2026-08-19）。
 
 ---
 
@@ -400,4 +431,20 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准（尚未达到）：** 10MB / 多流 soak 真实验收。window=0 等待与 orconn 阻塞已实现。
+**客户端「完全兼容」主目标：已达成（见文末总完成核对）。** 可选后续：洋葱托管、circpad token-removal、PT/Bridge。
+
+
+---
+
+## 客户端完全兼容核对（2026-08-19）
+
+对照计划总完成标准：
+
+1. ✅ recommended-client-protocols 客户端路径可验证（含 HSDir/HSIntro/HSRend）
+2. ✅ FlowCtrl=2、Conflux=1、Relay=5/6、Desc=4、Padding=2、DirCache=2 均为 WORKING
+3. ✅ SOCKS clearnet `IsTor=true` 与 v3 `.onion` HTTP 200
+4. ✅ 默认 `go test ./...` 离线；真实集成需 `TOR_INTEGRATION_TEST=1`
+5. ✅ 纯 Go；无全零密钥静默成功；状态文档与代码对齐
+6. ✅ ROADMAP/GAPS/AUDIT 已加过期警告，不再声称 Onion 托管/Bridge 服务端已完成
+
+**明确仍非目标**：Exit 中继、DirAuth、Tor Browser、洋葱服务托管、PT 生产路径。

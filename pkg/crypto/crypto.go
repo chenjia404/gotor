@@ -23,9 +23,11 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"strings"
 	"sync"
 
 	"golang.org/x/crypto/curve25519"
+	"golang.org/x/crypto/sha3"
 )
 
 // Key sizes
@@ -348,42 +350,44 @@ func ConstantTimeCompare(a, b []byte) bool {
 // Per tor-spec.txt §6.1, relay cell digest verification requires checking
 // the hash state before and after updating with the cell
 func CloneHash(h hash.Hash) (hash.Hash, error) {
-	// Use binary marshaling interface that SHA-1 and SHA-256 support
 	marshaler, ok := h.(encoding.BinaryMarshaler)
 	if !ok {
 		return nil, fmt.Errorf("hash does not support binary marshaling: %T", h)
 	}
-
-	// Get the current state
 	state, err := marshaler.MarshalBinary()
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal hash state: %w", err)
 	}
 
-	// Create a new hash of the same size
-	// We determine this by checking the hash's output size
-	hashSize := h.Size()
-	var newHash hash.Hash
-	switch hashSize {
-	case 20: // SHA-1
-		newHash = sha1.New()
-	case 32: // SHA-256
-		newHash = sha256.New()
+	typeName := fmt.Sprintf("%T", h)
+	var candidates []hash.Hash
+	switch {
+	case strings.Contains(typeName, "sha3"):
+		candidates = []hash.Hash{sha3.New256()}
+	case h.Size() == 20:
+		candidates = []hash.Hash{sha1.New()}
+	case h.Size() == 32 && strings.Contains(typeName, "sha256"):
+		candidates = []hash.Hash{sha256.New(), sha3.New256()}
+	case h.Size() == 32:
+		candidates = []hash.Hash{sha3.New256(), sha256.New()}
 	default:
-		return nil, fmt.Errorf("unsupported hash size: %d", hashSize)
+		return nil, fmt.Errorf("unsupported hash: %T size=%d", h, h.Size())
 	}
 
-	// Restore the state to the new hash
-	unmarshaler, ok := newHash.(encoding.BinaryUnmarshaler)
-	if !ok {
-		return nil, fmt.Errorf("new hash does not support binary unmarshaling: %T", newHash)
+	var lastErr error
+	for _, newHash := range candidates {
+		u, ok := newHash.(encoding.BinaryUnmarshaler)
+		if !ok {
+			lastErr = fmt.Errorf("no BinaryUnmarshaler: %T", newHash)
+			continue
+		}
+		if err := u.UnmarshalBinary(state); err != nil {
+			lastErr = err
+			continue
+		}
+		return newHash, nil
 	}
-
-	if err := unmarshaler.UnmarshalBinary(state); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal hash state: %w", err)
-	}
-
-	return newHash, nil
+	return nil, fmt.Errorf("failed to unmarshal hash state (%T): %w", h, lastErr)
 }
 
 // Ed25519Verify verifies an Ed25519 signature

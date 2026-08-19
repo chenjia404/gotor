@@ -202,7 +202,7 @@ func TestStreamMultiplexingLimitAudit(t *testing.T) {
 			// Close stream
 			stream.Close()
 			// Remove from manager
-			mgr.RemoveStream(stream.ID)
+			mgr.RemoveStream(1, stream.ID)
 		}
 
 		// Verify cleanup

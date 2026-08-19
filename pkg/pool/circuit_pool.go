@@ -361,6 +361,34 @@ func (p *CircuitPool) Close() error {
 	return nil
 }
 
+// Rotate 关闭池内全部电路但保持预建循环运行（SIGNAL NEWNYM）。
+// 后续 Get 会新建电路，不会永久停用池。
+func (p *CircuitPool) Rotate() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	all := make([]*circuit.Circuit, 0, len(p.circuits))
+	all = append(all, p.circuits...)
+	p.circuits = p.circuits[:0]
+	if p.circuits == nil {
+		p.circuits = make([]*circuit.Circuit, 0, p.maxCircuits)
+	}
+	for key, poolCircuits := range p.isolatedCircuits {
+		all = append(all, poolCircuits...)
+		delete(p.isolatedCircuits, key)
+	}
+	p.mu.Unlock()
+
+	for _, circ := range all {
+		if circ == nil {
+			continue
+		}
+		p.logger.Debug("Rotating away pooled circuit", "circuit_id", circ.ID)
+		circ.Close()
+	}
+}
+
 // CircuitPoolStats holds statistics about the circuit pool
 type CircuitPoolStats struct {
 	Total            int // Total circuits across all pools

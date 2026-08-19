@@ -10,33 +10,41 @@ import (
 
 // Relay commands from tor-spec.txt section 6.1
 const (
-	RelayBegin             byte = 1
-	RelayData              byte = 2
-	RelayEnd               byte = 3
-	RelayConnected         byte = 4
-	RelaySendme            byte = 5  // SENDME cell for flow control
-	RelayExtend            byte = 6  // Legacy EXTEND (not used in v3+)
-	RelayExtended          byte = 7  // Legacy EXTENDED (not used in v3+)
-	RelayTruncate          byte = 8  // TRUNCATE cell
-	RelayTruncated         byte = 9  // TRUNCATED cell
-	RelayDrop              byte = 10 // DROP cell for testing
-	RelayResolve           byte = 11
-	RelayResolved          byte = 12
-	RelayBeginDir          byte = 13
-	RelayExtend2           byte = 14
-	RelayExtended2         byte = 15
-	RelayConfluxLink       byte = 19 // proposal 329：绑定两条电路
-	RelayConfluxLinked     byte = 20
-	RelayConfluxLinkedAck  byte = 21
-	RelayConfluxSwitch     byte = 22
-	RelayIntroduce1        byte = 32 // INTRODUCE1 cell for onion services
-	RelayIntroduce2        byte = 33 // INTRODUCE2 cell for onion services
-	RelayRendezvous1       byte = 34 // RENDEZVOUS1 cell for onion services
-	RelayRendezvous2       byte = 35 // RENDEZVOUS2 cell for onion services
-	RelayIntroEstab        byte = 38 // ESTABLISH_INTRO cell for onion services
-	RelayIntroEstdAck      byte = 39 // INTRO_ESTABLISHED cell for onion services
-	RelayPaddingNegotiate  byte = 41 // PADDING_NEGOTIATE cell for padding negotiation
-	RelayPaddingNegotiated byte = 42 // PADDING_NEGOTIATED cell for padding negotiation response
+	RelayBegin            byte = 1
+	RelayData             byte = 2
+	RelayEnd              byte = 3
+	RelayConnected        byte = 4
+	RelaySendme           byte = 5  // SENDME cell for flow control
+	RelayExtend           byte = 6  // Legacy EXTEND (not used in v3+)
+	RelayExtended         byte = 7  // Legacy EXTENDED (not used in v3+)
+	RelayTruncate         byte = 8  // TRUNCATE cell
+	RelayTruncated        byte = 9  // TRUNCATED cell
+	RelayDrop             byte = 10 // DROP cell for testing
+	RelayResolve          byte = 11
+	RelayResolved         byte = 12
+	RelayBeginDir         byte = 13
+	RelayExtend2          byte = 14
+	RelayExtended2        byte = 15
+	RelayConfluxLink      byte = 19 // proposal 329：绑定两条电路
+	RelayConfluxLinked    byte = 20
+	RelayConfluxLinkedAck byte = 21
+	RelayConfluxSwitch    byte = 22
+	// Onion service relay commands（tor-spec relay-cells 表）
+	RelayEstablishIntro        byte = 32 // ESTABLISH_INTRO
+	RelayEstablishRendezvous   byte = 33 // ESTABLISH_RENDEZVOUS
+	RelayIntroduce1            byte = 34 // INTRODUCE1
+	RelayIntroduce2            byte = 35 // INTRODUCE2
+	RelayRendezvous1           byte = 36 // RENDEZVOUS1
+	RelayRendezvous2           byte = 37 // RENDEZVOUS2
+	RelayIntroEstablished      byte = 38 // INTRO_ESTABLISHED
+	RelayRendezvousEstablished byte = 39 // RENDEZVOUS_ESTABLISHED
+	RelayIntroduceAck          byte = 40 // INTRODUCE_ACK
+	RelayPaddingNegotiate      byte = 41 // PADDING_NEGOTIATE
+	RelayPaddingNegotiated     byte = 42 // PADDING_NEGOTIATED
+
+	// 兼容旧名（已废弃编号；保留别名指向正确常量）
+	RelayIntroEstab   = RelayEstablishIntro
+	RelayIntroEstdAck = RelayIntroEstablished
 )
 
 // END_REASON codes from tor-spec.txt §6.3

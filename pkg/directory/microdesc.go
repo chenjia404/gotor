@@ -91,6 +91,7 @@ func (c *Client) FetchMicrodescriptors(ctx context.Context, relays []*Relay) err
 }
 
 // FetchMicrodescriptorsFor 只拉取指定 relay 的 microdescriptor（3-hop 路径用）。
+// 与 FetchMicrodescriptors 相同分批（每批 32），避免超长 URL 被缓存拒绝。
 func (c *Client) FetchMicrodescriptorsFor(ctx context.Context, relays []*Relay) error {
 	needed := make([]*Relay, 0, len(relays))
 	for _, r := range relays {
@@ -107,22 +108,21 @@ func (c *Client) FetchMicrodescriptorsFor(ctx context.Context, relays []*Relay) 
 	if len(needed) == 0 {
 		return nil
 	}
-
-	digestMap := make(map[string][]*Relay)
-	digests := make([]string, 0, len(needed))
-	for _, r := range needed {
-		digestMap[r.MicrodescDigest] = append(digestMap[r.MicrodescDigest], r)
-		digests = append(digests, r.MicrodescDigest)
-	}
-
-	sources := c.microdescSources(needed)
-	if err := c.fetchMicrodescriptorBatch(ctx, digests, digestMap, sources); err != nil {
+	if err := c.FetchMicrodescriptors(ctx, needed); err != nil {
 		return err
 	}
+	missing := 0
 	for _, r := range needed {
 		if !r.HasNtorKeys() {
-			return fmt.Errorf("relay %s (%s) still missing ntor keys after microdescriptor fetch", r.Nickname, r.FingerprintHex)
+			missing++
 		}
+	}
+	if missing == len(needed) {
+		return fmt.Errorf("microdescriptor fetch populated 0/%d requested relays", len(needed))
+	}
+	if missing > 0 {
+		c.logger.Warn("Some requested microdescriptors still missing keys",
+			"missing", missing, "requested", len(needed))
 	}
 	return nil
 }

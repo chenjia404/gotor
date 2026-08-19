@@ -14,6 +14,7 @@ import (
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/circuit"
+	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/metrics"
 	"github.com/opd-ai/go-tor/pkg/onion"
@@ -154,6 +155,18 @@ type Server struct {
 	rateLimiter      *ratelimit.RateLimiter      // Global connection rate limiter
 	perClientLimiter *ratelimit.KeyedRateLimiter // Per-client rate limiter
 	metrics          *metrics.Metrics            // Optional metrics for recording rate limit events
+
+	circpadCfg    circuit.CircpadConfig
+	circpadCfgSet bool
+	onionRelays   []*directory.Relay // 用于检查中间跳 Padding=2
+
+	eventPub EventPublisher
+}
+
+// EventPublisher 向 Control 口推送 STREAM/NOTICE 等事件（可选）。
+type EventPublisher interface {
+	PublishStream(streamID, circuitID uint32, status, target string)
+	PublishNotice(msg string)
 }
 
 // NewServer creates a new SOCKS5 proxy server
@@ -199,7 +212,7 @@ func NewServerWithConfig(address string, circuitMgr *circuit.Manager, log *logge
 		}
 	}
 
-	return &Server{
+	srv := &Server{
 		address:           address,
 		circuitMgr:        circuitMgr,
 		streamMgr:         stream.NewManager(log),
@@ -213,6 +226,112 @@ func NewServerWithConfig(address string, circuitMgr *circuit.Manager, log *logge
 		rateLimiter:       rateLimiter,
 		perClientLimiter:  perClientLimiter,
 	}
+	srv.wireOnionCircpad()
+	return srv
+}
+
+// wireOnionCircpad 在 INTRODUCE1 后尝试启动 Padding=2 HS setup 机。
+func (s *Server) wireOnionCircpad() {
+	if s.onionClient == nil || s.circuitMgr == nil {
+		return
+	}
+	s.onionClient.AfterIntroduce1 = func(ctx context.Context, introCircuitID uint32) error {
+		circ, err := s.circuitMgr.GetCircuit(introCircuitID)
+		if err != nil || circ == nil {
+			return fmt.Errorf("intro circuit %d not found: %w", introCircuitID, err)
+		}
+		cfg := circuit.CircpadConfig{}
+		s.mu.Lock()
+		if s.circpadCfgSet {
+			cfg = s.circpadCfg
+		}
+		relays := s.onionRelays
+		s.mu.Unlock()
+		if cfg.Disabled {
+			return nil
+		}
+		middleSupports := middleHopSupportsPadding2(circ, relays)
+		return circ.StartHSSetupPadding(circuit.HSSetupIntro, middleSupports, cfg)
+	}
+}
+
+// middleHopSupportsPadding2 检查电路中间跳是否宣告 Padding=2。
+func middleHopSupportsPadding2(circ *circuit.Circuit, relays []*directory.Relay) bool {
+	if circ == nil {
+		return false
+	}
+	hops := circ.GetHops()
+	if len(hops) < 2 || hops[1] == nil || hops[1].Fingerprint == "" {
+		return false
+	}
+	fp := hops[1].Fingerprint
+	for _, r := range relays {
+		if r == nil {
+			continue
+		}
+		if r.Fingerprint == fp || r.GetFingerprintHex() == fp {
+			return r.Supports("Padding", 2)
+		}
+	}
+	return false
+}
+
+// SetEventPublisher 注入 Control 事件发布器。
+func (s *Server) SetEventPublisher(p EventPublisher) {
+	s.mu.Lock()
+	s.eventPub = p
+	s.mu.Unlock()
+}
+
+func (s *Server) publishStream(streamID, circuitID uint32, status, target string) {
+	s.mu.Lock()
+	p := s.eventPub
+	s.mu.Unlock()
+	if p != nil {
+		p.PublishStream(streamID, circuitID, status, target)
+	}
+}
+
+// SetCircpadConfig 注入共识 circpad_*（由 Tor client 在拉共识后调用）。
+func (s *Server) SetCircpadConfig(cfg circuit.CircpadConfig) {
+	s.mu.Lock()
+	s.circpadCfg = cfg
+	s.circpadCfgSet = true
+	s.mu.Unlock()
+	s.wireOnionCircpad()
+}
+
+// SetOnionNetwork 配置洋葱服务客户端：HSDir、SRV、BEGIN_DIR、电路适配器。
+func (s *Server) SetOnionNetwork(
+	relays []*directory.Relay,
+	builder *circuit.Builder,
+	mgr *circuit.Manager,
+	dirClient *directory.Client,
+) {
+	if s == nil || s.onionClient == nil {
+		return
+	}
+	hsdirs := onion.HSDirectoriesFromRelays(relays)
+	s.mu.Lock()
+	s.onionRelays = relays
+	s.mu.Unlock()
+	s.onionClient.UpdateHSDirs(hsdirs)
+	s.onionClient.SetNetworkRelays(relays)
+	if dirClient != nil {
+		cur, prev := dirClient.SharedRandomValues()
+		s.onionClient.SetSharedRandom(cur, prev)
+	}
+	if builder != nil {
+		begindir := onion.NewBegindirFetcher(builder, s.logger)
+		begindir.SetRelays(relays)
+		s.onionClient.SetBegindir(begindir)
+		adapter := onion.NewCircuitAdapter(builder, mgr, relays, s.logger)
+		s.onionClient.SetCircuitBuilder(adapter)
+		s.onionClient.SetCellSender(adapter)
+	}
+	s.logger.Info("Onion network configured",
+		"hsdirs", len(hsdirs),
+		"relays", len(relays))
 }
 
 // buildIsolationPolicy creates an isolation policy from SOCKS server config.
@@ -519,13 +638,22 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		s.logger.Info("Successfully connected to onion service",
 			"address", host,
 			"circuit_id", circuitID)
+		s.publishStream(0, circuitID, "SUCCEEDED", targetAddr)
+
+		// 解析端口（默认 80）
+		onionPort := uint16(80)
+		if _, pstr, err := net.SplitHostPort(targetAddr); err == nil {
+			if p, e := strconv.Atoi(pstr); e == nil && p > 0 && p < 65536 {
+				onionPort = uint16(p)
+			}
+		}
 
 		// Send success reply
 		s.sendReply(conn, replySuccess, conn.LocalAddr())
 
 		// Relay data through the rendezvous circuit
-		s.logger.Info("Starting onion service data relay", "circuit_id", circuitID)
-		if err := s.relayOnionServiceData(ctx, conn, circuitID); err != nil {
+		s.logger.Info("Starting onion service data relay", "circuit_id", circuitID, "port", onionPort)
+		if err := s.relayOnionServiceData(ctx, conn, circuitID, host, onionPort); err != nil {
 			s.logger.Error("Onion service data relay failed", "circuit_id", circuitID, "error", err)
 		}
 		return
@@ -647,7 +775,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		s.sendReply(conn, replyGeneralFailure, nil)
 		return
 	}
-	defer s.streamMgr.RemoveStream(strm.ID)
+	defer s.streamMgr.RemoveStream(circ.ID, strm.ID)
 
 	// Set isolation key on stream and register with enforcer (ROADMAP Phase 2.2)
 	if isolationKey != nil {
@@ -660,6 +788,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		"stream_id", strm.ID,
 		"circuit_id", circ.ID,
 		"target", targetAddr)
+	s.publishStream(uint32(strm.ID), circ.ID, "NEW", targetAddr)
 
 	// Update stream state
 	strm.SetState(stream.StateConnecting)
@@ -668,12 +797,14 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	// AUDIT-MED-2 FIX: Pass ctx to respect connection-scoped context
 	if err := circ.OpenStream(ctx, strm.ID, hostStr, port); err != nil {
 		s.logger.Error("Failed to open stream", "stream_id", strm.ID, "error", err)
+		s.publishStream(uint32(strm.ID), circ.ID, "FAILED", targetAddr)
 		s.sendReply(conn, replyHostUnreachable, nil)
 		return
 	}
 
 	// Stream is now connected
 	strm.SetState(stream.StateConnected)
+	s.publishStream(uint32(strm.ID), circ.ID, "SUCCEEDED", targetAddr)
 
 	s.logger.Info("Stream connected",
 		"stream_id", strm.ID,
@@ -684,6 +815,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 	// Relay data bidirectionally between SOCKS client and Tor circuit
 	s.relayDataThroughCircuit(ctx, conn, circ, strm)
+	s.publishStream(uint32(strm.ID), circ.ID, "CLOSED", targetAddr)
 }
 
 // handshake performs SOCKS5 handshake and returns optional username for isolation
@@ -1051,145 +1183,81 @@ func (s *Server) relayDataThroughCircuit(ctx context.Context, socksConn net.Conn
 	s.logger.Info("Data relay finished", "stream_id", strm.ID)
 }
 
-// relayOnionServiceData relays data bidirectionally between SOCKS client and onion service rendezvous circuit
-// This implements data forwarding for .onion connections after the rendezvous protocol completes.
-// Per rend-spec-v3.txt, once the rendezvous circuit is established, RELAY_DATA cells are exchanged
-// between client and onion service through the rendezvous point.
-func (s *Server) relayOnionServiceData(ctx context.Context, socksConn net.Conn, circuitID uint32) error {
-	// Get the circuit from the circuit manager
+// relayOnionServiceData 在会合电路上 RELAY_BEGIN 后双向转发应用数据。
+func (s *Server) relayOnionServiceData(ctx context.Context, socksConn net.Conn, circuitID uint32, onionHost string, port uint16) error {
 	circ, err := s.circuitMgr.GetCircuit(circuitID)
 	if err != nil {
 		return fmt.Errorf("failed to get rendezvous circuit %d: %w", circuitID, err)
 	}
 
-	// Create a stream for this connection
-	// For onion services, we use stream ID 1 for the initial connection
-	const onionStreamID = 1 // Stream ID for onion service connection
+	streamID, err := circ.AllocateStreamID()
+	if err != nil {
+		return fmt.Errorf("allocate stream: %w", err)
+	}
+	defer circ.ReleaseStreamID(streamID)
+
+	beginTarget := onionHost
+	if beginTarget == "" {
+		beginTarget = "0.0.0.0"
+	}
+	if err := circ.OpenStream(ctx, streamID, beginTarget, port); err != nil {
+		return fmt.Errorf("RELAY_BEGIN to onion: %w", err)
+	}
+	s.logger.Info("Onion stream connected",
+		"circuit_id", circuitID, "stream_id", streamID, "port", port)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// SOCKS client -> Onion service (through rendezvous circuit)
 	go func() {
 		defer wg.Done()
-
 		maxDataSize := circ.RelayDataMax()
 		buf := make([]byte, maxDataSize)
-
 		for {
-			// Set read deadline to detect idle connections
 			if err := socksConn.SetReadDeadline(time.Now().Add(5 * time.Minute)); err != nil {
 				s.logger.Debug("Failed to set read deadline", "error", err)
 			}
-
 			n, err := socksConn.Read(buf)
 			if err != nil {
-				if err != io.EOF {
-					s.logger.Debug("SOCKS read error (onion service)", "circuit_id", circuitID, "error", err)
-				}
-				// Send RELAY_END to close the stream
-				endCell := &cell.RelayCell{
-					Command:  cell.RelayEnd,
-					StreamID: onionStreamID,
-					Data:     []byte{6}, // REASON_DONE
-				}
-				if sendErr := circ.SendRelayCell(endCell); sendErr != nil {
-					s.logger.Debug("Failed to send RELAY_END (onion service)", "circuit_id", circuitID, "error", sendErr)
-				}
+				endCell := &cell.RelayCell{Command: cell.RelayEnd, StreamID: streamID, Data: []byte{6}}
+				_ = circ.SendRelayCell(endCell)
 				return
 			}
-
 			if n == 0 {
 				continue
 			}
-
-			// Send data as RELAY_DATA cell
-			dataCell := &cell.RelayCell{
-				Command:  cell.RelayData,
-				StreamID: onionStreamID,
-				Data:     buf[:n],
-			}
+			dataCell := &cell.RelayCell{Command: cell.RelayData, StreamID: streamID, Data: buf[:n]}
 			if err := circ.SendRelayCell(dataCell); err != nil {
-				s.logger.Error("Failed to send RELAY_DATA (onion service)", "circuit_id", circuitID, "error", err)
+				s.logger.Error("Failed to send RELAY_DATA (onion)", "error", err)
 				return
 			}
-
-			s.logger.Debug("Sent data to onion service",
-				"circuit_id", circuitID,
-				"stream_id", onionStreamID,
-				"bytes", n)
 		}
 	}()
 
-	// Onion service -> SOCKS client (through rendezvous circuit)
 	go func() {
 		defer wg.Done()
-
 		for {
-			// Receive relay cell from circuit
 			relayCell, err := circ.ReceiveRelayCell(ctx)
 			if err != nil {
-				if err == io.EOF || err == context.Canceled {
-					s.logger.Debug("Onion service circuit closed", "circuit_id", circuitID)
-				} else {
-					s.logger.Debug("Onion service receive error", "circuit_id", circuitID, "error", err)
-				}
-				// Close SOCKS connection
-				if closeErr := socksConn.Close(); closeErr != nil {
-					s.logger.Debug("Failed to close SOCKS connection (onion service)", "circuit_id", circuitID, "error", closeErr)
-				}
+				_ = socksConn.Close()
 				return
 			}
-
-			// Check for RELAY_END (stream closed)
-			if relayCell.Command == cell.RelayEnd {
-				s.logger.Info("Onion service closed stream",
-					"circuit_id", circuitID,
-					"stream_id", relayCell.StreamID)
-				if closeErr := socksConn.Close(); closeErr != nil {
-					s.logger.Debug("Failed to close SOCKS connection on RELAY_END", "circuit_id", circuitID, "error", closeErr)
-				}
-				return
-			}
-
-			// Filter for RELAY_DATA cells for our stream
-			if relayCell.Command != cell.RelayData || relayCell.StreamID != onionStreamID {
-				// Not our data cell, skip (but don't return, continue reading)
-				s.logger.Debug("Received non-data cell for different stream (onion service)",
-					"circuit_id", circuitID,
-					"command", relayCell.Command,
-					"stream_id", relayCell.StreamID,
-					"expected_stream", onionStreamID)
+			if relayCell.StreamID != streamID {
 				continue
 			}
-
-			// Write data to SOCKS client
-			if len(relayCell.Data) > 0 {
+			switch relayCell.Command {
+			case cell.RelayData:
 				if _, err := socksConn.Write(relayCell.Data); err != nil {
-					s.logger.Error("Failed to write to SOCKS client (onion service)", "circuit_id", circuitID, "error", err)
-					// Send RELAY_END to onion service
-					endCell := &cell.RelayCell{
-						Command:  cell.RelayEnd,
-						StreamID: onionStreamID,
-						Data:     []byte{6}, // REASON_DONE
-					}
-					if sendErr := circ.SendRelayCell(endCell); sendErr != nil {
-						s.logger.Debug("Failed to send RELAY_END (onion service)", "circuit_id", circuitID, "error", sendErr)
-					}
 					return
 				}
-
-				s.logger.Debug("Sent data to SOCKS client (onion service)",
-					"circuit_id", circuitID,
-					"stream_id", onionStreamID,
-					"bytes", len(relayCell.Data))
+			case cell.RelayEnd:
+				_ = socksConn.Close()
+				return
 			}
 		}
 	}()
 
-	// Wait for both goroutines to finish
 	wg.Wait()
-
 	s.logger.Info("Onion service data relay finished", "circuit_id", circuitID)
 	return nil
 }

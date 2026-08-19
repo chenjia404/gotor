@@ -1,5 +1,9 @@
 # go-tor Implementation Plan
 
+> **⚠️ 过期警告（2026-08-19）**：本文件基于早期 AUDIT 缺口，**不是**现行互操作计划。  
+> 现行进度：[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)。客户端主链路已 WORKING。
+
+
 **Status**: IN PROGRESS  
 **Based on**: AUDIT.md findings  
 **Goal**: Fix critical security vulnerabilities and complete missing implementations

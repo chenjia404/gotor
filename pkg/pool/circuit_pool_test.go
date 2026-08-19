@@ -273,3 +273,37 @@ func TestCircuitPoolImmediatePrebuild(t *testing.T) {
 	}
 	t.Fatalf("prebuild did not start immediately: %+v", pool.Stats())
 }
+
+func TestCircuitPoolRotateKeepsPoolAlive(t *testing.T) {
+	log := logger.NewDefault()
+	cfg := &CircuitPoolConfig{
+		MinCircuits:     1,
+		MaxCircuits:     4,
+		PrebuildEnabled: false,
+		RebuildInterval: time.Hour,
+	}
+	p := NewCircuitPool(cfg, mockCircuitBuilder, log)
+	defer p.Close()
+
+	ctx := context.Background()
+	c1, err := p.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Put(c1)
+	if p.Stats().Total < 1 {
+		t.Fatal("expected pooled circuit")
+	}
+	p.Rotate()
+	if p.Stats().Total != 0 {
+		t.Fatalf("after Rotate expect 0 pooled, got %d", p.Stats().Total)
+	}
+	c2, err := p.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get after Rotate must work: %v", err)
+	}
+	if c2 == nil {
+		t.Fatal("nil circuit after Rotate")
+	}
+	p.Put(c2)
+}

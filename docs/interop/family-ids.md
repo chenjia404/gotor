@@ -1,7 +1,7 @@
 # Family ID（Desc=4 / happy families）
 
 **日期**：2026-08-19  
-**状态**：PARTIAL（解析 + 选路；未跑真实网络）
+**状态**：WORKING（2026-08-19 真实验收）
 
 对照：
 
@@ -37,4 +37,6 @@
 
 ## 真实验收
 
-待真实共识里带 `family-ids` 的继电器：同一 family ID 的 Guard/Middle/Exit 不得出现在同一条电路。
+`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration -run TestRealFamilyIds`
+
+**结果（2026-08-19）**：PASS。抽样 128 Running 得 `with_family_ids=44`；共享 ID 对 `InSameFamily=true`；选路补齐 microdesc 后 `diverse_paths=8/8`。

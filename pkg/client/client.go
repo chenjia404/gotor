@@ -66,6 +66,10 @@ type Client struct {
 	wg           sync.WaitGroup
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
+
+	// Padding=2 / proposal 302：共识 circpad_* 缓存，供 HS setup 机使用
+	circpadCfg   circuit.CircpadConfig
+	circpadCfgMu sync.RWMutex
 }
 
 // New creates a new Tor client
@@ -149,6 +153,15 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 	} else {
 		client.controlServer = control.NewServer(controlAddr, &clientStatsAdapter{client: client}, log)
 	}
+	client.controlServer.SetNewnymHandler(func() {
+		client.handleNewnym()
+	})
+	client.controlServer.SetShutdownHandler(func() {
+		_ = client.Stop()
+	})
+	client.socksServer.SetEventPublisher(&controlEventBridge{
+		dispatcher: client.controlServer.GetEventDispatcher(),
+	})
 
 	// Initialize HTTP metrics server if enabled
 	if cfg.EnableMetrics && cfg.MetricsPort > 0 {
@@ -174,7 +187,15 @@ func (c *Client) Start(ctx context.Context) error {
 	if err := c.pathSelector.UpdateConsensus(ctx); err != nil {
 		return fmt.Errorf("failed to update consensus: %w", err)
 	}
+	c.refreshCircpadConfig()
 	c.logger.Info("Path selector initialized")
+
+	// 配置 SOCKS 侧洋葱客户端（HSDir / BEGIN_DIR / 电路适配器）
+	if relays := c.pathSelector.GetRelays(); len(relays) > 0 {
+		onionBuilder := circuit.NewBuilder(c.circuitMgr, c.logger)
+		onionBuilder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
+		c.socksServer.SetOnionNetwork(relays, onionBuilder, c.circuitMgr, c.directory)
+	}
 
 	// Publish NS and NEWDESC events for the new consensus
 	if relays := c.pathSelector.GetRelays(); len(relays) > 0 {
@@ -282,6 +303,26 @@ func (c *Client) Start(ctx context.Context) error {
 
 	c.logger.Info("Tor client started successfully")
 	return nil
+}
+
+// handleNewnym 实现 SIGNAL NEWNYM：轮换预建/遗留电路，迫使后续流新建。
+func (c *Client) handleNewnym() {
+	c.logger.Info("SIGNAL NEWNYM: rotating circuits")
+	if c.circuitPool != nil {
+		c.circuitPool.Rotate()
+	}
+	c.circuitsMu.Lock()
+	legacy := append([]*circuit.Circuit(nil), c.circuits...)
+	c.circuits = c.circuits[:0]
+	c.circuitsMu.Unlock()
+	for _, circ := range legacy {
+		if circ == nil {
+			continue
+		}
+		if err := c.circuitMgr.CloseCircuit(circ.ID); err != nil {
+			c.logger.Debug("NEWNYM close circuit", "id", circ.ID, "error", err)
+		}
+	}
 }
 
 // Stop gracefully stops the Tor client
@@ -1539,4 +1580,40 @@ func (c *Client) mergeContexts(parent, child context.Context) context.Context {
 	}()
 
 	return ctx
+}
+
+// refreshCircpadConfig 从最近共识 params 刷新 Padding=2 配置。
+func (c *Client) refreshCircpadConfig() {
+	if c == nil || c.directory == nil {
+		return
+	}
+	pp := directory.GetPaddingParams(&directory.ConsensusMetadata{Params: c.directory.LastConsensusParams()})
+	cfg := circuit.CircpadConfigFromParams(pp.PaddingDisabled, pp.GlobalAllowedCells)
+	c.circpadCfgMu.Lock()
+	c.circpadCfg = cfg
+	c.circpadCfgMu.Unlock()
+	if c.socksServer != nil {
+		c.socksServer.SetCircpadConfig(cfg)
+	}
+	if cfg.Disabled {
+		c.logger.Info("circuit padding disabled by consensus circpad_padding_disabled")
+	}
+}
+
+// CircpadConfig 返回共识驱动的 circpad 配置副本（供 onion HS setup 使用）。
+func (c *Client) CircpadConfig() circuit.CircpadConfig {
+	c.circpadCfgMu.RLock()
+	defer c.circpadCfgMu.RUnlock()
+	return c.circpadCfg
+}
+
+// StartHSSetupPaddingOn 在已建好的电路上启动 Padding=2 HS setup 机。
+// middle 须宣告 Padding=2；共识 circpad_padding_disabled=1 时拒绝。
+func (c *Client) StartHSSetupPaddingOn(circ *circuit.Circuit, kind circuit.HSSetupKind, middle *directory.Relay) error {
+	if circ == nil {
+		return fmt.Errorf("circuit is nil")
+	}
+	cfg := c.CircpadConfig()
+	supports := middle != nil && middle.Supports("Padding", 2)
+	return circ.StartHSSetupPadding(kind, supports, cfg)
 }

@@ -14,10 +14,36 @@ import (
 
 	"golang.org/x/crypto/curve25519"
 
+	"github.com/opd-ai/go-tor/pkg/crypto"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
 // TestParseV3Address tests parsing of v3 onion addresses
+
+func testRPFields() (onionKey []byte, specs []LinkSpecifier) {
+	onionKey = make([]byte, 32)
+	onionKey[0] = 9
+	specs = []LinkSpecifier{{Type: LSTypeIPv4, Data: []byte{10, 0, 0, 1, 0x23, 0x29}}}
+	return onionKey, specs
+}
+
+func withRP(req *IntroduceRequest) *IntroduceRequest {
+	if req == nil {
+		return nil
+	}
+	k, s := testRPFields()
+	if len(req.RendezvousOnionKey) == 0 {
+		req.RendezvousOnionKey = k
+	}
+	if len(req.RendezvousLinkSpecs) == 0 {
+		req.RendezvousLinkSpecs = s
+	}
+	if len(req.Subcredential) == 0 && req.IntroPoint != nil && len(req.IntroPoint.EncKey) == 32 {
+		req.Subcredential = make([]byte, 32)
+	}
+	return req
+}
+
 func TestParseV3Address(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1184,6 +1210,16 @@ func TestBuildIntroduce1Cell(t *testing.T) {
 	for i := range rendezvousCookie {
 		rendezvousCookie[i] = byte(i)
 	}
+	bPriv, err := crypto.GenerateCurve25519PrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bPub, err := curve25519.X25519(bPriv, curve25519.Basepoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subcred := make([]byte, 32)
+	subcred[0] = 0x42
 
 	tests := []struct {
 		name        string
@@ -1222,15 +1258,18 @@ func TestBuildIntroduce1Cell(t *testing.T) {
 			request: &IntroduceRequest{
 				IntroPoint: &IntroductionPoint{
 					AuthKey: make([]byte, 32),
-					EncKey:  make([]byte, 32), // Required for encryption
+					EncKey:  bPub,
 				},
-				RendezvousCookie: rendezvousCookie,
-				RendezvousPoint:  "test-rendezvous-point",
-				OnionKey:         make([]byte, 32),
+				RendezvousCookie:    rendezvousCookie,
+				RendezvousPoint:     "test-rendezvous-point",
+				OnionKey:            make([]byte, 32),
+				Subcredential:       subcred,
+				RendezvousOnionKey:  func() []byte { k, _ := testRPFields(); return k }(),
+				RendezvousLinkSpecs: func() []LinkSpecifier { _, s := testRPFields(); return s }(),
 			},
 			wantErr:   false,
 			checkSize: true,
-			minSize:   75, // LEGACY_KEY_ID(20) + AUTH_KEY_TYPE(1) + AUTH_KEY_LEN(2) + AUTH_KEY(32) + EXT(1) + ENCRYPTED(>=20)
+			minSize:   75,
 		},
 		{
 			name: "request without auth key - should fail",
@@ -1259,17 +1298,19 @@ func TestBuildIntroduce1Cell(t *testing.T) {
 			errContains: "introduction point encryption key must be 32 bytes",
 		},
 		{
-			name: "request without onion key - should fail",
+			name: "request without onion key - still ok (X generated)",
 			request: &IntroduceRequest{
 				IntroPoint: &IntroductionPoint{
 					AuthKey: make([]byte, 32),
-					EncKey:  make([]byte, 32),
+					EncKey:  bPub,
 				},
-				RendezvousCookie: rendezvousCookie,
-				RendezvousPoint:  "test-rendezvous-point",
+				RendezvousCookie:    rendezvousCookie,
+				RendezvousPoint:     "test-rendezvous-point",
+				Subcredential:       subcred,
+				RendezvousOnionKey:  func() []byte { k, _ := testRPFields(); return k }(),
+				RendezvousLinkSpecs: func() []LinkSpecifier { _, s := testRPFields(); return s }(),
 			},
-			wantErr:     true,
-			errContains: "onion key is required",
+			wantErr: false,
 		},
 	}
 
@@ -1465,17 +1506,16 @@ func TestConnectToOnionService(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Test connection - should fail because no circuit builder is configured
-	// AUDIT-003: Mock fallbacks removed, requires real circuit builder
+	// 无 networkRelays / circuit builder 时应失败
 	_, err := client.ConnectToOnionService(ctx, addr)
 	if err == nil {
-		t.Error("Expected error without circuit builder")
+		t.Error("Expected error without circuit builder / network relays")
 		return
 	}
-
-	// Verify error message indicates circuit builder is required
-	if !strings.Contains(err.Error(), "circuit builder is required") {
-		t.Errorf("Expected 'circuit builder is required' error, got: %v", err)
+	if !strings.Contains(err.Error(), "circuit builder") &&
+		!strings.Contains(err.Error(), "rendezvous") &&
+		!strings.Contains(err.Error(), "no relays") {
+		t.Errorf("Expected circuit/rendezvous related error, got: %v", err)
 	}
 }
 
@@ -1488,16 +1528,29 @@ func TestIntroduce1CellFormat(t *testing.T) {
 	for i := range rendezvousCookie {
 		rendezvousCookie[i] = byte(i)
 	}
+	bPriv, err := crypto.GenerateCurve25519PrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bPub, err := curve25519.X25519(bPriv, curve25519.Basepoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subcred := make([]byte, 32)
+	subcred[0] = 1
 
-	// AUDIT-003: Include all required fields (AuthKey, EncKey, OnionKey)
+	// AUDIT-003: Include all required fields (AuthKey, EncKey, OnionKey, Subcredential)
 	req := &IntroduceRequest{
 		IntroPoint: &IntroductionPoint{
 			AuthKey: make([]byte, 32),
-			EncKey:  make([]byte, 32),
+			EncKey:  bPub,
 		},
-		RendezvousCookie: rendezvousCookie,
-		RendezvousPoint:  "test-rp",
-		OnionKey:         make([]byte, 32),
+		RendezvousCookie:    rendezvousCookie,
+		RendezvousPoint:     "test-rp",
+		OnionKey:            make([]byte, 32),
+		Subcredential:       subcred,
+		RendezvousOnionKey:  func() []byte { k, _ := testRPFields(); return k }(),
+		RendezvousLinkSpecs: func() []LinkSpecifier { _, s := testRPFields(); return s }(),
 	}
 
 	data, err := intro.BuildIntroduce1Cell(req)
@@ -1979,7 +2032,6 @@ func TestEstablishRendezvousPoint(t *testing.T) {
 }
 
 // TestCompleteRendezvous tests completing the rendezvous protocol
-// AUDIT-003: Without cell sender, completion should fail with proper error
 func TestCompleteRendezvous(t *testing.T) {
 	log := logger.NewDefault()
 	client := NewClient(log)
@@ -1987,16 +2039,14 @@ func TestCompleteRendezvous(t *testing.T) {
 
 	rendezvousCircuitID := uint32(2000)
 
-	// Test without cell sender - should fail per AUDIT-003
+	// 无 hs-ntor 状态时必须失败
 	err := client.CompleteRendezvous(ctx, rendezvousCircuitID)
 	if err == nil {
-		t.Error("Expected error without cell sender")
+		t.Error("Expected error without rendezvous state")
 		return
 	}
-
-	// Verify error message indicates cell sender is required
-	if !strings.Contains(err.Error(), "cell sender is required") {
-		t.Errorf("Expected 'cell sender is required' error, got: %v", err)
+	if !strings.Contains(err.Error(), "no rendezvous hs-ntor state") {
+		t.Errorf("Expected hs-ntor state error, got: %v", err)
 	}
 }
 
@@ -2293,9 +2343,12 @@ func TestBuildEncryptedDataWithEncryption(t *testing.T) {
 			EncKey:  introPointPublic[:],
 			AuthKey: make([]byte, 32),
 		},
-		RendezvousCookie: rendezvousCookie,
-		RendezvousPoint:  "test-rendezvous",
-		OnionKey:         onionKey,
+		RendezvousCookie:    rendezvousCookie,
+		RendezvousPoint:     "test-rendezvous",
+		OnionKey:            onionKey,
+		Subcredential:       make([]byte, 32),
+		RendezvousOnionKey:  func() []byte { k, _ := testRPFields(); return k }(),
+		RendezvousLinkSpecs: func() []LinkSpecifier { _, s := testRPFields(); return s }(),
 	}
 
 	// Build encrypted data
@@ -2304,10 +2357,8 @@ func TestBuildEncryptedDataWithEncryption(t *testing.T) {
 		t.Fatalf("buildEncryptedData failed: %v", err)
 	}
 
-	// Verify result contains: CLIENT_PK (32 bytes) + ENCRYPTED_DATA
-	// Plaintext would be: RENDEZVOUS_COOKIE (20) + ONION_KEY (32) + N_SPEC (1) = 53 bytes
-	// With encryption: CLIENT_PK (32) + ENCRYPTED (53) = 85 bytes
-	expectedMinLen := 32 + 53 // CLIENT_PK + encrypted payload
+	// hs-ntor: X(32) + C + M(32)；明文约 53 字节
+	expectedMinLen := 32 + 53 + 32
 	if len(result) < expectedMinLen {
 		t.Errorf("Encrypted result length = %d, want >= %d", len(result), expectedMinLen)
 	}
@@ -2488,14 +2539,19 @@ func TestEncryptionIntegration(t *testing.T) {
 		t.Fatalf("Failed to generate auth key: %v", err)
 	}
 
+	subcred := make([]byte, 32)
+	subcred[3] = 9
 	req := &IntroduceRequest{
 		IntroPoint: &IntroductionPoint{
 			EncKey:  introPointPublic[:],
 			AuthKey: authKey,
 		},
-		RendezvousCookie: rendezvousCookie,
-		RendezvousPoint:  "test-rendezvous-point",
-		OnionKey:         onionKey,
+		RendezvousCookie:    rendezvousCookie,
+		RendezvousPoint:     "test-rendezvous-point",
+		OnionKey:            onionKey,
+		Subcredential:       subcred,
+		RendezvousOnionKey:  func() []byte { k, _ := testRPFields(); return k }(),
+		RendezvousLinkSpecs: func() []LinkSpecifier { _, s := testRPFields(); return s }(),
 	}
 
 	// Build INTRODUCE1 cell
@@ -2971,7 +3027,7 @@ func TestVerifyDescriptorSignatureSuccess(t *testing.T) {
 	descriptorContent := "hs-descriptor 3\ndescriptor-lifetime 180\n"
 
 	// Sign the descriptor content with the signing key
-	descriptorSig := ed25519.Sign(signingPriv, []byte(descriptorContent))
+	descriptorSig := ed25519.Sign(signingPriv, HSDescriptorSignedMaterial([]byte(descriptorContent)))
 
 	// Create full raw descriptor with signature line
 	rawDesc := descriptorContent + "signature " + base64.StdEncoding.EncodeToString(descriptorSig)
@@ -3023,7 +3079,7 @@ func TestVerifyDescriptorSignatureWithCertChain(t *testing.T) {
 	copy(certData[40:104], certSig)
 
 	descriptorContent := "hs-descriptor 3\n"
-	descriptorSig := ed25519.Sign(signingPriv, []byte(descriptorContent))
+	descriptorSig := ed25519.Sign(signingPriv, HSDescriptorSignedMaterial([]byte(descriptorContent)))
 	rawDesc := descriptorContent + "signature test"
 
 	desc := &Descriptor{
@@ -3224,7 +3280,7 @@ func BenchmarkVerifyDescriptorSignature(b *testing.B) {
 	copy(certData[40:104], certSig)
 
 	descriptorContent := "hs-descriptor 3\ndescriptor-lifetime 180\n"
-	descriptorSig := ed25519.Sign(signingPriv, []byte(descriptorContent))
+	descriptorSig := ed25519.Sign(signingPriv, HSDescriptorSignedMaterial([]byte(descriptorContent)))
 	rawDesc := descriptorContent + "signature test"
 
 	desc := &Descriptor{

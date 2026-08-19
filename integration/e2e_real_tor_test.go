@@ -79,6 +79,121 @@ func TestRealConsensusSignatures(t *testing.T) {
 	t.Logf("consensus signatures verified, relays=%d", len(relays))
 }
 
+// TestRealConsensusDiff 验收 DirCache=2：灌入上一小时共识后，向权威请求 limited-ed diff，
+// apply + 验签必须成功；若权威只回 304/整份，则二次 FetchConsensus 回退路径仍须成功。
+func TestRealConsensusDiff(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	dirClient := directory.NewClient(logger.NewDefault())
+
+	// 先拉当前共识，确定 valid-after，再取上一小时文档作为 Diff 起点。
+	relaysNow, err := dirClient.FetchConsensus(ctx)
+	if err != nil {
+		t.Fatalf("current FetchConsensus: %v", err)
+	}
+	if len(relaysNow) < 1000 {
+		t.Fatalf("current consensus relays=%d", len(relaysNow))
+	}
+	nowDigest := dirClient.CachedSignedSHA3Hex()
+	t.Logf("current relays=%d digest=%s…", len(relaysNow), nowDigest[:16])
+
+	prevDoc, prevLabel, err := fetchPreviousMicrodescConsensus(ctx)
+	if err != nil {
+		t.Fatalf("fetch previous consensus: %v", err)
+	}
+	t.Logf("seed previous consensus %s (%d bytes)", prevLabel, len(prevDoc))
+
+	seedClient := directory.NewClient(logger.NewDefault())
+	relaysPrev, err := seedClient.LoadVerifiedConsensusDocument(ctx, prevDoc)
+	if err != nil {
+		t.Fatalf("LoadVerifiedConsensusDocument: %v", err)
+	}
+	prevDigest := seedClient.CachedSignedSHA3Hex()
+	if prevDigest == nowDigest {
+		t.Fatal("previous consensus digest unexpectedly equals current")
+	}
+	t.Logf("seeded relays=%d FromDigest=%s…", len(relaysPrev), prevDigest[:16])
+
+	var sawDiff bool
+	var lastErr error
+	for _, auth := range directory.DefaultAuthorities {
+		gotDiff, r2, err := seedClient.TryConsensusDiffFromAuthority(ctx, auth)
+		if err != nil {
+			lastErr = err
+			t.Logf("diff probe %s: %v", auth, err)
+			continue
+		}
+		if !gotDiff {
+			t.Logf("authority %s returned full document (not diff)", auth)
+			continue
+		}
+		if len(r2) < 1000 {
+			t.Fatalf("applied diff from %s has too few relays: %d", auth, len(r2))
+		}
+		if !seedClient.LastFetchUsedDiff() {
+			t.Fatal("LastFetchUsedDiff=false after successful diff apply")
+		}
+		sawDiff = true
+		t.Logf("DirCache=2 diff OK authority=%s relays=%d", auth, len(r2))
+		break
+	}
+	if !sawDiff {
+		t.Fatalf("no authority returned a usable consensus diff from %s (last err: %v)", prevLabel, lastErr)
+	}
+
+	// 回退路径：缓存已是最新时，带 header 请求通常 304 → FetchConsensus 须能整份拉回。
+	relays2, err := dirClient.FetchConsensus(ctx)
+	if err != nil {
+		t.Fatalf("second FetchConsensus (fallback path): %v", err)
+	}
+	if len(relays2) < 1000 {
+		t.Fatalf("second consensus relays=%d", len(relays2))
+	}
+	t.Logf("fallback FetchConsensus OK relays=%d usedDiff=%v", len(relays2), dirClient.LastFetchUsedDiff())
+}
+
+// fetchPreviousMicrodescConsensus 从 CollecTor 取比当前整点更早一小时的 microdesc 共识。
+func fetchPreviousMicrodescConsensus(ctx context.Context) (doc, label string, err error) {
+	now := time.Now().UTC().Truncate(time.Hour)
+	client := &http.Client{Timeout: 90 * time.Second}
+	var last error
+	for i := 1; i <= 6; i++ {
+		ts := now.Add(-time.Duration(i) * time.Hour)
+		label = ts.Format("2006-01-02-15-04-05") + "-consensus-microdesc"
+		url := "https://collector.torproject.org/recent/relay-descriptors/microdescs/consensus-microdesc/" + label
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if reqErr != nil {
+			return "", "", reqErr
+		}
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			last = doErr
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			last = readErr
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			last = fmt.Errorf("%s: HTTP %d", label, resp.StatusCode)
+			continue
+		}
+		if !strings.Contains(string(body), "network-status-version 3") {
+			last = fmt.Errorf("%s: not a consensus", label)
+			continue
+		}
+		return string(body), label, nil
+	}
+	if last == nil {
+		last = fmt.Errorf("no previous consensus found")
+	}
+	return "", "", last
+}
+
 func TestRealGuardCreate2(t *testing.T) {
 	requireRealTor(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -412,9 +527,10 @@ func soakDownload(t *testing.T, httpClient *http.Client, url string) (int64, err
 
 // TestRealFlowControlSoak10MB 连续下载至少 10MB，覆盖多次电路级 SENDME。
 // 每轮 GET 是新流；单流 window=0 由单元测试覆盖。
+// www.torproject.org 首页约 23KB，需足够迭代才能凑满 10MB（400 次上限不够）。
 func TestRealFlowControlSoak10MB(t *testing.T) {
 	requireRealTor(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
 	tor, err := client.ConnectWithContext(ctx)
@@ -428,23 +544,30 @@ func TestRealFlowControlSoak10MB(t *testing.T) {
 
 	httpClient := soakHTTPClient(t, tor, 3*time.Minute)
 	const wantBytes = 10 * 1024 * 1024
+	// 约 23KB/页 → 需 ≥450 次成功；留余量给偶发 SOCKS/出口失败。
+	const maxRounds = 800
 	var total int64
-	for i := 0; total < wantBytes && i < 400; i++ {
+	var okRounds, failRounds int
+	for i := 0; total < wantBytes && i < maxRounds; i++ {
 		n, err := soakDownload(t, httpClient, fmt.Sprintf("https://www.torproject.org/?soak10=%d", i))
 		if err != nil {
+			failRounds++
 			t.Logf("GET: %v", err)
 			if total > 0 && strings.Contains(err.Error(), "DESTROY") {
 				t.Fatalf("circuit DESTROY after %d bytes: %v", total, err)
 			}
 			continue
 		}
+		okRounds++
 		total += n
-		t.Logf("downloaded %d bytes total=%d", n, total)
+		if okRounds%50 == 0 || total >= wantBytes {
+			t.Logf("downloaded %d bytes total=%d ok=%d fail=%d", n, total, okRounds, failRounds)
+		}
 	}
 	if total < wantBytes {
-		t.Fatalf("only downloaded %d bytes, want >= %d", total, wantBytes)
+		t.Fatalf("only downloaded %d bytes, want >= %d (ok=%d fail=%d rounds=%d)", total, wantBytes, okRounds, failRounds, okRounds+failRounds)
 	}
-	t.Logf("10MB soak OK bytes=%d", total)
+	t.Logf("10MB soak OK bytes=%d ok_rounds=%d fail_rounds=%d", total, okRounds, failRounds)
 }
 
 // TestRealFlowControlMultiStream 同一 SOCKS 客户端上并发多流下载。
@@ -918,4 +1041,240 @@ func buildLiveCircuit(t *testing.T) (*circuit.Circuit, *path.Path) {
 		t.Fatalf("BuildCircuit: %v", err)
 	}
 	return circ, selected
+}
+
+// TestRealFamilyIds 验收真实 microdesc 的 family-ids：存在共享 ID 的继电器对，
+// 且 PathHopsShareFamily / 选路后补齐 microdesc 的路径不得含同家族 hop。
+func TestRealFamilyIds(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	log := logger.NewDefault()
+	dirClient := directory.NewClient(log)
+	guardMgr, err := path.NewGuardManager(t.TempDir(), log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := path.NewSelectorWithGuards(dirClient, guardMgr, log)
+	if err := selector.UpdateConsensus(ctx); err != nil {
+		t.Fatalf("UpdateConsensus: %v", err)
+	}
+	relays := selector.GetRelays()
+	if len(relays) < 1000 {
+		t.Fatalf("too few relays: %d", len(relays))
+	}
+
+	// 抽样一批 Running 节点拉 microdesc，统计 family-ids。
+	sample := make([]*directory.Relay, 0, 128)
+	for _, r := range relays {
+		if r == nil || !r.IsRunning() || !r.IsValid() {
+			continue
+		}
+		sample = append(sample, r)
+		if len(sample) >= 128 {
+			break
+		}
+	}
+	if err := dirClient.FetchMicrodescriptorsFor(ctx, sample); err != nil {
+		t.Fatalf("FetchMicrodescriptorsFor sample: %v", err)
+	}
+
+	withIDs := 0
+	idIndex := make(map[string][]*directory.Relay)
+	for _, r := range sample {
+		if len(r.FamilyIDs) == 0 {
+			continue
+		}
+		withIDs++
+		for _, id := range r.FamilyIDs {
+			idIndex[id] = append(idIndex[id], r)
+		}
+	}
+	t.Logf("sampled=%d with_family_ids=%d unique_ids=%d", len(sample), withIDs, len(idIndex))
+	if withIDs == 0 {
+		t.Fatal("expected some microdescriptors to contain family-ids on current network")
+	}
+
+	var sharedPairs int
+	for id, members := range idIndex {
+		if len(members) < 2 {
+			continue
+		}
+		a, b := members[0], members[1]
+		if !a.InSameFamily(b) {
+			t.Fatalf("shared family-id %q but InSameFamily=false (%s / %s)", id, a.Nickname, b.Nickname)
+		}
+		sharedPairs++
+		t.Logf("shared family-id members=%d example=%s+%s id=%s", len(members), a.Nickname, b.Nickname, truncateID(id))
+		if sharedPairs >= 3 {
+			break
+		}
+	}
+	if sharedPairs == 0 {
+		t.Log("no shared family-id within sample; expanding fetch")
+		more := make([]*directory.Relay, 0, 256)
+		for _, r := range relays {
+			if r == nil || !r.IsRunning() || !r.IsValid() {
+				continue
+			}
+			more = append(more, r)
+			if len(more) >= 256 {
+				break
+			}
+		}
+		if err := dirClient.FetchMicrodescriptorsFor(ctx, more); err != nil {
+			t.Fatalf("FetchMicrodescriptorsFor expand: %v", err)
+		}
+		for _, r := range more {
+			for _, id := range r.FamilyIDs {
+				idIndex[id] = append(idIndex[id], r)
+			}
+		}
+		for id, members := range idIndex {
+			uniq := uniqueRelays(members)
+			if len(uniq) < 2 {
+				continue
+			}
+			if !uniq[0].InSameFamily(uniq[1]) {
+				t.Fatalf("shared family-id %q but InSameFamily=false", id)
+			}
+			sharedPairs++
+			t.Logf("shared family-id after expand: %s+%s", uniq[0].Nickname, uniq[1].Nickname)
+			break
+		}
+	}
+	if sharedPairs == 0 {
+		t.Fatal("could not find two distinct relays sharing a family-id")
+	}
+
+	// 与 pkg/client 一致：选路时 microdesc 可能尚未补齐 family-ids，补齐后冲突则重选。
+	const trials = 8
+	okPaths := 0
+	var conflicts int
+	for i := 0; i < trials; i++ {
+		var selected *path.Path
+		for attempt := 0; attempt < 5; attempt++ {
+			pick, err := selector.SelectPath(443)
+			if err != nil {
+				t.Logf("SelectPath: %v", err)
+				break
+			}
+			if err := dirClient.FetchMicrodescriptorsFor(ctx, []*directory.Relay{
+				pick.Guard, pick.Middle, pick.Exit,
+			}); err != nil {
+				t.Logf("fetch path microdesc: %v", err)
+				break
+			}
+			if path.PathHopsShareFamily(dirClient, pick) {
+				conflicts++
+				t.Logf("family conflict after microdesc (reselect): %s / %s / %s",
+					pick.Guard.Nickname, pick.Middle.Nickname, pick.Exit.Nickname)
+				continue
+			}
+			selected = pick
+			break
+		}
+		if selected == nil {
+			continue
+		}
+		okPaths++
+	}
+	if okPaths == 0 {
+		t.Fatal("no successful family-diverse paths after reselect")
+	}
+	t.Logf("family-ids OK shared_pairs>=1 diverse_paths=%d/%d conflicts_seen=%d", okPaths, trials, conflicts)
+}
+
+func truncateID(id string) string {
+	if len(id) <= 24 {
+		return id
+	}
+	return id[:24] + "…"
+}
+
+func uniqueRelays(in []*directory.Relay) []*directory.Relay {
+	seen := make(map[string]struct{})
+	out := make([]*directory.Relay, 0, len(in))
+	for _, r := range in {
+		if r == nil {
+			continue
+		}
+		k := r.GetFingerprintHex()
+		if k == "" {
+			k = r.Fingerprint
+		}
+		if k == "" {
+			k = r.Nickname
+		}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, r)
+	}
+	return out
+}
+
+// TestRealAuthCertDiskCache 验收权威证书落盘：第一次拉共识写入 cached-certs，
+// 第二次启动从磁盘加载后验签共识时不应再请求 /tor/keys/fp。
+func TestRealAuthCertDiskCache(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	dataDir := t.TempDir()
+	first := directory.NewClient(logger.NewDefault())
+	if err := first.EnableCertDiskCache(dataDir); err != nil {
+		t.Fatalf("EnableCertDiskCache: %v", err)
+	}
+	relays, err := first.FetchConsensus(ctx)
+	if err != nil {
+		t.Fatalf("first FetchConsensus: %v", err)
+	}
+	if len(relays) < 1000 {
+		t.Fatalf("relays=%d", len(relays))
+	}
+	fetches1 := first.AuthorityCertHTTPFetches()
+	certs1 := first.CachedAuthorityCertCount()
+	if certs1 < 5 {
+		t.Fatalf("cached certs after first fetch: %d want >= 5", certs1)
+	}
+	if fetches1 < 5 {
+		t.Fatalf("HTTP key fetches on cold start: %d want >= 5", fetches1)
+	}
+	cachedPath := dataDir + "/cached-certs"
+	info, err := os.Stat(cachedPath)
+	if err != nil {
+		t.Fatalf("cached-certs missing: %v", err)
+	}
+	if info.Size() < 500 {
+		t.Fatalf("cached-certs too small: %d", info.Size())
+	}
+	t.Logf("first fetch certs=%d key_http=%d cached-certs=%d bytes", certs1, fetches1, info.Size())
+
+	second := directory.NewClient(logger.NewDefault())
+	if err := second.EnableCertDiskCache(dataDir); err != nil {
+		t.Fatalf("second EnableCertDiskCache: %v", err)
+	}
+	loaded := second.CachedAuthorityCertCount()
+	if loaded < 5 {
+		t.Fatalf("second start loaded certs=%d want >= 5 from disk", loaded)
+	}
+	if second.AuthorityCertHTTPFetches() != 0 {
+		t.Fatalf("EnableCertDiskCache must not HTTP-fetch; got %d", second.AuthorityCertHTTPFetches())
+	}
+
+	relays2, err := second.FetchConsensus(ctx)
+	if err != nil {
+		t.Fatalf("second FetchConsensus: %v", err)
+	}
+	if len(relays2) < 1000 {
+		t.Fatalf("second relays=%d", len(relays2))
+	}
+	fetches2 := second.AuthorityCertHTTPFetches()
+	if fetches2 != 0 {
+		t.Fatalf("second FetchConsensus issued %d /tor/keys/fp requests; want 0 (disk cache hit)", fetches2)
+	}
+	t.Logf("authcert disk OK loaded=%d second_key_http=%d relays=%d", loaded, fetches2, len(relays2))
 }

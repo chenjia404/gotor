@@ -1,5 +1,8 @@
 # go-tor Security and Critical Findings Audit
 
+> **⚠️ 过期警告（2026-08-19）**：审计条目可能已解决。现行状态见 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)。
+
+
 **Priority**: CRITICAL  
 **Source**: GAPS.md analysis  
 **Status**: IN PROGRESS

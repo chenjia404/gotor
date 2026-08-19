@@ -178,7 +178,19 @@ func TestManagerCreateStreamWithID(t *testing.T) {
 	}
 
 	if _, err := mgr.CreateStreamWithID(7, 100, "other.com", 443); err == nil {
-		t.Fatal("duplicate stream ID must be rejected")
+		t.Fatal("duplicate stream ID on same circuit must be rejected")
+	}
+
+	// 不同电路可复用同一 StreamID（Tor 语义）
+	other, err := mgr.CreateStreamWithID(7, 200, "other.com", 443)
+	if err != nil {
+		t.Fatalf("same stream ID on different circuit: %v", err)
+	}
+	if other.CircuitID != 200 || other.ID != 7 {
+		t.Fatalf("got circuit=%d id=%d", other.CircuitID, other.ID)
+	}
+	if mgr.Count() != 2 {
+		t.Fatalf("Count=%d want 2", mgr.Count())
 	}
 }
 
@@ -191,7 +203,7 @@ func TestManagerGetStream(t *testing.T) {
 		t.Fatalf("Failed to create stream: %v", err)
 	}
 
-	stream2, err := mgr.GetStream(stream1.ID)
+	stream2, err := mgr.GetStream(100, stream1.ID)
 	if err != nil {
 		t.Fatalf("Failed to get stream: %v", err)
 	}
@@ -205,7 +217,7 @@ func TestManagerGetNonExistentStream(t *testing.T) {
 	log := logger.NewDefault()
 	mgr := NewManager(log)
 
-	_, err := mgr.GetStream(999)
+	_, err := mgr.GetStream(100, 999)
 	if err == nil {
 		t.Error("Expected error when getting non-existent stream")
 	}
@@ -220,7 +232,7 @@ func TestManagerRemoveStream(t *testing.T) {
 		t.Fatalf("Failed to create stream: %v", err)
 	}
 
-	if err := mgr.RemoveStream(stream.ID); err != nil {
+	if err := mgr.RemoveStream(100, stream.ID); err != nil {
 		t.Fatalf("Failed to remove stream: %v", err)
 	}
 

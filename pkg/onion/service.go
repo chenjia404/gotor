@@ -22,6 +22,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/path"
 	"github.com/opd-ai/go-tor/pkg/security"
+	"golang.org/x/crypto/curve25519"
 )
 
 // Service represents an onion service (hidden service) that can be hosted
@@ -126,7 +127,8 @@ type ServiceIntroPoint struct {
 type PendingIntro struct {
 	Cookie          []byte // Rendezvous cookie
 	RendezvousPoint string // Rendezvous point fingerprint
-	ClientOnionKey  []byte // Client's onion key
+	ClientOnionKey  []byte // Client's ephemeral X (32 bytes)
+	IntroAuthKey    []byte // Intro point AUTH_KEY (Ed25519, 32 bytes) for hs-ntor
 	ReceivedAt      time.Time
 }
 
@@ -536,9 +538,9 @@ func (s *Service) establishIntroductionPoint(ctx context.Context, relay *HSDirec
 	if _, err := rand.Read(authKey); err != nil {
 		return nil, fmt.Errorf("failed to generate auth key: %w", err)
 	}
-
-	encKey := make([]byte, 32)
-	if _, err := rand.Read(encKey); err != nil {
+	// EncKey 必须是合法 Curve25519 私钥（hs-ntor 的 b）
+	encKey, err := crypto.GenerateCurve25519PrivateKey()
+	if err != nil {
 		return nil, fmt.Errorf("failed to generate enc key: %w", err)
 	}
 
@@ -632,11 +634,17 @@ func (s *Service) createDescriptor() error {
 		// In production, would add IPv4, IPv6, and fingerprint link specifiers
 		// For Phase 7.4, simplified
 
+		encPub := serviceIntro.EncKey
+		if len(serviceIntro.EncKey) == 32 {
+			if p, err := curve25519.X25519(serviceIntro.EncKey, curve25519.Basepoint); err == nil {
+				encPub = p
+			}
+		}
 		intro := IntroductionPoint{
 			LinkSpecifiers: linkSpecs,
 			OnionKey:       make([]byte, 32), // Would be relay's ntor key
 			AuthKey:        serviceIntro.AuthKey,
-			EncKey:         serviceIntro.EncKey,
+			EncKey:         encPub,
 			EncKeyCert:     nil, // Would be cross-certification
 			LegacyKeyID:    make([]byte, 20),
 		}
@@ -746,7 +754,7 @@ func (s *Service) signDescriptor(desc *Descriptor) error {
 	}
 
 	// Sign the descriptor with the descriptor signing key (not identity key)
-	signature := ed25519.Sign(descriptorSigningPriv, encoded)
+	signature := ed25519.Sign(descriptorSigningPriv, HSDescriptorSignedMaterial(encoded))
 	desc.Signature = signature
 
 	// Encode again with signature to get complete descriptor
@@ -1005,8 +1013,11 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 		return fmt.Errorf("no introduction point found for circuit %d", introCircuitID)
 	}
 
-	// Parse and decrypt INTRODUCE2 cell
-	request, err := ParseIntroduce2(introduce2Data, introPoint.AuthKey, introPoint.EncKey)
+	// Parse and decrypt INTRODUCE2 cell（hs-ntor）
+	timePeriod := GetTimePeriod(time.Now())
+	blinded := ComputeBlindedPubkey(s.publicKey, timePeriod)
+	subcred := ComputeHSSubcredential(s.publicKey, blinded)
+	request, err := ParseIntroduce2(introduce2Data, introPoint.EncKey, subcred)
 	if err != nil {
 		return fmt.Errorf("failed to parse INTRODUCE2: %w", err)
 	}
@@ -1031,6 +1042,7 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 		Cookie:          request.RendezvousCookie,
 		RendezvousPoint: rendezvousAddr,
 		ClientOnionKey:  request.ClientOnionKey,
+		IntroAuthKey:    append([]byte(nil), request.IntroAuthKey...),
 		ReceivedAt:      time.Now(),
 	}
 	s.mu.Unlock()
@@ -1073,33 +1085,43 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 				"cookie", cookieStr[:16],
 				"circuit_id", circ.ID)
 
-			// Store circuit ID for this rendezvous
+			// Store circuit ID and read hs-ntor keys under lock
 			s.mu.Lock()
 			s.rendezvousCircuits[cookieStr] = circ.ID
+			pending := s.pendingIntros[cookieStr]
+			var introAuth, clientX []byte
+			if pending != nil {
+				introAuth = append([]byte(nil), pending.IntroAuthKey...)
+				clientX = append([]byte(nil), pending.ClientOnionKey...)
+			}
 			s.mu.Unlock()
 
-			// Build client handshake data for ntor server-side processing
-			// Format: NODEID (20) || KEYID (32) || CLIENT_PK (32) = 84 bytes
-			// For onion services, we use our own identity as NODEID/KEYID
-			clientHandshake := make([]byte, 84)
-			copy(clientHandshake[0:20], s.publicKey[0:20])       // NODEID (first 20 bytes of Ed25519)
-			copy(clientHandshake[20:52], s.publicKey[0:32])      // KEYID (full Ed25519 public key)
-			copy(clientHandshake[52:84], request.ClientOnionKey) // CLIENT_PK (from INTRODUCE2)
+			if len(introAuth) != 32 || len(clientX) != 32 {
+				s.logger.Error("missing hs-ntor keys for RENDEZVOUS1",
+					"cookie", cookieStr[:16],
+					"auth_len", len(introAuth),
+					"x_len", len(clientX))
+				if s.config.Metrics != nil {
+					s.config.Metrics.RecordOnionServiceRendezvous(false)
+				}
+				s.mu.Lock()
+				delete(s.pendingIntros, cookieStr)
+				delete(s.rendezvousCircuits, cookieStr)
+				s.mu.Unlock()
+				return
+			}
 
-			// Send RENDEZVOUS1 cell with ntor handshake response
-			// Task 9.2.3: Complete the rendezvous connection
-			s.logger.Info("Sending RENDEZVOUS1 cell",
+			s.logger.Info("Sending RENDEZVOUS1 cell (hs-ntor)",
 				"cookie", cookieStr[:16],
 				"circuit_id", circ.ID)
 
-			// Build and send RENDEZVOUS1 using the circuit
 			keyMaterial, err := SendRendezvous1(
 				circ,
 				circ.ID,
 				request.RendezvousCookie,
-				clientHandshake,
+				clientX,
 				s.ntorKey,
-				s.publicKey,
+				introAuth,
 			)
 			if err != nil {
 				s.logger.Error("Failed to send RENDEZVOUS1",

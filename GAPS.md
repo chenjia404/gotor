@@ -1,5 +1,9 @@
 # go-tor: README / GoDoc vs Implementation Gaps
 
+> **⚠️ 过期警告（2026-08-19）**：本文件早期缺口分析可能已过时。  
+> 请以 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) 与 `docs/interop/` 为准，勿据此声称功能缺失或已完成。
+
+
 **Repository:** opd-ai/go-tor  
 **Scope:** Discrepancies between documented claims (README, GoDoc, ROADMAP, code comments) and actual implementation behavior.
 

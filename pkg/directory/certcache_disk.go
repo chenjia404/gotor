@@ -24,6 +24,24 @@ func (c *Client) EnableCertDiskCache(dataDir string) error {
 	return c.certCache.enableDisk(dataDir)
 }
 
+// CachedAuthorityCertCount 返回内存中已缓存（含磁盘加载）的权威证书数量。
+func (c *Client) CachedAuthorityCertCount() int {
+	if c == nil || c.certCache == nil {
+		return 0
+	}
+	c.certCache.mu.RLock()
+	defer c.certCache.mu.RUnlock()
+	return len(c.certCache.certs)
+}
+
+// AuthorityCertHTTPFetches 返回本客户端实际发起的 /tor/keys/fp HTTP 次数。
+func (c *Client) AuthorityCertHTTPFetches() uint64 {
+	if c == nil || c.certCache == nil {
+		return 0
+	}
+	return c.certCache.keyFetches.Load()
+}
+
 func (c *AuthorityCertCache) enableDisk(dataDir string) error {
 	if dataDir == "" {
 		c.mu.Lock()

@@ -59,7 +59,11 @@ func TestManagerConcurrentCreateRemove(t *testing.T) {
 	defer mgr.Close()
 
 	var wg sync.WaitGroup
-	streamIDs := make(chan uint16, 50)
+	type sid struct {
+		circuit uint32
+		id      uint16
+	}
+	streamIDs := make(chan sid, 50)
 
 	// Create streams
 	for i := 0; i < 10; i++ {
@@ -72,7 +76,7 @@ func TestManagerConcurrentCreateRemove(t *testing.T) {
 					t.Errorf("CreateStream: %v", err)
 					return
 				}
-				streamIDs <- s.ID
+				streamIDs <- sid{circuit: 1, id: s.ID}
 			}
 		}()
 	}
@@ -82,9 +86,9 @@ func TestManagerConcurrentCreateRemove(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		removed := 0
-		for id := range streamIDs {
-			if err := mgr.RemoveStream(id); err != nil {
-				t.Errorf("RemoveStream(%d): %v", id, err)
+		for key := range streamIDs {
+			if err := mgr.RemoveStream(key.circuit, key.id); err != nil {
+				t.Errorf("RemoveStream(%d,%d): %v", key.circuit, key.id, err)
 			}
 			removed++
 			if removed >= 50 {
@@ -242,7 +246,7 @@ func TestManagerGetNonexistentStream(t *testing.T) {
 	mgr := NewManager(log)
 	defer mgr.Close()
 
-	_, err := mgr.GetStream(9999)
+	_, err := mgr.GetStream(1, 9999)
 	if err == nil {
 		t.Error("expected error for nonexistent stream")
 	}
@@ -255,7 +259,7 @@ func TestManagerRemoveNonexistentStream(t *testing.T) {
 	mgr := NewManager(log)
 	defer mgr.Close()
 
-	err := mgr.RemoveStream(9999)
+	err := mgr.RemoveStream(1, 9999)
 	if err == nil {
 		t.Error("expected error for nonexistent stream")
 	}

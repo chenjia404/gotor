@@ -26,6 +26,12 @@ const (
 	EventGuard EventType = "GUARD"
 	// EventNS indicates network status changes
 	EventNS EventType = "NS"
+	// EventAddrMap indicates address mapping changes
+	EventAddrMap EventType = "ADDRMAP"
+	// EventStatusClient indicates client status messages
+	EventStatusClient EventType = "STATUS_CLIENT"
+	// EventNotice indicates NOTICE severity log/status lines
+	EventNotice EventType = "NOTICE"
 )
 
 // Event represents a control protocol event
@@ -224,6 +230,64 @@ func (e *NSEvent) Format() string {
 	}
 
 	return result
+}
+
+// AddrMapEvent represents an address map change (control-spec ADDRMAP).
+// Format: 650 ADDRMAP <Address> <NewAddress> <Expiry> [ERROR=<error>] [EXPIRES=<iso>]
+type AddrMapEvent struct {
+	Address    string
+	NewAddress string
+	Expiry     string // NEVER or ISO time
+	Error      string
+}
+
+func (e *AddrMapEvent) Type() EventType { return EventAddrMap }
+
+func (e *AddrMapEvent) Format() string {
+	parts := []string{fmt.Sprintf("650 ADDRMAP %s %s %s", e.Address, e.NewAddress, e.Expiry)}
+	if e.Error != "" {
+		parts = append(parts, "ERROR="+e.Error)
+	}
+	return strings.Join(parts, " ")
+}
+
+// StatusClientEvent represents STATUS_CLIENT (control-spec).
+// Format: 650 STATUS_CLIENT <Severity> <Action> [<Arguments>]
+type StatusClientEvent struct {
+	Severity  string // NOTICE / WARN / ERR
+	Action    string // e.g. CIRCUIT_ESTABLISHED, BOOTSTRAP
+	Arguments string // key=value pairs
+}
+
+func (e *StatusClientEvent) Type() EventType { return EventStatusClient }
+
+func (e *StatusClientEvent) Format() string {
+	line := fmt.Sprintf("650 STATUS_CLIENT %s %s", e.Severity, e.Action)
+	if e.Arguments != "" {
+		line += " " + e.Arguments
+	}
+	return line
+}
+
+// NoticeEvent is a simplified NOTICE log line for controllers.
+// Format: 650 NOTICE <Message>
+type NoticeEvent struct {
+	Message string
+}
+
+func (e *NoticeEvent) Type() EventType { return EventNotice }
+
+func (e *NoticeEvent) Format() string {
+	return fmt.Sprintf("650 NOTICE %s", e.Message)
+}
+
+// KnownEventTypes 返回 SETEVENTS 可识别的事件名列表。
+func KnownEventTypes() []EventType {
+	return []EventType{
+		EventCirc, EventStream, EventBW, EventORConn,
+		EventNewDesc, EventGuard, EventNS,
+		EventAddrMap, EventStatusClient, EventNotice,
+	}
 }
 
 // EventDispatcher manages event subscriptions and dispatching
