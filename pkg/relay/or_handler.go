@@ -194,12 +194,15 @@ func (h *LinkProtocolHandler) sendAuthChallenge(conn net.Conn) error {
 		return fmt.Errorf("generate AUTH_CHALLENGE: %w", err)
 	}
 	methods := []uint16{authMethodRSASHA256TLSSecret, authMethodEd25519SHA256RFC5705}
+	nMethods, err := security.SafeIntToUint16(len(methods))
+	if err != nil {
+		return fmt.Errorf("AUTH_CHALLENGE method count: %w", err)
+	}
 	payload := make([]byte, 0, authChallengeLen+2+2*len(methods))
 	payload = append(payload, challenge...)
-	nMethods := uint16(len(methods))
-	payload = append(payload, byte(nMethods>>8), byte(nMethods))
+	payload = binary.BigEndian.AppendUint16(payload, nMethods)
 	for _, m := range methods {
-		payload = append(payload, byte(m>>8), byte(m))
+		payload = binary.BigEndian.AppendUint16(payload, m)
 	}
 
 	ch := cell.NewCell(0, cell.CmdAuthChallenge)

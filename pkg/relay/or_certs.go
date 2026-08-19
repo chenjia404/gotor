@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -79,7 +80,8 @@ func encodeCERTSPayload(entries []certsEntry) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("certificate type %d too large: %w", e.certType, err)
 		}
-		payload = append(payload, e.certType, byte(clen>>8), byte(clen))
+		payload = append(payload, e.certType)
+		payload = binary.BigEndian.AppendUint16(payload, clen)
 		payload = append(payload, e.body...)
 	}
 	return payload, nil
