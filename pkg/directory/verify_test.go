@@ -36,6 +36,10 @@ func pemPKCS1Public(pub *rsa.PublicKey) string {
 }
 
 func generateTestAuthority(t *testing.T, nickname string) *testAuthority {
+	return generateTestAuthorityExpiring(t, nickname, time.Date(2028, 1, 1, 0, 0, 0, 0, time.UTC))
+}
+
+func generateTestAuthorityExpiring(t *testing.T, nickname string, expires time.Time) *testAuthority {
 	t.Helper()
 	idPriv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -53,7 +57,7 @@ func generateTestAuthority(t *testing.T, nickname string) *testAuthority {
 	b.WriteString("dir-key-certificate-version 3\n")
 	b.WriteString("fingerprint " + idFP + "\n")
 	b.WriteString("dir-key-published 2026-01-01 00:00:00\n")
-	b.WriteString("dir-key-expires 2028-01-01 00:00:00\n")
+	b.WriteString("dir-key-expires " + expires.UTC().Format("2006-01-02 15:04:05") + "\n")
 	b.WriteString("dir-identity-key\n")
 	b.WriteString(pemPKCS1Public(&idPriv.PublicKey))
 	b.WriteString("dir-signing-key\n")
@@ -82,8 +86,10 @@ func generateTestAuthority(t *testing.T, nickname string) *testAuthority {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validateAuthorityCert(certs[0], idFP, sigFP); err != nil {
-		t.Fatal(err)
+	if time.Now().Before(expires) {
+		if err := validateAuthorityCert(certs[0], idFP, sigFP); err != nil {
+			t.Fatal(err)
+		}
 	}
 	certs[0].FetchedAt = time.Now()
 
