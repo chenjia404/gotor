@@ -110,3 +110,23 @@ func (r *Relay) Supports(name string, ver int) bool {
 	}
 	return r.Protocols.Supports(name, ver)
 }
+
+// AdvertisesExtendIPv6 表示对端宣告 Relay=3（RELAY_EXTEND_IPv6）。
+// proposal 346：子协议号是独立 flag；Relay=4 并不蕴含 Relay=3。
+func (r *Relay) AdvertisesExtendIPv6() bool {
+	if r == nil {
+		return false
+	}
+	return r.Protocols.Supports("Relay", 3)
+}
+
+// AdvertisesConflux 表示该中继宣告了可链接电路的 Conflux 能力。
+//
+// proposal 346：子协议号是独立 flag，Conflux=2 并不蕴含 Conflux=1。
+// mainnet 常见只写 `Conflux=2`（见共识 pr 行），这两种都表示支持 LINK/LINKED/SWITCH。
+func (r *Relay) AdvertisesConflux() bool {
+	if r == nil {
+		return false
+	}
+	return r.Protocols.Supports("Conflux", 1) || r.Protocols.Supports("Conflux", 2)
+}

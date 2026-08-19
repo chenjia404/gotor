@@ -29,7 +29,7 @@ cap_number    [1]
 4. **本端已经实现**该能力
 
 第 4 条是硬约束：对端若接受 `[02 06]` 会改用 CGO，本端若仍走 AES-CTR-SHA1 会拆路。  
-**当前 `ImplementedNegotiableCaps()` 为空，生产路径不会发出 type 3。**
+**当前 `ImplementedNegotiableCaps()` 含 CGO。** 对端同时宣告 `Relay=5`、`Relay=6`、`FlowCtrl=2` 时生产路径会发出 type 3 `[02 06]`。
 
 ## gotor
 
@@ -38,12 +38,8 @@ cap_number    [1]
 - `pkg/directory`：`SupportsSubprotoRequest`（`Relay=5`）
 - `pkg/circuit/extension.go`：CREATE2/EXTEND2 的 CM 走 `EncodeNtorV3ClientMsg`
 
-## 真实网络（2026-08-19）
-
-`TestRealGuardCreate2` / `TestRealNtorV3`：Guard `SENDNOOSEplz`，HTYPE=3，`FlowCtrl=2` `sendme_inc=31`。未出现 type 3 请求日志，CREATE2 成功。
-
 ## 禁止
 
-- 在 CGO 未实现时请求 `Relay=6`
-- 对未宣告 `Relay=5` 的节点发 type 3
-- 把「能编码 [02 06]」写成 CGO 或 Relay=5 已在真实网络启用
+- 对未宣告 `Relay=5` / `Relay=6` 的节点发 type 3
+- 请求 CGO 后仍按 72 字节 AES-CTR 派生密钥
+- 把「能编码 [02 06]」单独写成已在真实网络启用 CGO（CGO 本身的验收见 `docs/interop/cgo.md`）

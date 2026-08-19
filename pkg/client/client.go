@@ -379,7 +379,11 @@ func (c *Client) buildCircuitForPool(ctx context.Context) (*circuit.Circuit, err
 	var selectedPath *path.Path
 	var err error
 	for attempt := 1; attempt <= maxCircuitPathAttempts; attempt++ {
-		selectedPath, err = c.pathSelector.SelectPath(generalPurposeExitPort)
+		selectedPath, err = c.pathSelector.SelectConfluxPath(generalPurposeExitPort)
+		if err != nil {
+			c.logger.Debug("Conflux-capable path unavailable, falling back", "error", err, "attempt", attempt)
+			selectedPath, err = c.pathSelector.SelectPath(generalPurposeExitPort)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to select path: %w", err)
 		}
@@ -413,6 +417,7 @@ func (c *Client) buildCircuitForPool(ctx context.Context) (*circuit.Circuit, err
 
 	// Create circuit builder
 	builder := circuit.NewBuilder(c.circuitMgr, c.logger)
+	builder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
 
 	// Configure rate limiter if enabled
 	if c.circuitRateLimiter != nil {
@@ -444,7 +449,7 @@ func (c *Client) buildCircuitForPool(ctx context.Context) (*circuit.Circuit, err
 	}
 
 	// Publish circuit built event
-	path := fmt.Sprintf("%s~%s,%s~%s,%s~%s",
+	circPath := fmt.Sprintf("%s~%s,%s~%s,%s~%s",
 		selectedPath.Guard.Fingerprint, selectedPath.Guard.Nickname,
 		selectedPath.Middle.Fingerprint, selectedPath.Middle.Nickname,
 		selectedPath.Exit.Fingerprint, selectedPath.Exit.Nickname)
@@ -452,10 +457,19 @@ func (c *Client) buildCircuitForPool(ctx context.Context) (*circuit.Circuit, err
 	c.PublishEvent(&control.CircuitEvent{
 		CircuitID:   circ.ID,
 		Status:      "BUILT",
-		Path:        path,
+		Path:        circPath,
 		Purpose:     "GENERAL",
 		TimeCreated: startTime,
 	})
+
+	if path.PathAdvertisesConflux(selectedPath) && circ.CongestionControlEnabled() {
+		if err := c.tryLinkConflux(ctx, builder, selectedPath, circ); err != nil {
+			if circ.GetState() != circuit.StateOpen {
+				return nil, fmt.Errorf("conflux handshake consumed circuit: %w", err)
+			}
+			c.logger.Info("Conflux not linked, using single circuit", "error", err)
+		}
+	}
 
 	// Confirm the guard node as working (for persistence)
 	c.pathSelector.ConfirmGuard(selectedPath.Guard.Fingerprint)
@@ -473,8 +487,49 @@ func (c *Client) buildCircuitForPool(ctx context.Context) (*circuit.Circuit, err
 	c.metrics.ActiveCircuits.Set(int64(len(c.circuits)))
 	c.circuitsMu.Unlock()
 
-	c.logger.Info("Circuit built successfully", "circuit_id", circ.ID, "duration", buildDuration)
+	c.logger.Info("Circuit built successfully", "circuit_id", circ.ID, "duration", buildDuration, "conflux", circ.ConfluxLinked())
 	return circ, nil
+}
+
+// tryLinkConflux 在第一路已建好且三跳均宣告 Conflux 时按需建第二腿并做 LINK。
+// 第二腿建路失败：保持单电路，不标 Conflux。握手已发 LINK 后失败：两条都关。
+func (c *Client) tryLinkConflux(ctx context.Context, builder *circuit.Builder, first *path.Path, primary *circuit.Circuit) error {
+	secondPath, err := c.pathSelector.SelectConfluxSecondPath(first)
+	if err != nil {
+		return err
+	}
+	if err := c.directory.FetchMicrodescriptorsFor(ctx, []*directory.Relay{
+		secondPath.Guard, secondPath.Middle, secondPath.Exit,
+	}); err != nil {
+		return fmt.Errorf("conflux second path microdescriptors: %w", err)
+	}
+
+	c.logger.Info("Building Conflux second leg",
+		"guard", secondPath.Guard.Nickname,
+		"middle", secondPath.Middle.Nickname,
+		"exit", secondPath.Exit.Nickname)
+
+	secondary, err := builder.BuildCircuit(ctx, secondPath, c.config.CircuitBuildTimeout)
+	if err != nil {
+		return fmt.Errorf("conflux second circuit: %w", err)
+	}
+	if !secondary.CongestionControlEnabled() {
+		secondary.Close()
+		return fmt.Errorf("conflux second leg missing FlowCtrl=2")
+	}
+
+	if _, err := circuit.LinkConflux(ctx, primary, secondary, c.config.CircuitBuildTimeout, c.logger); err != nil {
+		secondary.Close()
+		primary.Close()
+		return fmt.Errorf("conflux handshake: %w", err)
+	}
+
+	info := primary.ConfluxInfo()
+	c.logger.Info("Conflux linked",
+		"primary", primary.ID,
+		"secondary", secondary.ID,
+		"legs", len(info.Legs))
+	return nil
 }
 
 // maintainCircuits maintains the circuit pool

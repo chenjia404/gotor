@@ -125,6 +125,8 @@ type Relay struct {
 	Fingerprint     string
 	Address         string
 	ORPort          int
+	IPv6            string // 共识/microdesc a 行的第一个 IPv6 OR 地址（不含方括号）
+	IPv6Port        int    // 对应 IPv6 ORPort
 	DirPort         int
 	Flags           []string
 	Published       time.Time
@@ -145,6 +147,8 @@ type Client struct {
 	logger      *logger.Logger
 	authorities []string
 	certCache   *AuthorityCertCache // Certificate cache for signature verification
+	mu          sync.RWMutex
+	lastParams  map[string]int // 最近一次验签成功的共识 params（给 FlowCtrl=2）
 }
 
 // AuthorityCertCache caches authority signing certificates for consensus verification
@@ -316,7 +320,33 @@ func (c *Client) fetchFromAuthority(ctx context.Context, authorityURL string) ([
 		"valid_after", metadata.ValidAfter,
 		"valid_until", metadata.ValidUntil)
 
+	c.storeLastParams(metadata.Params)
 	return relays, nil
+}
+
+func (c *Client) storeLastParams(params map[string]int) {
+	copied := make(map[string]int, len(params))
+	for k, v := range params {
+		copied[k] = v
+	}
+	c.mu.Lock()
+	c.lastParams = copied
+	c.mu.Unlock()
+}
+
+// LastConsensusParams 返回最近一次验签成功的共识 params 副本。
+// 尚未成功拉共识时返回 nil，调用方应使用编译默认值。
+func (c *Client) LastConsensusParams() map[string]int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.lastParams == nil {
+		return nil
+	}
+	out := make(map[string]int, len(c.lastParams))
+	for k, v := range c.lastParams {
+		out[k] = v
+	}
+	return out
 }
 
 // parseConsensus parses a consensus document and extracts relay information
@@ -493,15 +523,10 @@ func (c *Client) parseConsensusWithMetadata(r io.Reader) ([]*Relay, *ConsensusMe
 			}
 		}
 
-		// Parse "a" lines (microdescriptor digests) - SPEC-001 (legacy format)
-		// Legacy format: "a sha256=base64digest"
+		// 解析 "a" 行。现行 dir-spec：附加 OR 地址（几乎总是 IPv6）。
+		// 仍兼容极旧的 "a sha256=digest"（digest 现已在 m 行）。
 		if strings.HasPrefix(line, "a ") && currentRelay != nil {
-			parts := strings.Fields(line)
-			// Format: "a" SP algname "=" digest
-			// e.g., "a sha256=base64digest"
-			if len(parts) >= 2 && strings.HasPrefix(parts[1], "sha256=") {
-				currentRelay.MicrodescDigest = strings.TrimPrefix(parts[1], "sha256=")
-			}
+			applyALine(currentRelay, line)
 		}
 
 		// Parse "m" lines (microdescriptor digests) - SPEC-001 (consensus-method 33)

@@ -20,6 +20,31 @@ func TestParseProtoLine(t *testing.T) {
 	if !p.Supports("LinkAuth", 3) {
 		t.Fatal("LinkAuth=3 should be supported")
 	}
+	if !p.Supports("Conflux", 2) || p.Supports("Conflux", 1) {
+		t.Fatal("Conflux=2 is a flag and must not imply Conflux=1")
+	}
+}
+
+func TestRelayAdvertisesConflux(t *testing.T) {
+	r := &Relay{Protocols: ParseProtoLine("Conflux=2")}
+	if !r.AdvertisesConflux() {
+		t.Fatal("mainnet Conflux=2 must count as Conflux-capable")
+	}
+	r.Protocols = ParseProtoLine("Conflux=1")
+	if !r.AdvertisesConflux() {
+		t.Fatal("Conflux=1 must count")
+	}
+	r.Protocols = ParseProtoLine("Conflux=1-2")
+	if !r.AdvertisesConflux() {
+		t.Fatal("Conflux=1-2 must count")
+	}
+	r.Protocols = ParseProtoLine("Relay=4 FlowCtrl=1-2")
+	if r.AdvertisesConflux() {
+		t.Fatal("no Conflux line must not advertise")
+	}
+	if (*Relay)(nil).AdvertisesConflux() {
+		t.Fatal("nil relay")
+	}
 }
 
 func TestParseProtoLineCommaList(t *testing.T) {
@@ -65,7 +90,7 @@ func TestSelectSubprotoRequestViaRelay(t *testing.T) {
 		t.Fatal("Relay=4-6 includes 5")
 	}
 	caps, err := crypto.SelectSubprotoRequest(r)
-	if err != nil || len(caps) != 0 {
-		t.Fatalf("CGO 未实现时不得对 Relay=6 发出 type 3: %v %#v", err, caps)
+	if err != nil || len(caps) != 1 || caps[0].Cap != 6 {
+		t.Fatalf("对端 Relay=5-6 + FlowCtrl=2 应请求 CGO: %v %#v", err, caps)
 	}
 }

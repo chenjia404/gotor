@@ -70,13 +70,15 @@ type Circuit struct {
 	streamManager    interface{}          // Stream manager (interface{} to avoid circular import)
 	nextStreamID     uint16               // 本电路下一个可用 StreamID（跳过 0）
 	usedStreamIDs    map[uint16]struct{}  // 已占用的 StreamID（BEGIN 与 RESOLVE 共用）
-	// Flow control per tor-spec.txt §7.4
-	packageWindow  int      // Circuit-level package window (cells we can send)
-	deliverWindow  int      // Circuit-level deliver window (cells we can receive)
-	sendmeInc      int      // FlowCtrl=2 的 sendme_inc；0 表示经典窗口 100
-	sendmeReceived int      // Count of DATA cells received (for sending SENDME)
-	sendmeSent     int      // Count of SENDME cells sent
-	sendmeExpected [][]byte // 发出 DATA 时记下的 v1 digest FIFO，供对端 SENDME 校验
+	// Flow control per tor-spec.txt §7.4 / proposal 324
+	packageWindow  int             // 还能发多少 DATA（经典窗口，或 Vegas 的 cwnd-inflight）
+	deliverWindow  int             // Circuit-level deliver window (cells we can receive)
+	sendmeInc      int             // FlowCtrl=2 的 sendme_inc；0 表示经典窗口 100
+	sendmeReceived int             // Count of DATA cells received (for sending SENDME)
+	sendmeSent     int             // Count of SENDME cells sent
+	sendmeExpected []sendmePending // 发出 DATA 时记下的 v1 digest + 时间，供 SENDME / RTT
+	ccParams       CCParams        // 共识 CC 参数；EnableCongestionControl 时启用 Vegas
+	vegas          *vegasState     // 非 nil 表示本电路已协商 FlowCtrl=2
 	// SECURITY-001: Replay protection per tor-spec.txt
 	replayProtection *cell.ReplayProtection // Replay protection for cells
 	// AUDIT-MED-4 FIX: Reusable timer to avoid GC pressure from time.After
@@ -86,6 +88,7 @@ type Circuit struct {
 	destroyCh      chan struct{}
 	destroyOnce    sync.Once
 	destroyReason  byte
+	conflux        *ConfluxSet // 非 nil 表示本电路正在或已经参与 Conflux 套
 }
 
 // Hop represents a single hop in a circuit (one relay)
@@ -101,6 +104,7 @@ type Hop struct {
 	BackwardCipher cipher.Stream // AES-CTR cipher for decrypting cells (relay→client)
 	ForwardDigest  hash.Hash     // SHA-1 running digest for forward direction
 	BackwardDigest hash.Hash     // SHA-1 running digest for backward direction
+	CGO            *crypto.CGOPair
 }
 
 // NewHop creates a new hop with the given parameters
@@ -150,6 +154,7 @@ func NewCircuit(id uint32) *Circuit {
 		sendmeReceived:   0,    // No DATA cells received yet
 		sendmeSent:       0,    // No SENDME cells sent yet
 		sendmeExpected:   nil,
+		ccParams:         DefaultCCParams(),
 		replayProtection: cell.NewReplayProtection(), // SECURITY-001: Initialize replay protection
 		deliverTimer:     deliverTimer,               // AUDIT-MED-4 FIX: Reusable timer
 		destroyCh:        make(chan struct{}),
@@ -236,6 +241,8 @@ func (c *Circuit) Close() {
 		return
 	}
 	c.State = StateClosed
+	set := c.conflux
+	c.conflux = nil
 	mux := c.mux
 	c.mux = nil
 	conn := c.conn
@@ -244,6 +251,10 @@ func (c *Circuit) Close() {
 		c.relayReceiveChan = nil
 	}
 	c.mu.Unlock()
+
+	if set != nil {
+		set.onLegClosed(c)
+	}
 
 	if mux != nil {
 		mux.Close()
@@ -847,6 +858,15 @@ func (c *Circuit) decrementPackageWindow() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.vegas != nil {
+		if c.vegas.inflight >= c.vegas.cwnd {
+			return fmt.Errorf("package window exhausted: cannot send more cells until SENDME received")
+		}
+		c.vegas.inflight++
+		c.packageWindow = c.vegas.packageWindow()
+		return nil
+	}
+
 	if c.packageWindow <= 0 {
 		return fmt.Errorf("package window exhausted: cannot send more cells until SENDME received")
 	}
@@ -1124,6 +1144,22 @@ func (c *Circuit) deliverToStream(relayCell *cell.RelayCell) error {
 // SendRelayCell sends a relay cell through the circuit
 // This encrypts the relay cell with per-hop cryptography and sends it through the connection
 func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
+	if relayCell != nil && cell.ConfluxShouldMultiplex(relayCell.Command) {
+		if set := c.confluxSet(); set != nil && c.ConfluxLinked() {
+			return set.sendMultiplexed(relayCell)
+		}
+	}
+	return c.sendRelayCellLocal(relayCell)
+}
+
+func (c *Circuit) sendRelayCellLocal(relayCell *cell.RelayCell) error {
+	c.mu.Lock()
+	conn := c.conn
+	state := c.State
+	dest := len(c.Hops) - 1
+	destCGO := dest >= 0 && c.Hops[dest].usesCGO()
+	c.mu.Unlock()
+
 	// Check flow control for DATA cells
 	// Per tor-spec.txt §7.4, only DATA cells count against the package window
 	recordSendme := false
@@ -1135,19 +1171,14 @@ func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
 			return fmt.Errorf("circuit flow control: %w", err)
 		}
 
-		// Stream-level flow control (if this is a stream-level DATA cell)
-		if relayCell.StreamID > 0 {
+		// v1/CGO 没有流级 SENDME（C Tor relay_cmd_expects_streamid_in_v1
+		// 不含 SENDME）。FlowCtrl=2 用电路级 SENDME + XON/XOFF。
+		if !destCGO && relayCell.StreamID > 0 {
 			if err := c.decrementStreamPackageWindow(relayCell.StreamID); err != nil {
 				return fmt.Errorf("stream flow control: %w", err)
 			}
 		}
 	}
-
-	c.mu.Lock()
-	conn := c.conn
-	state := c.State
-	hops := c.Hops
-	c.mu.Unlock()
 
 	if state != StateOpen && state != StateBuilding {
 		return fmt.Errorf("circuit not usable: state=%s", state)
@@ -1157,64 +1188,54 @@ func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
 		return fmt.Errorf("circuit has no connection")
 	}
 
-	// Encode the relay cell (digest field will be zeroed initially)
-	payload, err := relayCell.Encode()
-	if err != nil {
-		return fmt.Errorf("failed to encode relay cell: %w", err)
-	}
-
-	// DATA cell 的未用 padding 填随机字节，使每 100 cell 窗口内 digest 不可预测（flow-control）。
-	if relayCell.Command == cell.RelayData {
-		padStart := cell.RelayCellHeaderLen + int(relayCell.Length)
-		if padStart < len(payload) {
-			if _, err := rand.Read(payload[padStart:]); err != nil {
-				return fmt.Errorf("failed to randomize DATA padding: %w", err)
+	var payload []byte
+	var err error
+	if destCGO {
+		payload, err = cell.EncodeRelayCellV1(relayCell)
+		if err != nil {
+			return fmt.Errorf("failed to encode v1 relay cell: %w", err)
+		}
+		end := cell.V1MessageEnd(payload)
+		if end+4 < len(payload) {
+			if _, err := rand.Read(payload[end+4:]); err != nil {
+				return fmt.Errorf("failed to randomize v1 padding: %w", err)
+			}
+		}
+	} else {
+		payload, err = relayCell.Encode()
+		if err != nil {
+			return fmt.Errorf("failed to encode relay cell: %w", err)
+		}
+		if relayCell.Command == cell.RelayData {
+			padStart := cell.RelayCellHeaderLen + int(relayCell.Length)
+			if padStart < len(payload) {
+				if _, err := rand.Read(payload[padStart:]); err != nil {
+					return fmt.Errorf("failed to randomize DATA padding: %w", err)
+				}
 			}
 		}
 	}
 
-	// Compute the digest for the exit hop (last hop in the circuit)
-	// Per tor-spec.txt §6.1, each hop maintains its own running digest
+	cmd := cell.CmdRelay
+	if relayCell.Command == cell.RelayExtend2 || relayCell.Command == cell.RelayExtend {
+		cmd = cell.CmdRelayEarly
+	}
+
+	var encryptedPayload []byte
 	var forwardTag []byte
-	if len(hops) > 0 {
-		exitHop := hops[len(hops)-1]
-		if exitHop.ForwardDigest != nil {
-			// Create a copy with digest zeroed for digest computation
-			cellCopy := make([]byte, len(payload))
-			copy(cellCopy, payload)
-			cellCopy[5] = 0
-			cellCopy[6] = 0
-			cellCopy[7] = 0
-			cellCopy[8] = 0
-
-			// Update the exit hop's forward digest
-			if _, err := exitHop.ForwardDigest.Write(cellCopy); err != nil {
-				return fmt.Errorf("failed to update forward digest: %w", err)
-			}
-
-			// Get the digest and set it in the payload
-			digestSum := exitHop.ForwardDigest.Sum(nil)
-			payload[5] = digestSum[0]
-			payload[6] = digestSum[1]
-			payload[7] = digestSum[2]
-			payload[8] = digestSum[3]
-			forwardTag = digestSum
+	if dest >= 0 {
+		encryptedPayload, forwardTag, err = c.encryptOnion(byte(cmd), dest, payload)
+		if err != nil {
+			return fmt.Errorf("onion encrypt: %w", err)
 		}
+	} else {
+		encryptedPayload = payload
 	}
 
 	if recordSendme {
 		c.recordSendmeTag(forwardTag)
 	}
 
-	// Encrypt the payload with per-hop cryptography (onion encryption)
-	// Each hop will decrypt one layer
-	encryptedPayload := c.encryptForward(payload)
-
-	// EXTEND2 必须放在 RELAY_EARLY 里（tor-spec create-created-cells）。
-	cmd := cell.CmdRelay
-	if relayCell.Command == cell.RelayExtend2 || relayCell.Command == cell.RelayExtend {
-		cmd = cell.CmdRelayEarly
-	}
 	cellToSend := &cell.Cell{
 		CircID:  c.ID,
 		Command: cmd,
@@ -1273,9 +1294,10 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 		return fmt.Errorf("circuit ID mismatch: expected %d, got %d", c.ID, cellData.CircID)
 	}
 
-	// Decrypt the relay cell with per-hop cryptography (onion decryption)
-	// Each hop decrypts one layer
-	decryptedPayload := c.decryptBackward(cellData.Payload)
+	decryptedPayload, hopIdx, onionTag, v1, err := c.decryptOnion(byte(cellData.Command), cellData.Payload)
+	if err != nil {
+		return fmt.Errorf("onion decrypt: %w", err)
+	}
 
 	// SECURITY-001: Validate against replay attacks before processing
 	// We check the decrypted payload to ensure the same cell content isn't replayed
@@ -1286,12 +1308,6 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 		}
 	}
 
-	// Verify which hop recognizes this cell
-	hopIdx, err := c.verifyRelayCellDigest(decryptedPayload)
-	if err != nil {
-		return fmt.Errorf("failed to verify relay cell digest: %w", err)
-	}
-
 	if hopIdx < 0 {
 		// Cell not recognized by any hop
 		// This might be a cell for a different stream or an error
@@ -1300,8 +1316,12 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 		return nil
 	}
 
-	// Decode the relay cell
-	relayCell, err := cell.DecodeRelayCell(decryptedPayload)
+	var relayCell *cell.RelayCell
+	if v1 {
+		relayCell, err = cell.DecodeRelayCellV1(decryptedPayload)
+	} else {
+		relayCell, err = cell.DecodeRelayCell(decryptedPayload)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to decode relay cell: %w", err)
 	}
@@ -1309,8 +1329,10 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 	// Handle flow control per tor-spec.txt §7.4
 	switch relayCell.Command {
 	case cell.RelayData:
-		// 识别 hop 更新 backward digest 之后，20 字节 Sum 就是本 cell 的 SENDME tag。
-		cellTag := c.snapshotBackwardDigest(hopIdx)
+		cellTag := onionTag
+		if len(cellTag) == 0 {
+			cellTag = c.snapshotBackwardDigest(hopIdx)
+		}
 
 		sendSendme, err := c.decrementDeliverWindowAndTakeSendme()
 		if err != nil {
@@ -1326,19 +1348,17 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 			}()
 		}
 
-		// Stream-level flow control (if this is a stream-level DATA cell)
-		if relayCell.StreamID > 0 {
+		// v1 识别到的 hop 走 CGO：不能发流级 SENDME，也不减流窗口，
+		// 否则 500 个 DATA 后会因发不出 SENDME 而卡死。
+		if !v1 && relayCell.StreamID > 0 {
 			if err := c.decrementStreamDeliverWindow(relayCell.StreamID); err != nil {
 				return fmt.Errorf("stream flow control: %w", err)
 			}
 
-			// Check if we should send a stream-level SENDME
 			if c.shouldSendStreamSendme(relayCell.StreamID) {
-				// Send stream SENDME in background to avoid blocking
 				go func(streamID uint16) {
 					if err := c.sendStreamSendme(streamID); err != nil {
-						// Log error but don't fail the delivery
-						// (in production, should have proper logging)
+						// 流级 SENDME 失败不拆路；电路级 SENDME 仍负责窗口。
 					}
 				}(relayCell.StreamID)
 			}
@@ -1363,6 +1383,28 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 	// Record activity
 	c.RecordActivity()
 
+	if set := c.confluxSet(); set != nil {
+		handled, err := set.onRelayCell(c, relayCell)
+		if err != nil {
+			c.SetState(StateFailed)
+			c.NotifyDestroyed(1)
+			return fmt.Errorf("conflux: %w", err)
+		}
+		if handled {
+			return nil
+		}
+	}
+
+	return c.enqueueRelayCell(relayCell)
+}
+
+func (c *Circuit) enqueueRelayCell(relayCell *cell.RelayCell) error {
+	c.mu.RLock()
+	ch := c.relayReceiveChan
+	c.mu.RUnlock()
+	if ch == nil {
+		return fmt.Errorf("circuit closed")
+	}
 	// Deliver to receive channel (non-blocking with timeout)
 	// AUDIT-MED-4 FIX: Use reusable timer instead of time.After to avoid GC pressure
 	c.deliverTimerMu.Lock()
@@ -1370,7 +1412,7 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 	stopAndDrainTimer(c.deliverTimer)
 	c.deliverTimer.Reset(deliverRelayCellTimeout)
 	select {
-	case c.relayReceiveChan <- relayCell:
+	case ch <- relayCell:
 		stopAndDrainTimer(c.deliverTimer)
 		return nil
 	case <-c.deliverTimer.C:
@@ -1474,14 +1516,34 @@ func (c *Circuit) ReadFromStream(ctx context.Context, streamID uint16) ([]byte, 
 	}
 }
 
+// RelayDataMax 返回本电路目的跳上一条 RELAY_DATA 能装的最大字节。
+// CGO/v1 带 stream_id 时是 488，不是 v0 的 498。
+func (c *Circuit) RelayDataMax() int {
+	if set := c.confluxSet(); set != nil && c.ConfluxLinked() {
+		return set.relayDataMax()
+	}
+	return c.relayDataMaxLocal()
+}
+
 // WriteToStream writes data to a specific stream
 // This is used by the SOCKS proxy to send data to the exit node
 func (c *Circuit) WriteToStream(streamID uint16, data []byte) error {
-	dataCell, err := cell.NewRelayCell(streamID, cell.RelayData, data)
-	if err != nil {
-		return fmt.Errorf("failed to create RELAY_DATA cell: %w", err)
+	max := c.RelayDataMax()
+	for len(data) > 0 {
+		n := len(data)
+		if n > max {
+			n = max
+		}
+		dataCell, err := cell.NewRelayCell(streamID, cell.RelayData, data[:n])
+		if err != nil {
+			return fmt.Errorf("failed to create RELAY_DATA cell: %w", err)
+		}
+		if err := c.SendRelayCell(dataCell); err != nil {
+			return err
+		}
+		data = data[n:]
 	}
-	return c.SendRelayCell(dataCell)
+	return nil
 }
 
 // EndStream sends a RELAY_END cell for a stream

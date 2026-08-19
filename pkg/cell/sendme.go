@@ -17,17 +17,18 @@ const (
 	SendmeVersion0     byte = 0
 	SendmeVersion1     byte = 1
 	SendmeV1DigestLen       = 20
+	SendmeCGOTagLen         = 16
 	sendmeV1PayloadLen      = 1 + 2 + SendmeV1DigestLen
 )
 
-// EncodeSendmeV1 编码认证 SENDME：VERSION=1, DATA_LEN=20, DIGEST=20 字节滚动摘要。
+// EncodeSendmeV1 编码认证 SENDME：VERSION=1，DATA 为 20 字节 tor1 digest 或 16 字节 CGO tag。
 func EncodeSendmeV1(digest []byte) ([]byte, error) {
-	if len(digest) != SendmeV1DigestLen {
-		return nil, fmt.Errorf("SENDME v1 digest must be %d bytes, got %d", SendmeV1DigestLen, len(digest))
+	if len(digest) != SendmeV1DigestLen && len(digest) != SendmeCGOTagLen {
+		return nil, fmt.Errorf("SENDME v1 tag must be %d or %d bytes, got %d", SendmeV1DigestLen, SendmeCGOTagLen, len(digest))
 	}
-	out := make([]byte, sendmeV1PayloadLen)
+	out := make([]byte, 3+len(digest))
 	out[0] = SendmeVersion1
-	binary.BigEndian.PutUint16(out[1:3], uint16(SendmeV1DigestLen))
+	binary.BigEndian.PutUint16(out[1:3], uint16(len(digest)))
 	copy(out[3:], digest)
 	return out, nil
 }
@@ -50,10 +51,10 @@ func DecodeSendme(payload []byte) (version byte, digest []byte, err error) {
 	case SendmeVersion0:
 		return version, nil, nil
 	case SendmeVersion1:
-		if dataLen < SendmeV1DigestLen {
-			return version, nil, fmt.Errorf("SENDME v1 DATA_LEN %d < 20", dataLen)
+		if dataLen != SendmeV1DigestLen && dataLen != SendmeCGOTagLen {
+			return version, nil, fmt.Errorf("SENDME v1 DATA_LEN %d, want %d or %d", dataLen, SendmeV1DigestLen, SendmeCGOTagLen)
 		}
-		return version, append([]byte(nil), data[:SendmeV1DigestLen]...), nil
+		return version, append([]byte(nil), data[:dataLen]...), nil
 	default:
 		return version, nil, fmt.Errorf("unrecognized SENDME version %d", version)
 	}

@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/ntor-v3-0ece`（已合并 `origin/main`，含 CERTS type 7 PR #18）  
+**分支**：`cursor/extend2-ipv6-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + **现行** Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -42,17 +42,17 @@
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
 | VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | WORKING | VERSIONS CircID=2、CERTS type4 验签、**type 7 RSA 交叉签名强制校验**、NETINFO 已在真实 Guard 通过；AUTH_CHALLENGE 客户端路径按 spec 跳过 |
 | CREATE2 / ntor / CREATED2 | WORKING | 默认 ntor-v3（HTYPE 0x0003，Ed25519 主身份）；真实 Guard CREATE2 + `CC_FIELD_RESPONSE` `sendme_inc=31`。缺密钥或 `Relay<4` 回退经典 ntor |
-| EXTEND2 / EXTENDED2 | WORKING | 真实 3-hop 三跳均为 ntor-v3 + FlowCtrl=2；SOCKS5 `IsTor=true`。IPv6 EXTEND2（Relay=3）未做 |
-| Circuit crypto / digest | WORKING | 真实 RELAY_DROP / EXTEND2 / BEGIN / DATA 已证明 **AES-CTR + SHA-1** 与 Guard 一致。CGO（Relay=6）未做 |
+| EXTEND2 / EXTENDED2 | WORKING | 真实 3-hop 三跳均为 ntor-v3 + FlowCtrl=2；SOCKS5 `IsTor=true`。双栈 `[01]` IPv6 已验收 |
+| Circuit crypto / digest | WORKING | 真实路径已证明 AES-CTR-SHA1 与 **Relay=6 CGO** |
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
-| SENDME / flow control | PARTIAL | FlowCtrl=1 电路级 SENDME v1 已通过；FlowCtrl=2 只协商了 `sendme_inc`，**完整 Vegas 未做** |
+| SENDME / flow control | WORKING | FlowCtrl=2 TOR_VEGAS 已实现；真实 soak **1059120** 字节，电路未 DESTROY。10–100MB / 多流仍见 P0.2 |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family ID（Desc=4）未用 |
 | Exit policy | PARTIAL | 已解析 `p` 行并按端口过滤；完整策略与 IPv6 `p6` 未做 |
-| Relay=5 subproto_request | PARTIAL | type 3 编解码与选择已实现；**生产不发送**（CGO 未实现）。单测覆盖排序 / 拒未登记能力 |
-| Relay=6 CGO | MISSING | Counter Galois Onion（proposal 359）；最新电路加密方向 |
-| Conflux=1 | MISSING | 多路径（proposal 329）；mainnet 已广泛宣告，尚未 required |
+| Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
+| Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
+| Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
 | Circuit padding (Padding=2) | PARTIAL | 有定时器骨架，无 HS setup machine（proposal 302） |
 | Onion Service v3 | BROKEN / MISSING | **明确不做**，直到 client 主链路剩余缺口完成 |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
@@ -69,23 +69,23 @@
 
 #### 1. FlowCtrl=2 Vegas（完整拥塞控制）
 
-- **状态**：PARTIAL。已协商 `CC_FIELD_REQUEST` / `CC_FIELD_RESPONSE`，把 SENDME 间隔改成 `sendme_inc`（真实 mainnet 常见 31），初始 cwnd=`cc_cwnd_init`=186。
-- **未做**：RTT 采样、BDP / queue_use、slow start、Vegas 增减窗、`inflight`、orconn 阻塞。
+- **状态**：WORKING（1MB 真实验收已过）。状态机按 proposal 324 / C Tor；`sendme_inc` 只来自握手。
+- **已做**：
+  - RTT（SENDME 对应 DATA 的发出时刻）、N-EWMA、clock stall/jump
+  - BDP = `cwnd * min_rtt / ewma_rtt`，`queue_use = cwnd - BDP`
+  - RFC3742 Limited Slow Start；CA 的 delta/beta/alpha；`inflight`；`cwnd_full` 启发式
+  - 共识 `params` 经 `LastConsensusParams` 注入（Exit 阈值 `cc_vegas_*_exit`）
+  - 单测：`pkg/circuit/vegas_test.go`、`ccparams_test.go`
+  - 真实 soak：`TestRealFlowControlSoak` **1059120** 字节，Guard `rafsnicesrelay` → Middle `janina1` → Exit `NTH66R5`，三跳 `sendme_inc=31`，电路未 DESTROY
+- **剩余**：orconn 写缓冲阻塞只留字段；下载为主的 soak 主要证明 SENDME 发射与电路存活，上传大窗调节见 P0.2
 - **Spec**：https://spec.torproject.org/proposals/324-rtt-congestion-control.html ；tor-spec flow-control
-- **C Tor**：`src/core/or/congestion_control_common.c`、`congestion_control_vegas.c`、`congestion_control_flow.c`
-- **Arti**：`crates/tor-proto` 下 congestion / ccparams
-- **现有代码**：`pkg/circuit/sendme.go`（`EnableCongestionControl`）、`pkg/circuit/circuit.go`（`sendmeInc`）、`pkg/crypto/ntorv3.go`（扩展编解码）
-- **共识参数**（从 signed `params` 读，不要写死除非与当前默认一致）：`cc_sendme_inc`、`cc_cwnd_init`、`cc_cwnd_min`、`cc_cwnd_inc`、`cc_cwnd_inc_rate`、`cc_cwnd_inc_pct_ss`、`cc_vegas_alpha/beta/gamma/delta`、`cc_vegas_bdp_mix`、`cc_ss_cap_*`
-- **验收**：
-  - 单测覆盖 Vegas 状态机（对照 C Tor / proposal 伪代码）
-  - 真实 soak ≥1MB（目标 10–100MB）电路不 DESTROY
-  - 不得为过测试关掉 SENDME v1 digest 校验
-- **禁止**：把「已协商 sendme_inc」写成 Vegas 已完成。
+- **C Tor**：`src/core/or/congestion_control_common.c`、`congestion_control_vegas.c`
+- **现有代码**：`pkg/circuit/vegas.go`、`pkg/circuit/ccparams.go`、`pkg/circuit/sendme.go`
 
 #### 2. 更大流量 soak + SENDME 回归
 
-- **状态**：PARTIAL。已有 282432 字节 soak（`TestRealFlowControlSoak`）。
-- **未做**：1MB / 10MB / 100MB；并发多流；window=0 边界的真实网络证明。
+- **状态**：PARTIAL。已有 **1059120** 字节 soak（`TestRealFlowControlSoak`）。
+- **未做**：10MB / 100MB；并发多流；window=0 边界的真实网络证明。
 - **现有代码**：`integration/e2e_real_tor_test.go`
 - **验收**：电路存活、SENDME v1 digest FIFO 匹配、无重复 SENDME。
 
@@ -93,48 +93,63 @@
 
 #### 3. Relay=5 `subproto_request`（proposal 346）
 
-- **状态**：PARTIAL。编解码与选择已按 spec 实现；生产 **不发送** type 3。
+- **状态**：WORKING。真实握手发出 type 3 `[02 06]`，对端接受。
 - **已做**：
   - type 3 DATA：`{protocol_id u8, cap u8}*`，升序；Relay=6 = `[02 06]`
   - 只允许现行表内能力（目前仅 `RELAY_CRYPT_CGO`）
-  - 选择：`Relay=5` ∧ 对端宣告该能力 ∧ `ImplementedNegotiableCaps()`
-  - `ImplementedNegotiableCaps()` 为空（CGO 未做）
-  - 单测：排序、拒空/重复/未登记、与 CC type 1 同框编码
-- **未做**：真正发出 type 3（须等 CGO）；真实网络「请求已实现能力」验收
-- **真实网络（2026-08-19）**：`TestRealGuardCreate2` / `TestRealNtorV3` 仍通过。Guard `SENDNOOSEplz`，HTYPE=3，`sendme_inc=31`。日志无 “Requesting ntor-v3 subproto capabilities”，确认未发 type 3。
+  - 选择：`Relay=5` ∧ `Relay=6` ∧ `FlowCtrl=2` ∧ `ImplementedNegotiableCaps()`
+  - `ImplementedNegotiableCaps()` 含 CGO
 - **Spec**：https://spec.torproject.org/tor-spec/create-created-cells.html ；https://spec.torproject.org/proposals/346-protovers-again.html
 - **现有代码**：`pkg/crypto/subproto.go`、`pkg/crypto/ntorv3.go`、`pkg/circuit/extension.go`
-- **禁止**：未实现 CGO 时请求 `[02 06]`。
+- **禁止**：对未宣告 Relay=5/6 的节点发 type 3。
 
 #### 4. Relay=6 CGO（Counter Galois Onion）
 
-- **状态**：MISSING。当前 hop 加密仍是 AES-CTR + SHA-1 digest（Relay=2 时代算法）。
+- **状态**：WORKING。
+- **已做**：
+  - POLYVAL（RFC 8452 + C Tor ctmul64 约化）
+  - ET / PRF / UIV+；客户端 DEC_UIV；`CGO_AES_BITS=128`（**不是** AES-256）
+  - 每方向 80 字节，双向 KDF **160** 字节（`cgo_key_material_len(128)*2`）
+  - v1 relay message（C Tor `relay_msg.c`：cmd@16、len@17、可选 stream_id@19）
+  - DATA 上限 488（509-21），不是 v0 的 498
+  - SENDME v1 DATA_LEN=16（CGO tag T）；CGO hop 上不发流级 SENDME
+  - 混合电路：逐跳 CGO 或 tor1，未协商成功禁止回退
+  - 官方向量：`pkg/crypto/cgo_test.go`（C Tor `cgo_vectors.inc`）
+- **真实网络（2026-08-19）**：
+  - CREATE2：Guard `SENDNOOSEplz`，`cgo=true`，`sendme_inc=31`
+  - 3-hop：`llorona` → `Bluejaybrd` → `DFRI18`，三跳 `hop_cgo=true`
+  - SOCKS5 `IsTor=true`，ExitIP=`192.42.116.21`（`rafsnicesrelay` → `booth` → `NTH21R3`）
+  - soak **1059120** 字节，电路未 DESTROY（`rafsnicesrelay` → `Art3mis` → `r0cket09i7`）
 - **Spec**：https://spec.torproject.org/proposals/359-cgo-redux.html
-- **要点**：POLYVAL + AES-256；`MSG_LEN=509`；`BLK_LEN=16`；非延展、前向保密、128-bit 认证。替换 hop 的 Df/Db/Kf/Kb 用法。
-- **协商**：ntor-v3 + `subproto_request` 请求 `Relay=6`；KDF 输出长度与 AES-CTR-SHA1 的 72 字节不同，必须对照 C Tor / Arti 的 CGO key schedule。
-- **C Tor / Arti**：以当时仓库里 `cgo` / `tor-proto` 实现为准，不要猜密钥长度。
-- **验收**：
-  - 官方向量（proposal / C Tor testdata）先过
-  - 再真实 3-hop：协商 CGO 后 RELAY_BEGIN / DATA / `IsTor=true`
+- **C Tor**：`relay_crypto_cgo.c`、`relay_crypto.c`（`CGO_AES_BITS 128`）、`src/test/cgo_vectors.inc`
 - **禁止**：未协商成功时偷偷回退到 AES-CTR 还宣称 CGO WORKING。
-- **注意**：2026-02 `recommended-client-protocols` 仍是 `Relay=2-4`。CGO 是最新方向，但 **不要** 在 Guard 未宣告 `Relay=5/6` 时强制请求。
+- **注意**：2026-02 `recommended-client-protocols` 仍是 `Relay=2-4`。不要对未宣告 `Relay=5/6` 的 hop 强制请求。
 
 ### P2 — 已广泛宣告、提升兼容与匿名性
 
 #### 5. Conflux=1（proposal 329）
 
-- **状态**：MISSING。
+- **状态**：WORKING。纯 Go：`pkg/cell/conflux.go`、`pkg/circuit/conflux.go`、`pkg/path/conflux.go`。
 - **Spec**：https://spec.torproject.org/proposals/329-traffic-splitting.html
-- **要点**：`RELAY_CONFLUX_LINK` / `LINKED` / `LINKED_ACK` / `SWITCH`；两（或更多）条电路绑定后按 seq /RTT 分流。
-- **选择**：仅当两条腿的 Guard/Middle/Exit 均宣告 `Conflux=1`。
-- **验收**：真实网络两条电路 LINK 成功，并经 SOCKS 拉到 `IsTor=true`。缺实现时不得把单电路标成 Conflux。
+- **要点**：命令 19–22；LINK/LINKED 50 字节大端；UX=3 + LowRTT；OOO 上限 256。
+- **选择**：两条腿 Guard/Middle/Exit 均宣告 `Conflux=1` **或** `Conflux=2`（mainnet 常见只写 2；flag 不蕴含），且都已协商 FlowCtrl=2。同一 Exit，不同 Guard/Middle（身份键）。
+- **禁止**：未完成 LINK 把单电路标成 Conflux；日志写出 nonce；未协商 FlowCtrl=2 却 LINK。
+- **真实网络（2026-08-19 `TestRealConflux`）**：
+  - LINK：`TorNode07dot4` → `pecord` → `r0cket08i3` 与 `cryzrelay01` → `Orrion` → `r0cket08i3`（同 Exit，不同 Guard/Middle）
+  - LINKED RTT 384ms / 430ms，随后 LINKED_ACK
+  - SOCKS5 `https://check.torproject.org/api/ip`：`IsTor=true`，ExitIP=`192.42.116.116`
 
 #### 6. EXTEND2 IPv6（Relay=3）
 
-- **状态**：MISSING。当前 EXTEND2 只发 `[00]` IPv4。
+- **状态**：WORKING。纯 Go：共识 `a` 行 → `Relay.IPv6`；`buildExtend2Data` 在双栈且 `Relay=3` 时追加 `[01]`（LSLEN=18，大端端口）。
 - **Spec**：tor-spec create-created-cells / EXTEND2 specifier `[01]` IPv6；subprotocol `RELAY_EXTEND_IPv6`
-- **现有代码**：`pkg/circuit/extension.go` `buildExtend2Data`
-- **验收**：对同时有 IPv4/IPv6 ORPort 的中继发出 `[01]`；真实 EXTENDED2 成功。无 IPv6 出口的环境不要标 WORKING。
+- **要点**：顺序 `[00] [02] [03] [01]`；`Relay=4` 不蕴含 `Relay=3`；IPv4-only 仍 NSPEC=3；兼容旧 `a sha256=`。
+- **禁止**：无 IPv6 ORPort 硬塞 `[01]`。
+- **现有代码**：`pkg/directory/oraddress.go`、`pkg/circuit/extension.go`；文档 `docs/interop/extend2-ipv6.md`
+- **真实网络（2026-08-19 `TestRealExtend2IPv6`）**：
+  - 共识 10186 个中继，其中 **5532** 个有 IPv6 ORPort，全部宣告 `Relay=3`
+  - Guard `NTH115R1` → Middle `prsv`（`[2001:41d0:701:1100::7a21]:9200`）→ Exit `DFRI80`（`[2001:67c:289c:2::40]:80`）
+  - 两次 EXTEND2 均为 NSPEC=4，dump 含 `[01]` + 16 字节 IPv6 + 大端端口；EXTENDED2 成功，3-hop READY
 
 #### 7. Exit policy IPv6 `p6` + 完整 `p` 行
 
@@ -250,21 +265,23 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 
 - HTYPE=3，三跳 ntor-v3 + `sendme_inc=31`
 - `IsTor=true`，ExitIP=`185.244.192.184`（Quetzalcoatl）
-- soak 282432 字节未拆路
+- soak **1059120** 字节未拆路（FlowCtrl=2 Vegas）
 
-### Circuit crypto / Relay cell — WORKING（AES-CTR-SHA1 主路径）
+### Circuit crypto / Relay cell — WORKING（AES-CTR-SHA1 与 CGO）
 
 - 发送先 Exit 再 Middle 再 Guard；接收反向逐层 decrypt。
 - 真实 RELAY_DROP 不再触发 DESTROY。
-- **缺口**：官方 relay-cell 向量；CGO 见上文 P1。
+- **Relay=6 CGO**：AES-128 UIV+、v1 cell、DATA 上限 488。真实 3-hop + `IsTor=true` + soak 1059120。
+- **缺口**：官方 v0 relay-cell 向量。
 
 ### SENDME / Flow control — PARTIAL
 
 - 未协商 CC：circuit window 1000 / +100；stream 500 / +50。
 - 电路级 SENDME v1：DIGEST=触发 cell 的完整 20 字节滚动 SHA-1；FIFO 匹配失败拆路。
-- 协商 CC 后间隔改为 `sendme_inc`，初始 cwnd=186。
+- 协商 CC 后启用 TOR_VEGAS：间隔 `sendme_inc`，初始 cwnd=`cc_cwnd_init`（默认 124，不是 186）。
 - 流级 SENDME 仍为空（spec）。
-- **缺口**：Vegas，见 P0。
+- **真实网络（2026-08-19）**：soak **1059120** 字节，`rafsnicesrelay` → `janina1` → `NTH66R5`，未拆路。
+- **剩余**：10–100MB soak；orconn 阻塞启发式。见 P0.2。
 
 ### SOCKS5 / DNS — WORKING
 
@@ -316,7 +333,7 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 | `pkg/directory` microdesc / 共识验签 | digest、自生成证书、篡改必失败 | 运行 |
 | `pkg/protocol` CERTS type 7 | RSA→Ed25519 交叉签名；缺 type 2 / 篡改必失败 | 运行 |
 | `integration/link_test.go` | 真实 TLS+handshake / type 7 RSA | `-tags=integration` + `TOR_INTEGRATION_TEST=1` |
-| `integration/e2e_real_tor_test.go` | 共识验签 / ntor-v3 CREATE2 / 3-hop / IsTor / soak / RESOLVE | 同上 |
+| `integration/e2e_real_tor_test.go` | 共识验签 / ntor-v3 CREATE2 / 3-hop / IsTor / soak / RESOLVE / Conflux / EXTEND2 IPv6 | 同上 |
 | `scripts/test-real-tor.sh` | 启动 client + socks5h curl | 手动 |
 
 ---
@@ -330,4 +347,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准（尚未达到）：** FlowCtrl=2 Vegas + ≥1MB soak。再往后：Relay=5 协商、CGO、Conflux。
+**下一轮完成标准（尚未达到）：** 更大 soak（10/100MB + 多流）。EXTEND2 IPv6 已在真实网络 NSPEC=4 + EXTENDED2 通过。

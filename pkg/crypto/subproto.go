@@ -69,9 +69,9 @@ func capAllowed(c SubprotoCap) bool {
 }
 
 // ImplementedNegotiableCaps 是本客户端已经实现、可以请求启用的协商能力。
-// CGO 未实现，必须为空：请求 [02 06] 会让 Relay=6 对端改用 CGO，本端仍走 AES-CTR 会拆路。
+// CGO 已实现：对宣告 Relay=5 与 Relay=6 且 FlowCtrl=2 的 hop 请求 [02 06]。
 func ImplementedNegotiableCaps() []SubprotoCap {
-	return nil
+	return []SubprotoCap{{ProtocolID: ProtoRelay, Cap: CapRelayCGO}}
 }
 
 // EncodeSubprotoRequest 编码 type 3 的 DATA：若干 {protocol_id, cap}，按 ID 再 cap 升序。
@@ -131,9 +131,13 @@ type ProtoSupport interface {
 
 // SelectSubprotoRequest 选出可以放进 type 3 的能力。
 // 必须同时满足：对端 Relay=5、对端宣告该能力、本端已实现、且在 spec 表内。
-// 当前 ImplementedNegotiableCaps 为空，生产路径永远返回 nil。
+// 当前会请求 Relay=6，前提是对端 Relay=5、Relay=6 且 FlowCtrl=2。
 func SelectSubprotoRequest(peer ProtoSupport) ([]SubprotoCap, error) {
 	if peer == nil || !peer.Supports("Relay", int(CapRelaySubproto)) {
+		return nil, nil
+	}
+	// CGO 的 v1 cell 不兼容流级 SENDME，必须同时有 FlowCtrl=2。
+	if !peer.Supports("FlowCtrl", 2) {
 		return nil, nil
 	}
 	var out []SubprotoCap

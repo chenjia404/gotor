@@ -31,10 +31,6 @@ const (
 	HandshakeTypeTAP HandshakeType = 0x0000
 )
 
-const (
-	defaultCCCwndInit = 186 // 与当前共识 cc_cwnd_init 默认一致
-)
-
 // Extension handles circuit extension operations
 type Extension struct {
 	circuit          *Circuit
@@ -46,6 +42,7 @@ type Extension struct {
 	handshakeType    HandshakeType
 	ntorv3State      *crypto.NtorV3ClientState
 	requestCC        bool
+	requestCGO       bool
 }
 
 // NewExtension creates a new circuit extension handler
@@ -231,6 +228,15 @@ func (e *Extension) generateHandshakeData(handshakeType HandshakeType) ([]byte, 
 		if err != nil {
 			return nil, fmt.Errorf("subproto_request selection: %w", err)
 		}
+		if len(caps) > 0 && !e.requestCC {
+			return nil, fmt.Errorf("CGO requires FlowCtrl=2")
+		}
+		e.requestCGO = false
+		for _, cap := range caps {
+			if cap.ProtocolID == crypto.ProtoRelay && cap.Cap == crypto.CapRelayCGO {
+				e.requestCGO = true
+			}
+		}
 		cm, err := crypto.EncodeNtorV3ClientMsg(e.requestCC, caps)
 		if err != nil {
 			return nil, fmt.Errorf("ntor-v3 client extensions: %w", err)
@@ -242,6 +248,9 @@ func (e *Extension) generateHandshakeData(handshakeType HandshakeType) ([]byte, 
 		skin, st, err := crypto.NtorV3ClientHandshake(edID, ntorKey, crypto.NtorV3CircuitVerification, cm)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate ntor-v3 handshake: %w", err)
+		}
+		if e.requestCGO {
+			st.SetKeyMaterialLen(crypto.CGOKeyMaterialLen)
 		}
 		e.ntorv3State = st
 		return skin, nil
@@ -292,9 +301,17 @@ func (e *Extension) generateHandshakeData(handshakeType HandshakeType) ([]byte, 
 	}
 }
 
+// EncodeExtend2Data 按当前 target relay 编 EXTEND2 负载，供集成测试检查 [01] 布局。
+// 不发送、不改电路状态。
+func EncodeExtend2Data(target string, relay interface{}, handshakeType HandshakeType, handshakeData []byte) ([]byte, error) {
+	ext := NewExtension(NewCircuit(1), nil)
+	ext.SetTargetRelay(relay)
+	return ext.buildExtend2Data(target, handshakeType, handshakeData)
+}
+
 // buildExtend2Data builds the EXTEND2 relay cell data
 func (e *Extension) buildExtend2Data(target string, handshakeType HandshakeType, handshakeData []byte) ([]byte, error) {
-	// EXTEND2 format (simplified):
+	// EXTEND2 format:
 	// NSPEC (1 byte) - number of link specifiers
 	// Link specifiers (variable)
 	// HTYPE (2 bytes) - handshake type
@@ -322,21 +339,17 @@ func (e *Extension) buildExtend2Data(target string, handshakeType HandshakeType,
 
 	// 顺序按 spec：IPv4 [00]、legacy identity [02]、Ed25519 [03]、IPv6 [01]
 	var specs [][]byte
+	haveIPv6 := false
 	ipv4 := ip.To4()
 	if ipv4 != nil {
-		spec := []byte{0, 6}
-		spec = append(spec, ipv4...)
-		portBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(portBytes, uint16(port))
-		spec = append(spec, portBytes...)
-		specs = append(specs, spec)
+		specs = append(specs, encodeIPv4LinkSpec(ipv4, uint16(port)))
 	} else {
-		spec := []byte{1, 18}
-		spec = append(spec, ip.To16()...)
-		portBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(portBytes, uint16(port))
-		spec = append(spec, portBytes...)
-		specs = append(specs, spec)
+		v6 := ip.To16()
+		if v6 == nil {
+			return nil, fmt.Errorf("target IP is neither IPv4 nor IPv6")
+		}
+		specs = append(specs, encodeIPv6LinkSpec(v6, uint16(port)))
+		haveIPv6 = true
 	}
 
 	rsaID, edID, err := e.getRelayIdentities()
@@ -352,6 +365,10 @@ func (e *Extension) buildExtend2Data(target string, handshakeType HandshakeType,
 	spec = []byte{3, 32}
 	spec = append(spec, edID...)
 	specs = append(specs, spec)
+
+	if extraIP, extraPort, ok := e.extraIPv6LinkSpec(); ok && !haveIPv6 {
+		specs = append(specs, encodeIPv6LinkSpec(extraIP, extraPort))
+	}
 
 	data = append(data, byte(len(specs)))
 	for _, spec := range specs {
@@ -376,6 +393,39 @@ func (e *Extension) buildExtend2Data(target string, handshakeType HandshakeType,
 	data = append(data, handshakeData...)
 
 	return data, nil
+}
+
+func encodeIPv4LinkSpec(ip net.IP, port uint16) []byte {
+	spec := []byte{0, 6}
+	spec = append(spec, ip.To4()...)
+	portBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(portBytes, port)
+	return append(spec, portBytes...)
+}
+
+func encodeIPv6LinkSpec(ip net.IP, port uint16) []byte {
+	spec := []byte{1, 18}
+	spec = append(spec, ip.To16()...)
+	portBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(portBytes, port)
+	return append(spec, portBytes...)
+}
+
+type relayExtendIPv6 interface {
+	ShouldIncludeExtendIPv6() bool
+	IPv6ORAddress() (ip net.IP, port uint16, ok bool)
+}
+
+func (e *Extension) extraIPv6LinkSpec() (net.IP, uint16, bool) {
+	src, ok := e.targetRelay.(relayExtendIPv6)
+	if !ok || !src.ShouldIncludeExtendIPv6() {
+		return nil, 0, false
+	}
+	ip, port, ok := src.IPv6ORAddress()
+	if !ok || ip == nil || ip.To4() != nil || ip.To16() == nil || port == 0 {
+		return nil, 0, false
+	}
+	return ip.To16(), port, true
 }
 
 // SetTargetRelay sets the target relay descriptor for key extraction (SPEC-001)
@@ -656,7 +706,11 @@ func (e *Extension) finishHandshake(handshakeResponse []byte) error {
 			return fmt.Errorf("ntor handshake verification failed: %w", err)
 		}
 	}
-	if len(keyMaterial) < 72 {
+	if e.requestCGO {
+		if len(keyMaterial) != crypto.CGOKeyMaterialLen {
+			return fmt.Errorf("CGO requested: key material %d, want %d (refusing AES-CTR fallback)", len(keyMaterial), crypto.CGOKeyMaterialLen)
+		}
+	} else if len(keyMaterial) < 72 {
 		return fmt.Errorf("insufficient key material: got %d bytes, need 72", len(keyMaterial))
 	}
 	hop, err := e.deriveHopFromKeyMaterial(keyMaterial)
@@ -676,6 +730,9 @@ func (e *Extension) finishHandshake(handshakeResponse []byte) error {
 			e.logger.Info("Negotiated FlowCtrl=2", "sendme_inc", inc)
 		}
 	}
+	if e.requestCGO {
+		e.logger.Info("Negotiated Relay=6 CGO", "circuit_id", e.circuit.ID)
+	}
 	return nil
 }
 
@@ -686,6 +743,23 @@ func (e *Extension) finishHandshake(handshakeResponse []byte) error {
 // - Kf (16 bytes): forward cipher key (AES-128)
 // - Kb (16 bytes): backward cipher key (AES-128)
 func (e *Extension) deriveHopFromKeyMaterial(keyMaterial []byte) (*Hop, error) {
+	if e.requestCGO {
+		pair, err := crypto.NewCGOPairFromKeyMaterial(keyMaterial)
+		if err != nil {
+			return nil, err
+		}
+		hop := &Hop{CGO: pair}
+		if relay, ok := e.targetRelay.(interface{ String() string }); ok {
+			hop.Address = relay.String()
+		}
+		if relay, ok := e.targetRelay.(interface{ GetFingerprintHex() string }); ok {
+			hop.Fingerprint = relay.GetFingerprintHex()
+		}
+		e.logger.Info("Derived CGO hop",
+			"circuit_id", e.circuit.ID,
+			"key_len", len(keyMaterial))
+		return hop, nil
+	}
 	if len(keyMaterial) < 72 {
 		return nil, fmt.Errorf("insufficient key material: got %d bytes, need 72", len(keyMaterial))
 	}

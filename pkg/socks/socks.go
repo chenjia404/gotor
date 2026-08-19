@@ -938,8 +938,7 @@ func (s *Server) relayDataThroughCircuit(ctx context.Context, socksConn net.Conn
 	go func() {
 		defer wg.Done()
 
-		// Maximum relay cell data size (509 bytes payload - 11 bytes relay header)
-		maxDataSize := 498
+		maxDataSize := circ.RelayDataMax()
 		buf := make([]byte, maxDataSize)
 
 		for {
@@ -1043,8 +1042,7 @@ func (s *Server) relayOnionServiceData(ctx context.Context, socksConn net.Conn, 
 	go func() {
 		defer wg.Done()
 
-		// Maximum relay cell data size (509 bytes payload - 11 bytes relay header)
-		maxDataSize := 498
+		maxDataSize := circ.RelayDataMax()
 		buf := make([]byte, maxDataSize)
 
 		for {
