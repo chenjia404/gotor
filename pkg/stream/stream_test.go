@@ -161,6 +161,27 @@ func TestManagerCreateStream(t *testing.T) {
 	}
 }
 
+func TestManagerCreateStreamWithID(t *testing.T) {
+	log := logger.NewDefault()
+	mgr := NewManager(log)
+
+	if _, err := mgr.CreateStreamWithID(0, 100, "example.com", 80); err == nil {
+		t.Fatal("stream ID 0 must be rejected")
+	}
+
+	stream, err := mgr.CreateStreamWithID(7, 100, "example.com", 80)
+	if err != nil {
+		t.Fatalf("CreateStreamWithID: %v", err)
+	}
+	if stream.ID != 7 {
+		t.Fatalf("ID = %d, want 7", stream.ID)
+	}
+
+	if _, err := mgr.CreateStreamWithID(7, 100, "other.com", 443); err == nil {
+		t.Fatal("duplicate stream ID must be rejected")
+	}
+}
+
 func TestManagerGetStream(t *testing.T) {
 	log := logger.NewDefault()
 	mgr := NewManager(log)

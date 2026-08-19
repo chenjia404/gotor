@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"testing"
 	"time"
@@ -299,6 +300,57 @@ func TestRealFlowControlSoak(t *testing.T) {
 		t.Fatalf("only downloaded %d bytes, want >= %d (need enough DATA to exercise SENDME)", total, wantBytes)
 	}
 	t.Logf("soak OK bytes=%d (circuit survived authenticated SENDME)", total)
+}
+
+// TestRealRelayResolve 在 3-hop 上发 RELAY_RESOLVE，并把本机 resolver 指到不可达地址，
+// 证明解析不依赖系统 DNS。StreamID=0 或二进制 PTR 会被真实 exit 丢掉。
+func TestRealRelayResolve(t *testing.T) {
+	requireRealTor(t)
+
+	orig := net.DefaultResolver
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return nil, fmt.Errorf("本机 DNS 禁止使用: %s %s", network, address)
+		},
+	}
+	t.Cleanup(func() { net.DefaultResolver = orig })
+
+	circ, p := buildLiveCircuit(t)
+	defer circ.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	result, err := circ.ResolveHostname(ctx, "www.torproject.org")
+	if err != nil {
+		t.Fatalf("ResolveHostname: %v", err)
+	}
+	if len(result.Addresses) == 0 {
+		t.Fatal("RELAY_RESOLVED 没有 IP")
+	}
+	t.Logf("RESOLVE www.torproject.org via exit %s -> %v ttl=%d type=0x%02X",
+		p.Exit.Nickname, result.Addresses, result.TTL, result.Type)
+
+	ptrCtx, ptrCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer ptrCancel()
+	ptr, ptrErr := circ.ResolveIP(ptrCtx, result.Addresses[0])
+	if ptrCtx.Err() != nil {
+		t.Fatalf("PTR 超时（载荷/StreamID 很可能仍错）: %v", ptrErr)
+	}
+	if ptrErr != nil {
+		t.Logf("PTR %s: %v（exit 可不答 PTR，但必须回 RESOLVED/END）", result.Addresses[0], ptrErr)
+	} else {
+		t.Logf("PTR %s -> %s ttl=%d", result.Addresses[0], ptr.Hostname, ptr.TTL)
+	}
+
+	failCtx, failCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer failCancel()
+	_, err = circ.ResolveHostname(failCtx, "this-name-must-not-exist.invalid")
+	if err == nil {
+		t.Fatal(".invalid 主机名不应解析成功")
+	}
+	t.Logf("expected failure for .invalid: %v", err)
 }
 
 func buildLiveCircuit(t *testing.T) (*circuit.Circuit, *path.Path) {

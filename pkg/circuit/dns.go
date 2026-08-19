@@ -1,176 +1,188 @@
-// Package circuit provides DNS resolution through Tor circuits
 package circuit
+
+// 远程主机名查询（RELAY_RESOLVE / RELAY_RESOLVED）。
+//
+// 对照：
+//   - https://spec.torproject.org/tor-spec/remote-hostname-lookup.html
+//   - https://spec.torproject.org/tor-spec/relay-cells.html
+//   - C Tor：src/core/or/relay.c（stream_id==0 的 RELAY_RESOLVE 直接丢弃，bug 7889）
+//   - C Tor：src/core/or/connection_edge.c（RESOLVED 多条 answer；0xF0/0xF1 的 Value 是字符串）
 
 import (
 	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 )
 
-// DNS resolution types (tor-spec.txt section 6.4)
+// RELAY_RESOLVED 记录类型（tor-spec remote-hostname-lookup）。
 const (
-	// DNS record types for RELAY_RESOLVE
-	DNSTypeHostname = 0x00 // Hostname to IPv4/IPv6
-	DNSTypeIPv4     = 0x04 // IPv4 address (PTR query)
-	DNSTypeIPv6     = 0x06 // IPv6 address (PTR query)
-	DNSTypeError    = 0xF0 // Error response
-	DNSTypeErrorTTL = 0xF1 // Error with TTL
+	DNSTypeHostname = 0x00 // 主机名（PTR 应答）
+	DNSTypeIPv4     = 0x04 // IPv4
+	DNSTypeIPv6     = 0x06 // IPv6
+	DNSTypeError    = 0xF0 // 瞬时错误
+	DNSTypeErrorTTL = 0xF1 // 非瞬时错误
 )
 
-// DNS error codes (tor-spec.txt section 6.4)
+// DNS 传统 RCODE，仅作文档对照。RELAY_RESOLVED 的 0xF0/0xF1 Value
+// 在 C Tor 里是字符串（如 "Error resolving hostname"），不是 1 字节错误码。
 const (
-	DNSErrorNone                = 0x00 // No error
-	DNSErrorFormat              = 0x01 // Format error
-	DNSErrorServerFailure       = 0x02 // Server failure
-	DNSErrorNotExist            = 0x03 // Name does not exist
-	DNSErrorNotImplemented      = 0x04 // Not implemented
-	DNSErrorRefused             = 0x05 // Query refused
-	DNSErrorTransientFailure    = 0xF0 // Transient failure
-	DNSErrorNonTransientFailure = 0xF1 // Non-transient failure
+	DNSErrorNone                = 0x00
+	DNSErrorFormat              = 0x01
+	DNSErrorServerFailure       = 0x02
+	DNSErrorNotExist            = 0x03
+	DNSErrorNotImplemented      = 0x04
+	DNSErrorRefused             = 0x05
+	DNSErrorTransientFailure    = 0xF0
+	DNSErrorNonTransientFailure = 0xF1
 )
 
-// DNSResult represents the result of a DNS query
+const dnsResolveTimeout = 30 * time.Second
+
+var hexNibble = []byte("0123456789abcdef")
+
+// DNSResult 是一条 RELAY_RESOLVED 的全部有效应答。
 type DNSResult struct {
-	Type      byte     // DNS record type
-	TTL       uint32   // Time to live in seconds
-	Addresses []net.IP // Resolved IP addresses
-	Hostname  string   // Resolved hostname (for PTR queries)
-	Error     byte     // Error code (if Type is DNSTypeError)
+	Type         byte     // 优先 IPv4，否则 IPv6，否则主机名，否则错误类型
+	TTL          uint32   // 首条对应类型应答的 TTL
+	Addresses    []net.IP // 全部 IPv4（在前）+ IPv6
+	Hostname     string   // PTR 主机名
+	Error        byte     // 仅无有效应答时：0xF0 或 0xF1
+	ErrorMessage string   // 0xF0/0xF1 的 Value 字符串（可空）
 }
 
-// ResolveHostname resolves a hostname to IP addresses through the circuit
-// This implements DNS leak prevention by routing DNS queries through Tor
+// ResolveHostname 经电路把主机名解析成 IP。不得走本机 DNS。
 func (c *Circuit) ResolveHostname(ctx context.Context, hostname string) (*DNSResult, error) {
-	// Validate hostname
-	if hostname == "" {
-		return nil, fmt.Errorf("hostname cannot be empty")
-	}
-
-	// Create RELAY_RESOLVE payload
-	// Format: hostname\x00 (null-terminated string)
-	payload := append([]byte(hostname), 0x00)
-
-	// Use stream ID 0 for DNS queries (they don't need a stream)
-	resolveCell, err := cell.NewRelayCell(0, cell.RelayResolve, payload)
+	name, err := normalizeResolveName(hostname)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create RELAY_RESOLVE cell: %w", err)
+		return nil, err
 	}
-
-	// Send RELAY_RESOLVE cell
-	if err := c.SendRelayCell(resolveCell); err != nil {
-		return nil, fmt.Errorf("failed to send RELAY_RESOLVE: %w", err)
-	}
-
-	// Wait for RELAY_RESOLVED response with timeout
-	resolveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	resolvedCell, err := c.ReceiveRelayCell(resolveCtx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to receive RELAY_RESOLVED: %w", err)
-	}
-
-	// Verify this is a RELAY_RESOLVED cell
-	if resolvedCell.Command != cell.RelayResolved {
-		return nil, fmt.Errorf("expected RELAY_RESOLVED, got %s", cell.RelayCmdString(resolvedCell.Command))
-	}
-
-	// Parse RELAY_RESOLVED response
-	result, err := parseResolvedCell(resolvedCell.Data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse RELAY_RESOLVED: %w", err)
-	}
-
-	// Check for errors
-	if result.Type == DNSTypeError || result.Type == DNSTypeErrorTTL {
-		return result, fmt.Errorf("DNS resolution failed: error code %d", result.Error)
-	}
-
-	return result, nil
+	return c.sendResolve(ctx, name)
 }
 
-// ResolveIP performs reverse DNS lookup (PTR query) through the circuit
+// ResolveIP 经电路做反向查询。载荷与正向相同：NUL 结尾的
+// in-addr.arpa / ip6.arpa 主机名，不是 TYPE|LENGTH|ADDRESS 二进制。
 func (c *Circuit) ResolveIP(ctx context.Context, ipAddr net.IP) (*DNSResult, error) {
-	// Validate IP address
-	if ipAddr == nil {
-		return nil, fmt.Errorf("IP address cannot be nil")
+	name, err := PTRHostname(ipAddr)
+	if err != nil {
+		return nil, err
 	}
+	return c.sendResolve(ctx, name)
+}
 
-	// Create RELAY_RESOLVE payload for PTR query
-	// Format: TYPE (0x04 for IPv4 or 0x06 for IPv6) | LENGTH | ADDRESS
-	var payload []byte
-	if ipv4 := ipAddr.To4(); ipv4 != nil {
-		// IPv4 PTR query
-		payload = make([]byte, 6)
-		payload[0] = DNSTypeIPv4
-		payload[1] = 4 // Length
-		copy(payload[2:], ipv4)
-	} else if ipv6 := ipAddr.To16(); ipv6 != nil {
-		// IPv6 PTR query
-		payload = make([]byte, 18)
-		payload[0] = DNSTypeIPv6
-		payload[1] = 16 // Length
-		copy(payload[2:], ipv6)
-	} else {
-		return nil, fmt.Errorf("invalid IP address")
+func (c *Circuit) sendResolve(ctx context.Context, name string) (*DNSResult, error) {
+	streamID, err := c.AllocateStreamID()
+	if err != nil {
+		return nil, fmt.Errorf("allocate stream ID for RELAY_RESOLVE: %w", err)
 	}
+	defer c.ReleaseStreamID(streamID)
 
-	// Use stream ID 0 for DNS queries
-	resolveCell, err := cell.NewRelayCell(0, cell.RelayResolve, payload)
+	payload := buildResolvePayload(name)
+	resolveCell, err := cell.NewRelayCell(streamID, cell.RelayResolve, payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create RELAY_RESOLVE cell: %w", err)
 	}
-
-	// Send RELAY_RESOLVE cell
 	if err := c.SendRelayCell(resolveCell); err != nil {
 		return nil, fmt.Errorf("failed to send RELAY_RESOLVE: %w", err)
 	}
 
-	// Wait for RELAY_RESOLVED response
-	resolveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	resolveCtx, cancel := context.WithTimeout(ctx, dnsResolveTimeout)
 	defer cancel()
 
-	resolvedCell, err := c.ReceiveRelayCell(resolveCtx)
+	resolvedCell, err := c.waitResolved(resolveCtx, streamID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to receive RELAY_RESOLVED: %w", err)
+		return nil, err
 	}
 
-	// Verify this is a RELAY_RESOLVED cell
-	if resolvedCell.Command != cell.RelayResolved {
-		return nil, fmt.Errorf("expected RELAY_RESOLVED, got %s", cell.RelayCmdString(resolvedCell.Command))
-	}
-
-	// Parse RELAY_RESOLVED response
 	result, err := parseResolvedCell(resolvedCell.Data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse RELAY_RESOLVED: %w", err)
 	}
-
-	// Check for errors
-	if result.Type == DNSTypeError || result.Type == DNSTypeErrorTTL {
-		return result, fmt.Errorf("reverse DNS lookup failed: error code %d", result.Error)
+	if len(result.Addresses) == 0 && result.Hostname == "" {
+		if result.Type == DNSTypeError || result.Type == DNSTypeErrorTTL {
+			return result, fmt.Errorf("DNS resolution failed: type=0x%02X %s", result.Type, result.ErrorMessage)
+		}
+		return result, fmt.Errorf("DNS resolution returned no answers")
 	}
-
 	return result, nil
 }
 
-// parseResolvedCell parses a RELAY_RESOLVED cell payload
-// Format per tor-spec.txt section 6.4:
-// - Multiple answers, each:
-//   - TYPE (1 byte): 0x00 (hostname), 0x04 (IPv4), 0x06 (IPv6), 0xF0/0xF1 (error)
-//   - LENGTH (1 byte): length of answer
-//   - VALUE (variable): depends on type
-//   - TTL (4 bytes): time to live in seconds
-//
-// Note: While the protocol supports multiple DNS records in a single response,
-// this implementation currently returns only the first valid record found.
-// This matches typical DNS resolver behavior where the first address is used.
-// Applications requiring multiple addresses should make multiple RESOLVE requests
-// or use the circuit API directly with custom parsing logic.
+// waitResolved 等到本 StreamID 的 RELAY_RESOLVED 或 RELAY_END。
+// 其它 cell 交给 stream manager，避免与并发 BEGIN/DATA 互相饿死。
+func (c *Circuit) waitResolved(ctx context.Context, streamID uint16) (*cell.RelayCell, error) {
+	for {
+		relayCell, err := c.ReceiveRelayCell(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to receive RELAY_RESOLVED: %w", err)
+		}
+		if relayCell.StreamID != streamID {
+			_ = c.deliverToStream(relayCell)
+			continue
+		}
+		switch relayCell.Command {
+		case cell.RelayResolved:
+			return relayCell, nil
+		case cell.RelayEnd:
+			reason := "unknown"
+			if len(relayCell.Data) > 0 {
+				reason = fmt.Sprintf("reason=%d", relayCell.Data[0])
+			}
+			return nil, fmt.Errorf("RELAY_END during resolve: %s", reason)
+		default:
+			continue
+		}
+	}
+}
+
+func normalizeResolveName(hostname string) (string, error) {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return "", fmt.Errorf("hostname cannot be empty")
+	}
+	if strings.IndexByte(hostname, 0) >= 0 {
+		return "", fmt.Errorf("hostname contains NUL")
+	}
+	if strings.HasSuffix(strings.ToLower(hostname), ".onion") {
+		return "", fmt.Errorf("onion addresses must not be resolved via RELAY_RESOLVE")
+	}
+	return hostname, nil
+}
+
+// buildResolvePayload 按 spec 编 NUL 结尾主机名。
+func buildResolvePayload(name string) []byte {
+	return append([]byte(name), 0x00)
+}
+
+// PTRHostname 把 IP 编成反查名。正向/反向 RELAY_RESOLVE 用同一载荷格式。
+func PTRHostname(ipAddr net.IP) (string, error) {
+	if ipAddr == nil {
+		return "", fmt.Errorf("IP address cannot be nil")
+	}
+	if v4 := ipAddr.To4(); v4 != nil {
+		return fmt.Sprintf("%d.%d.%d.%d.in-addr.arpa", v4[3], v4[2], v4[1], v4[0]), nil
+	}
+	v6 := ipAddr.To16()
+	if v6 == nil {
+		return "", fmt.Errorf("invalid IP address")
+	}
+	var b strings.Builder
+	b.Grow(72)
+	for i := 15; i >= 0; i-- {
+		b.WriteByte(hexNibble[v6[i]&0x0f])
+		b.WriteByte('.')
+		b.WriteByte(hexNibble[v6[i]>>4])
+		b.WriteByte('.')
+	}
+	b.WriteString("ip6.arpa")
+	return b.String(), nil
+}
+
+// parseResolvedCell 解析 RELAY_RESOLVED：多条 TYPE|LENGTH|VALUE|TTL。
+// 0xF0/0xF1 的 Value 是错误说明字符串，不是 1 字节 RCODE。
 func parseResolvedCell(data []byte) (*DNSResult, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("empty RELAY_RESOLVED data")
@@ -180,80 +192,92 @@ func parseResolvedCell(data []byte) (*DNSResult, error) {
 		Addresses: make([]net.IP, 0),
 	}
 
+	var (
+		v4      []net.IP
+		v6      []net.IP
+		v4TTL   uint32
+		v6TTL   uint32
+		hostTTL uint32
+		sawErr  byte
+		errTTL  uint32
+		errMsg  string
+	)
+
 	offset := 0
 	for offset < len(data) {
-		// Need at least TYPE + LENGTH (2 bytes)
 		if offset+2 > len(data) {
 			break
 		}
-
 		recordType := data[offset]
 		length := int(data[offset+1])
 		offset += 2
-
-		// Validate length
 		if offset+length+4 > len(data) {
 			return nil, fmt.Errorf("invalid RELAY_RESOLVED record: incomplete data")
 		}
-
 		value := data[offset : offset+length]
 		offset += length
-
-		// Read TTL (4 bytes)
 		ttl := binary.BigEndian.Uint32(data[offset : offset+4])
 		offset += 4
 
-		// Process based on record type
 		switch recordType {
 		case DNSTypeHostname:
-			// Hostname (null-terminated string)
-			hostname := string(value)
-			if len(hostname) > 0 && hostname[len(hostname)-1] == 0 {
-				hostname = hostname[:len(hostname)-1]
+			hostname := strings.TrimRight(string(value), "\x00")
+			if hostname == "" {
+				continue
 			}
-			result.Type = DNSTypeHostname
-			result.Hostname = hostname
-			result.TTL = ttl
-			return result, nil // Return immediately for hostname
-
+			if result.Hostname == "" {
+				result.Hostname = hostname
+				hostTTL = ttl
+			}
 		case DNSTypeIPv4:
-			// IPv4 address (4 bytes)
 			if length != 4 {
 				return nil, fmt.Errorf("invalid IPv4 address length: %d", length)
 			}
-			ip := net.IPv4(value[0], value[1], value[2], value[3])
-			result.Type = DNSTypeIPv4
-			result.Addresses = append(result.Addresses, ip)
-			result.TTL = ttl
-			return result, nil // Return immediately for IPv4
-
+			if len(v4) == 0 {
+				v4TTL = ttl
+			}
+			v4 = append(v4, net.IPv4(value[0], value[1], value[2], value[3]))
 		case DNSTypeIPv6:
-			// IPv6 address (16 bytes)
 			if length != 16 {
 				return nil, fmt.Errorf("invalid IPv6 address length: %d", length)
 			}
 			ip := make(net.IP, 16)
 			copy(ip, value)
-			result.Type = DNSTypeIPv6
-			result.Addresses = append(result.Addresses, ip)
-			result.TTL = ttl
-			return result, nil // Return immediately for IPv6
-
-		case DNSTypeError, DNSTypeErrorTTL:
-			// Error response (1 byte error code)
-			if length < 1 {
-				return nil, fmt.Errorf("invalid error record length: %d", length)
+			if len(v6) == 0 {
+				v6TTL = ttl
 			}
-			result.Type = recordType
-			result.Error = value[0]
-			result.TTL = ttl
-			return result, nil // Return immediately on error
-
+			v6 = append(v6, ip)
+		case DNSTypeError, DNSTypeErrorTTL:
+			if sawErr == 0 {
+				sawErr = recordType
+				errTTL = ttl
+				errMsg = strings.TrimRight(string(value), "\x00")
+			}
 		default:
-			// Unknown record type - skip it
 			continue
 		}
 	}
 
-	return nil, fmt.Errorf("no valid DNS records found in RELAY_RESOLVED")
+	result.Addresses = append(result.Addresses, v4...)
+	result.Addresses = append(result.Addresses, v6...)
+
+	switch {
+	case len(v4) > 0:
+		result.Type = DNSTypeIPv4
+		result.TTL = v4TTL
+	case len(v6) > 0:
+		result.Type = DNSTypeIPv6
+		result.TTL = v6TTL
+	case result.Hostname != "":
+		result.Type = DNSTypeHostname
+		result.TTL = hostTTL
+	case sawErr != 0:
+		result.Type = sawErr
+		result.Error = sawErr
+		result.ErrorMessage = errMsg
+		result.TTL = errTTL
+	default:
+		return nil, fmt.Errorf("no valid DNS records found in RELAY_RESOLVED")
+	}
+	return result, nil
 }

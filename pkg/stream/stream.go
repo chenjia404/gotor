@@ -294,6 +294,39 @@ func (m *Manager) CreateStream(circuitID uint32, target string, port uint16) (*S
 		m.nextID = 1 // Skip 0
 	}
 
+	return m.addStreamLocked(streamID, circuitID, target, port)
+}
+
+// CreateStreamWithID 用电路分配器给出的非 0 StreamID 建流。
+// SOCKS BEGIN 与 RELAY_RESOLVE 必须共用电路上的 ID 空间。
+func (m *Manager) CreateStreamWithID(id uint16, circuitID uint32, target string, port uint16) (*Stream, error) {
+	if id == 0 {
+		return nil, fmt.Errorf("stream ID 0 is reserved (not a valid BEGIN/RESOLVE stream)")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	select {
+	case <-m.closeChan:
+		return nil, fmt.Errorf("manager closed")
+	default:
+	}
+
+	if _, exists := m.streams[id]; exists {
+		return nil, fmt.Errorf("stream ID %d already in use", id)
+	}
+	if id >= m.nextID {
+		next := id + 1
+		if next == 0 {
+			next = 1
+		}
+		m.nextID = next
+	}
+	return m.addStreamLocked(id, circuitID, target, port)
+}
+
+func (m *Manager) addStreamLocked(streamID uint16, circuitID uint32, target string, port uint16) (*Stream, error) {
 	stream := NewStream(streamID, circuitID, target, port, m.logger)
 	m.streams[streamID] = stream
 

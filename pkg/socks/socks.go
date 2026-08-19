@@ -601,8 +601,16 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// Create a stream
-	strm, err := s.streamMgr.CreateStream(circ.ID, hostStr, port)
+	// StreamID 由电路分配，与 RELAY_RESOLVE 共用，避免撞号。
+	streamID, err := circ.AllocateStreamID()
+	if err != nil {
+		s.logger.Error("Failed to allocate stream ID", "error", err)
+		s.sendReply(conn, replyGeneralFailure, nil)
+		return
+	}
+	defer circ.ReleaseStreamID(streamID)
+
+	strm, err := s.streamMgr.CreateStreamWithID(streamID, circ.ID, hostStr, port)
 	if err != nil {
 		s.logger.Error("Failed to create stream", "error", err)
 		s.sendReply(conn, replyGeneralFailure, nil)
