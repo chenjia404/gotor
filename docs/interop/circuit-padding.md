@@ -1,6 +1,6 @@
 # Circuit padding（Padding=2 / proposal 302）
 
-**状态**：PARTIAL（2026-08-19：协商+HS setup 表+运行时+**直方图延迟定时器**；onion AfterIntroduce1 已接线）
+**状态**：WORKING（2026-08-19：直方图延迟 + 真网 `PADDING_NEGOTIATE`→`PADDING_NEGOTIATED` OK）
 
 对照：
 
@@ -36,10 +36,15 @@
 - 客户端 rend：`[0, 1ms)`；中继 intro：`[1, 10ms)`（对照 C Tor）
 - `SchedulePaddingAfterNegotiate`：negotiate 后 `time.AfterFunc` 发 `RELAY_DROP`
 
+## 真实验收
+
+`TOR_INTEGRATION_TEST=1 go test -tags=integration -run TestRealCircpadNegotiate -v`
+
+结果：middle 宣告 Padding=2 时收到 `PADDING_NEGOTIATED response=1`。
+
 ## 未做
 
 - Token removal / 可变直方图拷贝
-- circpad 真实验收（中继侧需对端 Padding=2）
 
 ## 禁止
 

@@ -1,0 +1,83 @@
+{
+  "source": "C Tor src/test/test_cell_formats.c test_cfmt_connected_cells (verbatim hex)",
+  "upstream_file": "testdata/ctor-official/test_cell_formats.c",
+  "cases": [
+    {
+      "name": "ipv4_with_ttl",
+      "hex": "1e28323c00000400",
+      "family": "inet",
+      "addr": "30.40.50.60",
+      "ttl": 1024
+    },
+    {
+      "name": "ipv4_addr_only",
+      "hex": "20304050",
+      "family": "inet",
+      "addr": "32.48.64.80",
+      "ttl": -1
+    },
+    {
+      "name": "ipv4_truncated_ttl",
+      "hex": "1112131415",
+      "family": "inet",
+      "addr": "17.18.19.20",
+      "ttl": -1
+    },
+    {
+      "name": "ipv4_ttl_3600",
+      "hex": "0203040500000e10",
+      "family": "inet",
+      "addr": "2.3.4.5",
+      "ttl": 3600
+    },
+    {
+      "name": "ipv4_ttl_too_big",
+      "hex": "02030405f0000000",
+      "family": "inet",
+      "addr": "2.3.4.5",
+      "ttl": -1
+    },
+    {
+      "name": "ipv6_ttl_600",
+      "hex": "00000000062607f8b0400c0c02000000000000006800000258",
+      "family": "inet6",
+      "addr": "2607:f8b0:400c:c02::68",
+      "ttl": 600
+    },
+    {
+      "name": "ipv6_format_roundtrip",
+      "hex": "00000000062620000006b0000b1a1a000026e5480e00000e10",
+      "family": "inet6",
+      "addr": "2620:0:6b0:b:1a1a:0:26e5:480e",
+      "ttl": 3600
+    },
+    {
+      "name": "empty",
+      "hex": "",
+      "family": "unspec",
+      "addr": "",
+      "ttl": -1
+    },
+    {
+      "name": "bogus_size_3",
+      "hex": "000102",
+      "error": true
+    },
+    {
+      "name": "bogus_family_7",
+      "hex": "00000000072607f8b0400c0c02000000000000006890000258",
+      "error": true
+    },
+    {
+      "name": "truncated_ipv6",
+      "hex": "00000000062607f8b0400c0c020000000000000068000002",
+      "error": true
+    }
+  ],
+  "create2_ntor_header": {
+    "hex": "00020054",
+    "handshake_type": 2,
+    "onion_skin_len": 84,
+    "comment": "CELL_CREATE2 ntor, 84-byte skin (test_cfmt_create_cells)"
+  }
+}

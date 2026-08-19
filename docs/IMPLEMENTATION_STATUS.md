@@ -53,7 +53,7 @@
 | Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
-| Circuit padding (Padding=2) | PARTIAL | 协商+HS setup+**直方图定时 DROP**；SOCKS AfterIntroduce1 已接线。真实验收需对端 Padding=2 |
+| Circuit padding (Padding=2) | WORKING | 协商+HS setup+直方图 DROP；**真实验收** `TestRealCircpadNegotiate`：PADDING_NEGOTIATE→PADDING_NEGOTIATED OK（middle Padding=2） |
 | Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB） |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
 | Control Protocol | PARTIAL | GETINFO/SETCONF/SETEVENTS + SIGNAL/MAPADDRESS + **ADDRMAP/STATUS_CLIENT/NOTICE**；SOCKS→STREAM 已桥接 |
@@ -176,7 +176,7 @@
 
 #### 8. Circuit padding machine（Padding=2 / proposal 302）
 
-- **状态**：PARTIAL（2026-08-19：电路层运行时已齐；onion 自动触发待 Phase 4）。
+- **状态**：WORKING（2026-08-19：直方图定时器 + 真网 negotiate ACK）。
 - **已做**：
   - `PADDING_NEGOTIATE` / `NEGOTIATED`：STOP=1 START=2、CIRC_SETUP=1、machine_ctr u32、8 字节载荷
   - `ClientHideIntroCircuits` / `RelayHideIntroCircuits` / `ClientHideRendCircuits` 状态表（对照 C Tor）
@@ -184,7 +184,7 @@
   - `SendRelayCellToHop`：协商发往第二跳（`encryptOnion` dest）
   - `Client.refreshCircpadConfig` / `StartHSSetupPaddingOn`（读 `circpad_padding_disabled`）
   - Intro DROPs 7–10；单测覆盖编解码与状态机
-- **未做**：circpad token-removal；circpad 真实验收；洋葱服务托管
+- **未做**：circpad token-removal；洋葱服务托管
 - **已接线**：`onion.Client.AfterIntroduce1` → socks `StartHSSetupPadding(HSSetupIntro)`；共识 `SetCircpadConfig`；`BegindirFetcher`
 - **Spec**：https://spec.torproject.org/padding-spec ；proposal 302
 - **现有代码**：`pkg/circuit/circpad.go`、`circpad_runtime.go`、`circuit.go`；`pkg/client`；`docs/interop/circuit-padding.md`
@@ -234,7 +234,7 @@
 - `testdata/ctor-vectors/*.json` 仍为规范重算，**不得**单独宣称原样官方
 - 已追加：`test_cell_formats.c` 原样导入
 - **已追加**：`testdata/arti-official/{ntor_v3.rs,hs_ntor.rs}` 原样；`test_cell_formats.c`
-- 剩余：从 cell_formats 抽取独立 Go fixture JSON
+- **已追加**：`cell_connected_vectors.json` + `pkg/cell/connected.go`（CONNECTED/CREATE2 原样 hex）
 
 #### 12. Family ID（Desc=4）
 
@@ -417,4 +417,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准：** circpad 真实验收（对端 Padding=2）；洋葱服务托管；cell_formats→Go fixture。
+**下一轮完成标准：** 洋葱服务托管（可选）；circpad token-removal；PT/Bridge 生产路径。
