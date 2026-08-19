@@ -73,35 +73,58 @@ func TestParseResolvedCell(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "Error response - NXDOMAIN",
+			name: "Error response - transient string (C Tor)",
 			data: func() []byte {
-				// TYPE (0xF0) | LENGTH (1) | ERROR (0x03 = NXDOMAIN) | TTL (0)
-				data := make([]byte, 7)
+				msg := "Error resolving hostname"
+				data := make([]byte, 2+len(msg)+4)
 				data[0] = DNSTypeError
-				data[1] = 1
-				data[2] = DNSErrorNotExist
-				binary.BigEndian.PutUint32(data[3:7], 0)
+				data[1] = byte(len(msg))
+				copy(data[2:], msg)
+				binary.BigEndian.PutUint32(data[2+len(msg):], 0)
 				return data
 			}(),
 			wantType:  DNSTypeError,
-			wantError: DNSErrorNotExist,
+			wantError: DNSTypeError,
 			wantTTL:   0,
 			expectErr: false,
 		},
 		{
-			name: "Error response - Server failure",
+			name: "Error response - nontransient string",
 			data: func() []byte {
-				// TYPE (0xF0) | LENGTH (1) | ERROR (0x02 = SERVFAIL) | TTL (0)
-				data := make([]byte, 7)
-				data[0] = DNSTypeError
-				data[1] = 1
-				data[2] = DNSErrorServerFailure
-				binary.BigEndian.PutUint32(data[3:7], 0)
+				msg := "Error resolving hostname"
+				data := make([]byte, 2+len(msg)+4)
+				data[0] = DNSTypeErrorTTL
+				data[1] = byte(len(msg))
+				copy(data[2:], msg)
+				binary.BigEndian.PutUint32(data[2+len(msg):], 60)
 				return data
 			}(),
-			wantType:  DNSTypeError,
-			wantError: DNSErrorServerFailure,
-			wantTTL:   0,
+			wantType:  DNSTypeErrorTTL,
+			wantError: DNSTypeErrorTTL,
+			wantTTL:   60,
+			expectErr: false,
+		},
+		{
+			name: "Multiple IPv4 then IPv6 — keep all, prefer IPv4 type",
+			data: func() []byte {
+				data := make([]byte, 10+10+22)
+				data[0] = DNSTypeIPv4
+				data[1] = 4
+				copy(data[2:6], []byte{192, 0, 2, 1})
+				binary.BigEndian.PutUint32(data[6:10], 3600)
+				data[10] = DNSTypeIPv4
+				data[11] = 4
+				copy(data[12:16], []byte{192, 0, 2, 2})
+				binary.BigEndian.PutUint32(data[16:20], 1800)
+				data[20] = DNSTypeIPv6
+				data[21] = 16
+				copy(data[22:38], net.ParseIP("2001:db8::1").To16())
+				binary.BigEndian.PutUint32(data[38:42], 7200)
+				return data
+			}(),
+			wantType:  DNSTypeIPv4,
+			wantAddrs: []string{"192.0.2.1", "192.0.2.2", "2001:db8::1"},
+			wantTTL:   3600,
 			expectErr: false,
 		},
 		{
@@ -165,6 +188,9 @@ func TestParseResolvedCell(t *testing.T) {
 			if tt.wantType == DNSTypeError || tt.wantType == DNSTypeErrorTTL {
 				if result.Error != tt.wantError {
 					t.Errorf("parseResolvedCell() Error = %d, want %d", result.Error, tt.wantError)
+				}
+				if result.ErrorMessage == "" {
+					t.Errorf("parseResolvedCell() missing ErrorMessage for 0xF0/0xF1")
 				}
 			}
 
@@ -260,26 +286,15 @@ func TestResolveHostnamePayload(t *testing.T) {
 	}
 }
 
-// TestResolveIPPayload tests the RELAY_RESOLVE payload format for PTR queries
+// TestResolveIPPayload 验收 PTR 载荷是 NUL 结尾的 arpa 名，不是二进制 TYPE|LENGTH|ADDRESS。
 func TestResolveIPPayload(t *testing.T) {
 	tests := []struct {
-		name     string
-		ip       string
-		wantType byte
-		wantLen  int
+		name string
+		ip   string
+		want string
 	}{
-		{
-			name:     "IPv4 address",
-			ip:       "192.0.2.1",
-			wantType: DNSTypeIPv4,
-			wantLen:  6, // TYPE(1) + LENGTH(1) + IPv4(4)
-		},
-		{
-			name:     "IPv6 address",
-			ip:       "2001:db8::1",
-			wantType: DNSTypeIPv6,
-			wantLen:  18, // TYPE(1) + LENGTH(1) + IPv6(16)
-		},
+		{name: "IPv4", ip: "192.0.2.1", want: "1.2.0.192.in-addr.arpa"},
+		{name: "IPv6", ip: "2001:db8::1", want: "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"},
 	}
 
 	for _, tt := range tests {
@@ -288,27 +303,19 @@ func TestResolveIPPayload(t *testing.T) {
 			if ipAddr == nil {
 				t.Fatalf("Failed to parse IP: %s", tt.ip)
 			}
-
-			// Create payload as would be done in ResolveIP
-			var payload []byte
-			if ipv4 := ipAddr.To4(); ipv4 != nil {
-				payload = make([]byte, 6)
-				payload[0] = DNSTypeIPv4
-				payload[1] = 4
-				copy(payload[2:], ipv4)
-			} else if ipv6 := ipAddr.To16(); ipv6 != nil {
-				payload = make([]byte, 18)
-				payload[0] = DNSTypeIPv6
-				payload[1] = 16
-				copy(payload[2:], ipv6)
+			name, err := PTRHostname(ipAddr)
+			if err != nil {
+				t.Fatalf("PTRHostname: %v", err)
 			}
-
-			if len(payload) != tt.wantLen {
-				t.Errorf("Payload length = %d, want %d", len(payload), tt.wantLen)
+			if name != tt.want {
+				t.Errorf("PTRHostname() = %q, want %q", name, tt.want)
 			}
-
-			if payload[0] != tt.wantType {
-				t.Errorf("Payload type = 0x%02X, want 0x%02X", payload[0], tt.wantType)
+			payload := buildResolvePayload(name)
+			if payload[len(payload)-1] != 0x00 {
+				t.Error("PTR payload not NUL-terminated")
+			}
+			if string(payload[:len(payload)-1]) != tt.want {
+				t.Errorf("payload name = %q, want %q", payload[:len(payload)-1], tt.want)
 			}
 		})
 	}
@@ -394,37 +401,45 @@ func TestDNSResultValidation(t *testing.T) {
 	}
 }
 
-// mockConnection is a minimal mock connection for DNS testing that implements
-// the cellSender interface required by Circuit.SendRelayCell. It accepts cells
-// but doesn't actually send them, allowing tests to verify DNS resolution logic
-// without requiring a real network connection.
-type mockConnection struct{}
+// mockConnection 记录发出的 RELAY cell StreamID，供 mock 应答配对。
+type mockConnection struct {
+	lastStreamID uint16
+}
 
-// SendCell implements the cellSender interface for mockConnection.
-// It accepts cells but doesn't send them, returning nil to indicate success.
 func (m *mockConnection) SendCell(c *cell.Cell) error {
-	// Mock connection that accepts cells but doesn't do anything
+	if len(c.Payload) >= 5 {
+		m.lastStreamID = binary.BigEndian.Uint16(c.Payload[3:5])
+	}
 	return nil
 }
 
-// MockCircuitForDNS creates a mock circuit for DNS testing
-// Note: This is a simplified mock that doesn't fully simulate the circuit behavior
-// For integration tests, use a real circuit with mock network layer
+// MockCircuitForDNS 注入与发出 RESOLVE 相同 StreamID 的 RELAY_RESOLVED。
 func MockCircuitForDNS(t *testing.T, responseData []byte) *Circuit {
+	t.Helper()
+	conn := &mockConnection{}
 	c := &Circuit{
 		ID:               1,
 		State:            StateOpen,
 		relayReceiveChan: make(chan *cell.RelayCell, 1),
-		conn:             &mockConnection{},
+		conn:             conn,
+		nextStreamID:     1,
+		usedStreamIDs:    make(map[uint16]struct{}),
 	}
 
-	// Simulate the response by directly injecting into receive channel
 	go func() {
-		// Small delay to allow the call to be made
-		time.Sleep(10 * time.Millisecond)
-
-		// Send back RELAY_RESOLVED response
-		resolvedCell, err := cell.NewRelayCell(0, cell.RelayResolved, responseData)
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if conn.lastStreamID != 0 {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		sid := conn.lastStreamID
+		if sid == 0 {
+			t.Errorf("RESOLVE 未发出非 0 StreamID")
+			return
+		}
+		resolvedCell, err := cell.NewRelayCell(sid, cell.RelayResolved, responseData)
 		if err != nil {
 			t.Errorf("Failed to create relay cell: %v", err)
 			return
@@ -512,6 +527,16 @@ func TestResolveHostnameErrors(t *testing.T) {
 			hostname:    "",
 			expectError: "hostname cannot be empty",
 		},
+		{
+			name:        "NUL in hostname",
+			hostname:    "exam\x00ple.com",
+			expectError: "hostname contains NUL",
+		},
+		{
+			name:        "onion must not go to exit DNS",
+			hostname:    "thehiddenwiki7fhdx5oawttis2ggfurncbhcivilization6vhogt4n4kkqid.onion",
+			expectError: "onion addresses must not be resolved via RELAY_RESOLVE",
+		},
 	}
 
 	for _, tt := range tests {
@@ -563,5 +588,32 @@ func TestResolveIPErrors(t *testing.T) {
 				t.Errorf("ResolveIP() error = %q, want %q", err.Error(), tt.expectError)
 			}
 		})
+	}
+}
+
+func TestAllocateStreamIDNeverZero(t *testing.T) {
+	c := NewCircuit(1)
+	seen := make(map[uint16]bool)
+	for i := 0; i < 64; i++ {
+		id, err := c.AllocateStreamID()
+		if err != nil {
+			t.Fatalf("AllocateStreamID: %v", err)
+		}
+		if id == 0 {
+			t.Fatal("AllocateStreamID returned 0")
+		}
+		if seen[id] {
+			t.Fatalf("duplicate stream ID %d", id)
+		}
+		seen[id] = true
+	}
+	c.ReleaseStreamID(1)
+	c.nextStreamID = 1
+	id, err := c.AllocateStreamID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != 1 {
+		t.Fatalf("released ID 1 not reused, got %d", id)
 	}
 }

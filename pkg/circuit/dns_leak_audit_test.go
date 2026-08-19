@@ -30,6 +30,7 @@ import (
 	"encoding/binary"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -342,55 +343,32 @@ func TestDNSConcurrentResolutionNoLeaks(t *testing.T) {
 func TestDNSErrorHandlingNoSystemFallback(t *testing.T) {
 	tests := []struct {
 		name      string
-		errorCode byte
 		errorType byte
 	}{
-		{
-			name:      "NXDOMAIN error",
-			errorCode: DNSErrorNotExist,
-			errorType: DNSTypeError,
-		},
-		{
-			name:      "Server failure",
-			errorCode: DNSErrorServerFailure,
-			errorType: DNSTypeError,
-		},
-		{
-			name:      "Format error",
-			errorCode: DNSErrorFormat,
-			errorType: DNSTypeError,
-		},
-		{
-			name:      "Refused",
-			errorCode: DNSErrorRefused,
-			errorType: DNSTypeError,
-		},
+		{name: "transient 0xF0", errorType: DNSTypeError},
+		{name: "nontransient 0xF1", errorType: DNSTypeErrorTTL},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create error response
-			responseData := make([]byte, 7)
+			msg := "Error resolving hostname"
+			responseData := make([]byte, 2+len(msg)+4)
 			responseData[0] = tt.errorType
-			responseData[1] = 1
-			responseData[2] = tt.errorCode
-			binary.BigEndian.PutUint32(responseData[3:7], 0)
+			responseData[1] = byte(len(msg))
+			copy(responseData[2:], msg)
+			binary.BigEndian.PutUint32(responseData[2+len(msg):], 0)
 
 			c := MockCircuitForDNS(t, responseData)
 
 			ctx := context.Background()
 			result, err := c.ResolveHostname(ctx, "nonexistent.example.com")
 
-			// Should get an error from circuit, not success from system DNS
 			if err == nil {
-				t.Errorf("Expected error for DNS error code %d, got success (possible system DNS fallback)", tt.errorCode)
+				t.Errorf("Expected error for DNS type 0x%02X, got success (possible system DNS fallback)", tt.errorType)
 			}
 
-			if result != nil && result.Type == tt.errorType {
-				// Good - we got the error from the circuit
-				if result.Error != tt.errorCode {
-					t.Errorf("Got error code %d, want %d", result.Error, tt.errorCode)
-				}
+			if result != nil && result.Type == tt.errorType && result.Error != tt.errorType {
+				t.Errorf("Got error 0x%02X, want 0x%02X", result.Error, tt.errorType)
 			}
 		})
 	}
@@ -522,5 +500,69 @@ func TestDNSCircuitStateValidation(t *testing.T) {
 				t.Errorf("ResolveHostname() succeeded on %s (possible fallback)", st.name)
 			}
 		})
+	}
+}
+
+// TestProductionHasNoSystemDNSCalls 静态扫描生产代码，禁止本机 DNS API。
+func TestProductionHasNoSystemDNSCalls(t *testing.T) {
+	root := findModuleRoot(t)
+	prohibited := []string{
+		"net.LookupHost(",
+		"net.LookupIP(",
+		"net.LookupAddr(",
+		"net.LookupCNAME(",
+		"net.LookupMX(",
+		"net.LookupNS(",
+		"net.LookupTXT(",
+		"net.LookupSRV(",
+		"net.DefaultResolver",
+	}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			base := info.Name()
+			if base == "vendor" || base == ".git" || base == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		text := string(data)
+		for _, fn := range prohibited {
+			if strings.Contains(text, fn) {
+				t.Errorf("%s 含本机 DNS 调用 %s", rel, fn)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func findModuleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found")
+		}
+		dir = parent
 	}
 }
