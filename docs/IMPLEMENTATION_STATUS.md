@@ -411,4 +411,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准：** Phase 4 续 — INTRODUCE1/2 用 hs-ntor IntroKeys 解密；客户端访问 `.onion` 端到端；其后 Phase 3 官方向量/文档。
+**下一轮完成标准：** HSDir 真实验收 / `.onion` 端到端；INTRODUCE1 后 circpad；Phase 3 官方向量与文档去伪。
