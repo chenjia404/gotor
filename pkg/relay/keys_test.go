@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -100,12 +101,15 @@ func TestSaveAndLoadKeys(t *testing.T) {
 		t.Fatalf("Failed to save keys: %v", err)
 	}
 
-	// Verify files exist with correct permissions
+	// 确认文件存在；Windows 不保留 POSIX 权限位，跳过 mode 断言
 	checkFile := func(filename string, expectedPerm os.FileMode) {
 		path := filepath.Join(tmpDir, filename)
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Errorf("File %s doesn't exist: %v", filename, err)
+			return
+		}
+		if runtime.GOOS == "windows" {
 			return
 		}
 		perm := info.Mode().Perm()
@@ -146,6 +150,15 @@ func TestSaveAndLoadKeys(t *testing.T) {
 	// Verify fingerprints match
 	if originalKeys.Fingerprint() != loadedKeys.Fingerprint() {
 		t.Error("Fingerprints don't match")
+	}
+	if string(originalKeys.NtorOnionKey) != string(loadedKeys.NtorOnionKey) {
+		t.Error("ntor keys don't match")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "ed25519_master_id_secret_key")); err != nil {
+		t.Error("missing C Tor Ed25519 alias")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "secret_id_key")); err != nil {
+		t.Error("missing C Tor RSA alias")
 	}
 
 	originalKeys.Destroy()

@@ -59,9 +59,9 @@ func TestCircuitCryptoRoundTrip(t *testing.T) {
 }
 
 func TestParseBeginAddr(t *testing.T) {
-	h, p, err := parseBeginAddr([]byte("example.com:443\x00"))
-	if err != nil || h != "example.com" || p != 443 {
-		t.Fatalf("%s %d %v", h, p, err)
+	h, p, flags, err := parseBeginAddr([]byte("example.com:443\x00"))
+	if err != nil || h != "example.com" || p != 443 || flags != 0 {
+		t.Fatalf("%s %d flags=%d %v", h, p, flags, err)
 	}
 }
 

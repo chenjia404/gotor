@@ -52,3 +52,38 @@ func TestLoadTorrcExitPolicy(t *testing.T) {
 		t.Fatalf("ExitPolicy lines %d", len(cfg.ExitPolicyLines))
 	}
 }
+
+func TestLoadTorrcExitRelayExtendedKeys(t *testing.T) {
+	dir := t.TempDir()
+	torrc := filepath.Join(dir, "torrc")
+	body := "ORPort 9001\nExitRelay 1\nDirPort 9030\nDirCache 1\n" +
+		"ExitPolicyRejectPrivate 1\nExitPolicyRejectLocalInterfaces 1\n" +
+		"MyFamily $AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n" +
+		"FamilyID ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n" +
+		"SocksPort 0\n"
+	if err := os.WriteFile(torrc, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultCLIConfig()
+	if err := LoadFromFile(torrc, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ExitRelay || cfg.DirPort != 9030 || !cfg.DirCache {
+		t.Fatalf("exit/dir %+v", cfg)
+	}
+	if !cfg.ExitPolicyRejectPrivate || !cfg.ExitPolicyRejectLocalInterfaces {
+		t.Fatal("reject private/local")
+	}
+	if len(cfg.MyFamily) != 1 || len(cfg.FamilyIDs) != 1 {
+		t.Fatalf("family %v %v", cfg.MyFamily, cfg.FamilyIDs)
+	}
+	if cfg.SocksPort != 0 {
+		t.Fatal("SocksPort 0")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.CheckDropInConstraints(); err != nil {
+		t.Fatal(err)
+	}
+}

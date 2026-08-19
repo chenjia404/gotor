@@ -29,9 +29,9 @@ type ModuleStatus struct {
 // ListModules 列出 drop-in 模块状态：relay 有、pt/exit 无生产。
 func ListModules() []ModuleStatus {
 	return []ModuleStatus{
-		{Name: "relay", Enabled: true, Note: "ORPort 非出口中继"},
+		{Name: "relay", Enabled: true, Note: "ORPort 中继（含出口）"},
 		{Name: "pt", Enabled: false, Note: "仅解析 UseBridges/Bridge/ClientTransportPlugin，无生产路径"},
-		{Name: "exit", Enabled: false, Note: "ExitRelay 1 拒绝启动"},
+		{Name: "exit", Enabled: true, Note: "ExitRelay 1 + ExitPolicy 出口中继"},
 	}
 }
 
@@ -85,11 +85,11 @@ func (c *Config) CheckDropInConstraints() error {
 	if c == nil {
 		return fmt.Errorf("config cannot be nil")
 	}
-	if c.ExitRelay {
-		return fmt.Errorf("ExitRelay 1 不受支持：gotor 不会作为出口中继运行")
+	if c.ClientOnly && (c.ORPort > 0 || c.ExitRelay) {
+		return fmt.Errorf("ClientOnly 1 与 ORPort/ExitRelay 冲突：客户端模式不会启动中继或出口")
 	}
-	if c.ClientOnly && c.ORPort > 0 {
-		return fmt.Errorf("ClientOnly 1 与 ORPort 冲突：客户端模式不会启动中继")
+	if c.ExitRelay && c.ORPort <= 0 {
+		return fmt.Errorf("ExitRelay 1 需要 ORPort > 0")
 	}
 	if c.TransPort != 0 {
 		return fmt.Errorf("TransPort 未实现（gotor 不提供透明代理）")
@@ -154,54 +154,66 @@ func DumpConfig(cfg *Config, mode string) string {
 		{"UseDefaultFallbackDirs", formatBool(cfg.UseDefaultFallbackDirs)},
 		{"AvoidDiskWrites", formatBool(cfg.AvoidDiskWrites)},
 		{"ORPort", fmt.Sprintf("%d", cfg.ORPort)},
+		{"DirPort", fmt.Sprintf("%d", cfg.DirPort)},
+		{"DirCache", formatBool(cfg.DirCache)},
 		{"Nickname", cfg.Nickname},
 		{"ExitRelay", formatBool(cfg.ExitRelay)},
+		{"IPv6Exit", formatBool(cfg.IPv6Exit)},
+		{"ReduceExitPolicy", formatBool(cfg.ReduceExitPolicy)},
+		{"ExitPolicyRejectPrivate", formatBool(cfg.ExitPolicyRejectPrivate)},
+		{"ExitPolicyRejectLocalInterfaces", formatBool(cfg.ExitPolicyRejectLocalInterfaces)},
 		{"UseBridges", formatBool(cfg.UseBridges)},
 	}
 	defMap := map[string]string{
-		"SocksPort":                     fmt.Sprintf("%d", defaults.SocksPort),
-		"SocksListenAddr":               defaults.SocksListenAddr,
-		"ControlPort":                   fmt.Sprintf("%d", defaults.ControlPort),
-		"ControlListenAddr":             defaults.ControlListenAddr,
-		"ControlSocket":                 defaults.ControlSocket,
-		"SocksUnixPath":                 defaults.SocksUnixPath,
-		"DataDirectory":                 defaults.DataDirectory,
-		"CacheDirectory":                defaults.EffectiveCacheDirectory(),
-		"PidFile":                       defaults.PidFile,
-		"RunAsDaemon":                   formatBool(defaults.RunAsDaemon),
-		"ClientOnly":                    formatBool(defaults.ClientOnly),
-		"DisableNetwork":                formatBool(defaults.DisableNetwork),
-		"HTTPTunnelPort":                fmt.Sprintf("%d", defaults.HTTPTunnelPort),
-		"DNSPort":                       fmt.Sprintf("%d", defaults.DNSPort),
-		"CookieAuthentication":          formatBool(defaults.CookieAuthentication),
-		"CookieAuthFile":                defaults.CookieAuthFile,
-		"HashedControlPassword":         defaults.HashedControlPassword,
-		"LogLevel":                      defaults.LogLevel,
-		"LogFile":                       defaults.LogFile,
-		"CircuitBuildTimeout":           formatDuration(defaults.CircuitBuildTimeout),
-		"MaxCircuitDirtiness":           formatDuration(defaults.MaxCircuitDirtiness),
-		"NewCircuitPeriod":              formatDuration(defaults.NewCircuitPeriod),
-		"NumEntryGuards":                fmt.Sprintf("%d", defaults.NumEntryGuards),
-		"UseEntryGuards":                formatBool(defaults.UseEntryGuards),
-		"ClientUseIPv4":                 formatBool(defaults.ClientUseIPv4),
-		"ClientUseIPv6":                 formatBool(defaults.ClientUseIPv6),
-		"ClientPreferIPv6ORPort":        formatBool(defaults.ClientPreferIPv6ORPort),
-		"AutomapHostsOnResolve":         formatBool(defaults.AutomapHostsOnResolve),
-		"VirtualAddrNetworkIPv4":        defaults.VirtualAddrNetworkIPv4,
-		"VirtualAddrNetworkIPv6":        defaults.VirtualAddrNetworkIPv6,
-		"SafeSocks":                     formatBool(defaults.SafeSocks),
-		"TestSocks":                     formatBool(defaults.TestSocks),
-		"ClientRejectInternalAddresses": formatBool(defaults.ClientRejectInternalAddresses),
-		"CircuitPadding":                formatBool(defaults.EnableCircuitPadding),
-		"ReducedCircuitPadding":         formatBool(defaults.ReducedCircuitPadding),
-		"ConnectionPadding":             defaults.ConnectionPadding,
-		"SocksTimeout":                  formatDuration(defaults.SocksTimeout),
-		"UseDefaultFallbackDirs":        formatBool(defaults.UseDefaultFallbackDirs),
-		"AvoidDiskWrites":               formatBool(defaults.AvoidDiskWrites),
-		"ORPort":                        fmt.Sprintf("%d", defaults.ORPort),
-		"Nickname":                      defaults.Nickname,
-		"ExitRelay":                     formatBool(defaults.ExitRelay),
-		"UseBridges":                    formatBool(defaults.UseBridges),
+		"SocksPort":                       fmt.Sprintf("%d", defaults.SocksPort),
+		"SocksListenAddr":                 defaults.SocksListenAddr,
+		"ControlPort":                     fmt.Sprintf("%d", defaults.ControlPort),
+		"ControlListenAddr":               defaults.ControlListenAddr,
+		"ControlSocket":                   defaults.ControlSocket,
+		"SocksUnixPath":                   defaults.SocksUnixPath,
+		"DataDirectory":                   defaults.DataDirectory,
+		"CacheDirectory":                  defaults.EffectiveCacheDirectory(),
+		"PidFile":                         defaults.PidFile,
+		"RunAsDaemon":                     formatBool(defaults.RunAsDaemon),
+		"ClientOnly":                      formatBool(defaults.ClientOnly),
+		"DisableNetwork":                  formatBool(defaults.DisableNetwork),
+		"HTTPTunnelPort":                  fmt.Sprintf("%d", defaults.HTTPTunnelPort),
+		"DNSPort":                         fmt.Sprintf("%d", defaults.DNSPort),
+		"CookieAuthentication":            formatBool(defaults.CookieAuthentication),
+		"CookieAuthFile":                  defaults.CookieAuthFile,
+		"HashedControlPassword":           defaults.HashedControlPassword,
+		"LogLevel":                        defaults.LogLevel,
+		"LogFile":                         defaults.LogFile,
+		"CircuitBuildTimeout":             formatDuration(defaults.CircuitBuildTimeout),
+		"MaxCircuitDirtiness":             formatDuration(defaults.MaxCircuitDirtiness),
+		"NewCircuitPeriod":                formatDuration(defaults.NewCircuitPeriod),
+		"NumEntryGuards":                  fmt.Sprintf("%d", defaults.NumEntryGuards),
+		"UseEntryGuards":                  formatBool(defaults.UseEntryGuards),
+		"ClientUseIPv4":                   formatBool(defaults.ClientUseIPv4),
+		"ClientUseIPv6":                   formatBool(defaults.ClientUseIPv6),
+		"ClientPreferIPv6ORPort":          formatBool(defaults.ClientPreferIPv6ORPort),
+		"AutomapHostsOnResolve":           formatBool(defaults.AutomapHostsOnResolve),
+		"VirtualAddrNetworkIPv4":          defaults.VirtualAddrNetworkIPv4,
+		"VirtualAddrNetworkIPv6":          defaults.VirtualAddrNetworkIPv6,
+		"SafeSocks":                       formatBool(defaults.SafeSocks),
+		"TestSocks":                       formatBool(defaults.TestSocks),
+		"ClientRejectInternalAddresses":   formatBool(defaults.ClientRejectInternalAddresses),
+		"CircuitPadding":                  formatBool(defaults.EnableCircuitPadding),
+		"ReducedCircuitPadding":           formatBool(defaults.ReducedCircuitPadding),
+		"ConnectionPadding":               defaults.ConnectionPadding,
+		"SocksTimeout":                    formatDuration(defaults.SocksTimeout),
+		"UseDefaultFallbackDirs":          formatBool(defaults.UseDefaultFallbackDirs),
+		"AvoidDiskWrites":                 formatBool(defaults.AvoidDiskWrites),
+		"ORPort":                          fmt.Sprintf("%d", defaults.ORPort),
+		"DirPort":                         fmt.Sprintf("%d", defaults.DirPort),
+		"DirCache":                        formatBool(defaults.DirCache),
+		"Nickname":                        defaults.Nickname,
+		"ExitRelay":                       formatBool(defaults.ExitRelay),
+		"IPv6Exit":                        formatBool(defaults.IPv6Exit),
+		"ReduceExitPolicy":                formatBool(defaults.ReduceExitPolicy),
+		"ExitPolicyRejectPrivate":         formatBool(defaults.ExitPolicyRejectPrivate),
+		"ExitPolicyRejectLocalInterfaces": formatBool(defaults.ExitPolicyRejectLocalInterfaces),
+		"UseBridges":                      formatBool(defaults.UseBridges),
 	}
 
 	var lines []string
@@ -223,6 +235,15 @@ func DumpConfig(cfg *Config, mode string) string {
 	}
 	for _, f := range cfg.FallbackDirs {
 		lines = append(lines, "FallbackDir "+f)
+	}
+	for _, p := range cfg.ExitPolicyLines {
+		lines = append(lines, "ExitPolicy "+p)
+	}
+	for _, f := range cfg.MyFamily {
+		lines = append(lines, "MyFamily "+f)
+	}
+	for _, f := range cfg.FamilyIDs {
+		lines = append(lines, "FamilyID "+f)
 	}
 	sort.Strings(lines)
 	return strings.Join(lines, "\n") + "\n"

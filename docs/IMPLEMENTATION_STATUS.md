@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
-**日期**：2026-08-19  
-**分支**：`cursor/path-fast-middleonly-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
+**日期**：2026-08-20  
+**分支**：`feat/tor-exit-relay-dropin`（基于 `origin/main`，纯 Go，禁止 CGO）  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + **现行** Tor Spec / C Tor / Arti 为准。  
 **与官方差距（客户端 / 中继 / 洋葱托管 / 网桥 / 控制口 + 后续清单 + Arti 新特性追踪）**：见 [`COMPAT_WITH_OFFICIAL_TOR.md`](COMPAT_WITH_OFFICIAL_TOR.md)。
 
@@ -57,7 +57,7 @@
 | Circuit padding (Padding=2) | WORKING | 协商+HS setup+直方图 DROP；**真实验收** `TestRealCircpadNegotiate`：PADDING_NEGOTIATE→PADDING_NEGOTIATED OK（middle Padding=2） |
 | Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB） |
 | Onion Service v3（托管） | PARTIAL | ESTABLISH_INTRO；ntor rend_circ_nonce；BEGIN_DIR 上传；**type-8 致盲证书 + 双层加密密封**；torrc HiddenService*。剩余：真网发布/INTRODUCE2 回路验收 |
-| Relay / Bridge | PARTIAL | ORPort；Exit；CREATE2 ntor/ntor-v3；**EXTEND2→CREATE2→EXTENDED2 加密回传 + 剥层转发**；描述符含 onion-key-crosscert / ntor-onion-key-crosscert 与 dir-spec Ed25519 摘要签名。未做：真网权威落库/进共识、网桥、真网多跳中继验收 |
+| Relay / Bridge | PARTIAL | ORPort；**ExitRelay 1 出口流（BEGIN/DATA/RESOLVE + 真实策略描述符）**；CREATE2 ntor/ntor-v3；**EXTEND2→CREATE2→EXTENDED2 加密回传 + 剥层转发**；描述符含 onion-key-crosscert / ntor-onion-key-crosscert 与 dir-spec Ed25519 摘要签名。未做：真网权威落库/进共识、网桥、真网多跳中继/出口收录验收 |
 | Control Protocol | WORKING | GETINFO/SETCONF/SETEVENTS/SIGNAL/MAPADDRESS；**AUTHCHALLENGE SAFECOOKIE**；COOKIE/HASHEDPASSWORD；事件 CIRC/STREAM/BW/…/NOTICE |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
 
@@ -451,7 +451,7 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. ✅ 纯 Go；无全零密钥静默成功；状态文档与代码对齐
 6. ✅ ROADMAP/GAPS/AUDIT 已加过期警告，不再声称 Onion 托管/Bridge 服务端已完成
 
-**明确仍非目标**：Exit 中继、DirAuth、Tor Browser、洋葱服务托管、PT 生产路径。
+**明确仍非目标**：DirAuth、Tor Browser、PT 生产路径。洋葱服务托管仍为 PARTIAL。出口中继见下方（PARTIAL，未做真网权威收录验收）。
 
 ---
 
@@ -464,6 +464,21 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
   - `--version` 输出 `Tor version 0.4.9.11 (gotor).`
   - torrc：CacheDirectory、PidFile、RunAsDaemon、ClientOnly、DisableNetwork、HTTPTunnelPort、DNSPort、ControlSocket、SocksPort `auto`/`0`/`unix:`、ControlPort `0`、MapAddress、Automap*、SafeSocks/TestSocks、padding、FallbackDir、AvoidDiskWrites、`%include` 通配/目录、引号路径
   - DataDirectory：`lock`、`state` Guard、`cached-microdesc-consensus`、`cached-microdescs`+`.new`
-  - `ExitRelay 1` / 非 0 TransPort/NATDPort 拒绝启动
-- **不做**：PT 生产、出口中继、TransPort、完整 NT service
+  - 非 0 TransPort/NATDPort 拒绝启动
+- **不做**：PT 生产、TransPort、完整 NT service
 - **现有代码**：`pkg/config/cli.go`、`pkg/datadir`、`pkg/httptunnel`、`pkg/dnsport`、`pkg/directory/consensus_disk.go`、`cmd/gotor`；文档 `docs/TOR_DROPIN.md`
+
+## 出口中继 drop-in（2026-08-20）
+
+- **状态**：PARTIAL（离线单测覆盖策略/BEGIN/RESOLVE/描述符；**未**用真网权威收录或 Exit flag 验收，故不标 WORKING）
+- **已做**：
+  - `ExitRelay 1` + `ORPort>0` 真正启用出口；`ORPort==0` 拒绝；`DefaultCLIConfig()` 默认不打开 ExitRelay
+  - ExitPolicy 顺序匹配；无匹配默认 accept；`ExitPolicyRejectPrivate` / `ExitPolicyRejectLocalInterfaces` 默认 1
+  - `ReduceExitPolicy` 追加 C Tor 0.4.9 精简端口表；否则追加默认策略（拒 25/135-139/445 等后 `accept *:*`）
+  - `RELAY_BEGIN` / `DATA` / `END` / `SENDME`：策略检查后再拨号；禁止默认连私网/本机/链路本地；半关闭；连接数与带宽限速
+  - `RELAY_RESOLVE` / `RESOLVED`：出口 DNS；过滤特殊用途地址；`.onion` 拒绝；编码对齐 remote-hostname-lookup
+  - `RELAY_BEGIN_DIR`：DirCache 用 CacheDirectory 落盘文件；否则 NOTDIRECTORY
+  - server descriptor 写入真实 accept/reject 与 ipv6-policy；不伪造 Exit flag
+  - 可读 C Tor `secret_id_key` / `ed25519_master_id_secret_key` / `secret_onion_key_ntor`
+- **不做**：PT/Bridge、DirAuth、真网收录证明、完整 Vegas
+- **现有代码**：`pkg/relay/policy.go`、`exit_stream.go`、`exit_resolve.go`、`descriptor.go`、`keys.go`、`server.go`；文档 `docs/RELAY.md`、`docs/TOR_DROPIN.md`

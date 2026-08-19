@@ -125,11 +125,11 @@ func TestValidateExitAttempt(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name:        "RELAY_BEGIN_DIR should be rejected",
+			name:        "RELAY_BEGIN_DIR 不受 ExitPolicy 约束",
 			command:     cell.RelayBeginDir,
 			address:     "",
 			port:        0,
-			expectError: true,
+			expectError: false,
 		},
 		{
 			name:        "RELAY_DATA should not be checked",

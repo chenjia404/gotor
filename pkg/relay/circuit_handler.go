@@ -24,6 +24,8 @@ type ServerCircuit struct {
 	crypto       *circuitCrypto
 	ctx          context.Context
 	cancel       context.CancelFunc
+	ccEnabled    bool // ntor-v3 已回 CC_FIELD_RESPONSE
+	sendmeInc    int  // FlowCtrl=2 时一般为 31
 	mu           sync.RWMutex
 }
 
@@ -170,6 +172,11 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 		return h.sendDestroyCell(conn, c.CircID, cell.DestroyReasonInternal)
 	}
 	cctx, ccancel := context.WithCancel(h.ctx)
+	ccOn := htype == 0x0003
+	inc := 0
+	if ccOn {
+		inc = 31
+	}
 	circuit := &ServerCircuit{
 		CircuitID:    c.CircID,
 		Created:      time.Now(),
@@ -178,12 +185,17 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 		crypto:       cc,
 		ctx:          cctx,
 		cancel:       ccancel,
+		ccEnabled:    ccOn,
+		sendmeInc:    inc,
 	}
 
 	// Store circuit
 	h.mu.Lock()
 	h.circuits[c.CircID] = circuit
 	h.mu.Unlock()
+	if h.exits != nil && ccOn {
+		h.exits.NoteCircuitFlow(c.CircID, true, inc)
+	}
 
 	h.logger.Info("Circuit created",
 		"circuit_id", c.CircID,

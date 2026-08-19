@@ -12,12 +12,14 @@ import (
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
-// Server 是非出口中继（middle/guard 候选）运行时。
+// Server 是中继运行时（非出口或出口）。
 type Server struct {
 	cfg       *config.Config
 	keys      *RelayKeys
 	listener  *ORListener
 	publisher *ScheduledPublisher
+	dirCache  *DirCacheServer
+	policy    *ExitPolicy
 	startedAt time.Time
 	logger    *logger.Logger
 }
@@ -47,7 +49,14 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 		}
 	}
 
-	policy := NewExitPolicyFromConfig(cfg.ExitRelay, cfg.ExitPolicyLines, cfg.ReduceExitPolicy, cfg.IPv6Exit, log)
+	policy := NewExitPolicyFromOptions(ExitPolicyOptions{
+		ExitRelay:             cfg.ExitRelay,
+		Lines:                 cfg.ExitPolicyLines,
+		Reduce:                cfg.ReduceExitPolicy,
+		IPv6Exit:              cfg.IPv6Exit,
+		RejectPrivate:         cfg.ExitPolicyRejectPrivate,
+		RejectLocalInterfaces: cfg.ExitPolicyRejectLocalInterfaces,
+	}, log)
 
 	addr := cfg.ORListenAddr
 	if addr == "" {
@@ -63,12 +72,30 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 	if err != nil {
 		return nil, err
 	}
+	if ln.circuitHandler != nil && ln.circuitHandler.exits != nil {
+		ln.circuitHandler.exits.SetBandwidthLimit(cfg.RelayBandwidthRate, cfg.RelayBandwidthBurst)
+		if cfg.ConnLimit > 0 {
+			ln.circuitHandler.exits.SetMaxExitConns(cfg.ConnLimit)
+		}
+	}
 
-	s := &Server{cfg: cfg, keys: keys, listener: ln, logger: log.Component("relay")}
+	s := &Server{cfg: cfg, keys: keys, listener: ln, policy: policy, logger: log.Component("relay")}
+	cacheDir := cfg.CacheDirectory
+	if cacheDir == "" {
+		cacheDir = cfg.DataDirectory
+	}
+	if cfg.DirCache || cfg.DirPort > 0 {
+		s.dirCache = NewDirCacheServer(cacheDir, log)
+		if ln.circuitHandler != nil && ln.circuitHandler.exits != nil {
+			dc := s.dirCache
+			ln.circuitHandler.exits.SetDirDial(dc.Dial)
+		}
+	}
 	s.logger.Info("relay configured",
 		"nickname", cfg.Nickname,
 		"or_listen", listen,
 		"exit", cfg.ExitRelay,
+		"exit_announce", policy.WouldAnnounceExit(),
 		"fingerprint", keys.Fingerprint(),
 		"ed25519", keys.Ed25519Fingerprint(),
 		"publish", cfg.PublishServerDescriptor)
@@ -84,6 +111,15 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	s.startedAt = time.Now()
+	if s.dirCache != nil && s.cfg != nil && s.cfg.DirPort > 0 {
+		daddr := s.cfg.DirListenAddr
+		if daddr == "" {
+			daddr = "0.0.0.0"
+		}
+		if err := s.dirCache.Listen(net.JoinHostPort(daddr, fmt.Sprintf("%d", s.cfg.DirPort))); err != nil {
+			s.logger.Error("DirPort listen failed", "error", err)
+		}
+	}
 	if s.cfg != nil && s.cfg.PublishServerDescriptor {
 		if err := s.startPublisher(ctx); err != nil {
 			s.logger.Error("descriptor publisher not started", "error", err)
@@ -101,13 +137,17 @@ func (s *Server) startPublisher(ctx context.Context) error {
 	pub := NewDescriptorPublisher(pcfg, s.logger)
 	sched := NewScheduledPublisher(pub, pcfg.PublishInterval, func() (*ServerDescriptor, *ExtraInfoDescriptor, error) {
 		dcfg := &DescriptorConfig{
-			Nickname:       s.cfg.Nickname,
-			Address:        s.cfg.RelayAddress,
-			ORPort:         uint16(s.cfg.ORPort),
-			Contact:        s.cfg.ContactInfo,
-			BandwidthAvg:   uint64(s.cfg.RelayBandwidthRate),
-			BandwidthBurst: uint64(s.cfg.RelayBandwidthBurst),
-			Uptime:         int(time.Since(s.startedAt).Seconds()),
+			Nickname:        s.cfg.Nickname,
+			Address:         s.cfg.RelayAddress,
+			ORPort:          uint16(s.cfg.ORPort),
+			DirPort:         uint16(s.cfg.DirPort),
+			Contact:         s.cfg.ContactInfo,
+			Family:          append([]string(nil), s.cfg.MyFamily...),
+			BandwidthAvg:    uint64(s.cfg.RelayBandwidthRate),
+			BandwidthBurst:  uint64(s.cfg.RelayBandwidthBurst),
+			Uptime:          int(time.Since(s.startedAt).Seconds()),
+			ExitPolicyLines: s.policy.DescriptorLines(),
+			IPv6Policy:      s.policy.IPv6PolicyLine(),
 		}
 		desc, err := GenerateServerDescriptor(s.keys, dcfg)
 		if err != nil {
@@ -137,6 +177,10 @@ func (s *Server) Stop() error {
 	if s.publisher != nil {
 		s.publisher.Stop()
 		s.publisher = nil
+	}
+	if s.dirCache != nil {
+		_ = s.dirCache.Close()
+		s.dirCache = nil
 	}
 	if s.listener == nil {
 		return nil

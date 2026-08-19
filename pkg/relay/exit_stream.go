@@ -23,20 +23,40 @@ const (
 	exitMaxStreamsPerCirc  = 100
 	exitMaxCircOutWindow   = 2000
 	exitMaxStreamOutWindow = 1000
+	exitDialTimeout        = 15 * time.Second
+	exitIdleTimeout        = 2 * time.Minute
+	beginFlagIPv6OK        = 1
+	beginFlagIPv4NotOK     = 2
+	beginFlagIPv6Preferred = 4
+	ccSendmeIncDefault     = 31
+	ccCwndInit             = 124
 )
 
 // ExitStreamManager 管理出口 TCP 流。
 type ExitStreamManager struct {
 	policy  *ExitPolicy
 	logger  *logger.Logger
+	lookup  func(ctx context.Context, host string) ([]net.IP, error)
+	lookupP func(ctx context.Context, addr string) ([]string, error)
+	dial    func(ctx context.Context, network, address string) (net.Conn, error)
+	bw      *bandwidthLimiter
+	gate    *exitConnGate
+	dirDial func() (net.Conn, error) // BEGIN_DIR：本机目录缓存
+
 	mu      sync.Mutex
 	streams map[streamKey]*exitStream
 	// 每电路：出向窗、入向计数、流数量
 	circOutWindow map[uint32]int
 	circInCount   map[uint32]int
 	circStreams   map[uint32]int
+	circCC        map[uint32]circFlow
 	// 最近一次入向 digest（20 字节），供电路级 SENDME v1
 	lastFwdDigest map[uint32][]byte
+}
+
+type circFlow struct {
+	cc        bool
+	sendmeInc int
 }
 
 type streamKey struct {
@@ -48,8 +68,10 @@ type exitStream struct {
 	conn          net.Conn
 	cancel        context.CancelFunc
 	packageWindow int // 向客户端发送
-	deliverWindow int // 允许再收多少客户端 DATA（扣减后靠我们发的 SENDME 恢复对端，本端防灌）
+	deliverWindow int // 允许再收多少客户端 DATA
 	deliverCount  int
+	halfClosed    bool
+	held          bool // 已占用 gate
 }
 
 func NewExitStreamManager(policy *ExitPolicy, log *logger.Logger) *ExitStreamManager {
@@ -63,8 +85,40 @@ func NewExitStreamManager(policy *ExitPolicy, log *logger.Logger) *ExitStreamMan
 		circOutWindow: make(map[uint32]int),
 		circInCount:   make(map[uint32]int),
 		circStreams:   make(map[uint32]int),
+		circCC:        make(map[uint32]circFlow),
 		lastFwdDigest: make(map[uint32][]byte),
+		gate:          newExitConnGate(1024),
 	}
+}
+
+// SetBandwidthLimit 接线 RelayBandwidthRate/Burst。
+func (m *ExitStreamManager) SetBandwidthLimit(rate, burst int64) {
+	m.bw = newBandwidthLimiter(rate, burst)
+}
+
+// SetMaxExitConns 限制并发出口连接。
+func (m *ExitStreamManager) SetMaxExitConns(n int) {
+	m.gate = newExitConnGate(n)
+}
+
+// SetDirDial 设置 BEGIN_DIR 本机目录缓存拨号。
+func (m *ExitStreamManager) SetDirDial(fn func() (net.Conn, error)) {
+	m.dirDial = fn
+}
+
+func (m *ExitStreamManager) lookupIP(ctx context.Context, host string) ([]net.IP, error) {
+	if m.lookup != nil {
+		return m.lookup(ctx, host)
+	}
+	return resolveBeginIPs(ctx, host)
+}
+
+func (m *ExitStreamManager) dialTCP(ctx context.Context, address string) (net.Conn, error) {
+	if m.dial != nil {
+		return m.dial(ctx, "tcp", address)
+	}
+	d := net.Dialer{Timeout: exitDialTimeout}
+	return d.DialContext(ctx, "tcp", address)
 }
 
 // NoteFwdDigest 在成功解密入向 cell 后记录滚动摘要（供电路 SENDME v1）。
@@ -75,6 +129,23 @@ func (m *ExitStreamManager) NoteFwdDigest(circID uint32, digest []byte) {
 	m.mu.Lock()
 	m.lastFwdDigest[circID] = append([]byte(nil), digest...)
 	m.mu.Unlock()
+}
+
+// NoteCircuitFlow 记录该电路是否协商了 FlowCtrl=2。
+func (m *ExitStreamManager) NoteCircuitFlow(circID uint32, cc bool, sendmeInc int) {
+	if sendmeInc <= 0 {
+		sendmeInc = exitCircSendmeInc
+	}
+	m.mu.Lock()
+	m.circCC[circID] = circFlow{cc: cc, sendmeInc: sendmeInc}
+	m.mu.Unlock()
+}
+
+func (m *ExitStreamManager) flowOf(circID uint32) circFlow {
+	if f, ok := m.circCC[circID]; ok {
+		return f
+	}
+	return circFlow{sendmeInc: exitCircSendmeInc}
 }
 
 // CloseCircuit 关闭该电路全部出口流。
@@ -91,6 +162,7 @@ func (m *ExitStreamManager) CloseCircuit(circID uint32) {
 	delete(m.circInCount, circID)
 	delete(m.circStreams, circID)
 	delete(m.lastFwdDigest, circID)
+	delete(m.circCC, circID)
 	m.mu.Unlock()
 	for _, es := range toClose {
 		m.teardown(es)
@@ -109,6 +181,7 @@ func (m *ExitStreamManager) CloseAll() {
 	m.circInCount = make(map[uint32]int)
 	m.circStreams = make(map[uint32]int)
 	m.lastFwdDigest = make(map[uint32][]byte)
+	m.circCC = make(map[uint32]circFlow)
 	m.mu.Unlock()
 	for _, es := range all {
 		m.teardown(es)
@@ -125,13 +198,23 @@ func (m *ExitStreamManager) teardown(es *exitStream) {
 	if es.conn != nil {
 		_ = es.conn.Close()
 	}
+	if es.held {
+		es.held = false
+		m.gate.release()
+	}
 }
 
 // HandleBegin 先解析 DNS、对候选 IP 检策略，再只拨允许的地址。
 func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit, clientConn net.Conn, streamID uint16, data []byte) error {
-	addr, port, err := parseBeginAddr(data)
+	if m.policy == nil || !m.policy.AllowExit {
+		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonExitPolicy)
+	}
+	addr, port, flags, err := parseBeginAddr(data)
 	if err != nil {
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonMisc)
+	}
+	if strings.HasSuffix(strings.ToLower(addr), ".onion") {
+		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonExitPolicy)
 	}
 
 	key := streamKey{circ.CircuitID, streamID}
@@ -149,14 +232,25 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 	}
 	m.mu.Unlock()
 
+	if !m.gate.acquire() {
+		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonResourceLimit)
+	}
+	held := true
+	defer func() {
+		if held {
+			m.gate.release()
+		}
+	}()
+
 	rctx := ctx
-	if circ.ctx != nil {
+	if circ != nil && circ.ctx != nil {
 		rctx = circ.ctx
 	}
-	ips, err := resolveBeginIPs(rctx, addr)
+	ips, err := m.lookupIP(rctx, addr)
 	if err != nil || len(ips) == 0 {
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonResolveFailed)
 	}
+	ips = filterBeginIPs(ips, flags)
 
 	var dialIP net.IP
 	for _, ip := range ips {
@@ -171,18 +265,14 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 	}
 
 	target := net.JoinHostPort(dialIP.String(), strconv.Itoa(int(port)))
-	dctx := ctx
-	if circ.ctx != nil {
-		dctx = circ.ctx
-	}
-	d := net.Dialer{Timeout: 15 * time.Second}
-	c, err := d.DialContext(dctx, "tcp", target)
+	dctx, cancelDial := context.WithTimeout(rctx, exitDialTimeout)
+	defer cancelDial()
+	c, err := m.dialTCP(dctx, target)
 	if err != nil {
 		m.logger.Debug("exit dial failed", "target", target, "error", err)
-		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonConnRefused)
+		return m.sendEnd(circ, clientConn, streamID, dialEndReason(err))
 	}
 
-	// 再确认实际 Local/Remote（双重保险）
 	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
 	if err != nil {
 		_ = c.Close()
@@ -208,23 +298,80 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 		return err
 	}
 
-	sctx, cancel := context.WithCancel(circ.ctx)
-	if circ.ctx == nil {
-		sctx, cancel = context.WithCancel(ctx)
+	sctx, cancel := context.WithCancel(rctx)
+	m.mu.Lock()
+	initCirc := exitCircWindowInit
+	initStream := exitStreamWindowInit
+	if circ != nil && circ.ccEnabled {
+		initCirc = ccCwndInit
 	}
+	m.streams[key] = &exitStream{
+		conn:          c,
+		cancel:        cancel,
+		packageWindow: initStream,
+		deliverWindow: initStream,
+		held:          true,
+	}
+	m.circStreams[circ.CircuitID]++
+	if _, ok := m.circOutWindow[circ.CircuitID]; !ok {
+		m.circOutWindow[circ.CircuitID] = initCirc
+	}
+	if circ != nil && circ.ccEnabled {
+		inc := circ.sendmeInc
+		if inc <= 0 {
+			inc = ccSendmeIncDefault
+		}
+		m.circCC[circ.CircuitID] = circFlow{cc: true, sendmeInc: inc}
+	}
+	m.mu.Unlock()
+	held = false
+
+	go m.pumpRemoteToClient(sctx, circ, clientConn, streamID, c)
+	return nil
+}
+
+// HandleBeginDir 连接本机目录缓存。无缓存则 NOTDIRECTORY。
+func (m *ExitStreamManager) HandleBeginDir(ctx context.Context, circ *ServerCircuit, clientConn net.Conn, streamID uint16) error {
+	if m.dirDial == nil {
+		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonNotDirectory)
+	}
+	m.mu.Lock()
+	if m.circStreams[circ.CircuitID] >= exitMaxStreamsPerCirc {
+		m.mu.Unlock()
+		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonResourceLimit)
+	}
+	m.mu.Unlock()
+	c, err := m.dirDial()
+	if err != nil {
+		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonNotDirectory)
+	}
+	if !m.gate.acquire() {
+		_ = c.Close()
+		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonResourceLimit)
+	}
+	rctx := ctx
+	if circ != nil && circ.ctx != nil {
+		rctx = circ.ctx
+	}
+	sctx, cancel := context.WithCancel(rctx)
+	key := streamKey{circ.CircuitID, streamID}
 	m.mu.Lock()
 	m.streams[key] = &exitStream{
 		conn:          c,
 		cancel:        cancel,
 		packageWindow: exitStreamWindowInit,
 		deliverWindow: exitStreamWindowInit,
+		held:          true,
 	}
 	m.circStreams[circ.CircuitID]++
 	if _, ok := m.circOutWindow[circ.CircuitID]; !ok {
 		m.circOutWindow[circ.CircuitID] = exitCircWindowInit
 	}
 	m.mu.Unlock()
-
+	if err := m.sendRelay(circ, clientConn, streamID, cell.RelayConnected, nil); err != nil {
+		m.HandleEnd(circ.CircuitID, streamID)
+		return err
+	}
 	go m.pumpRemoteToClient(sctx, circ, clientConn, streamID, c)
 	return nil
 }
@@ -246,6 +393,49 @@ func resolveBeginIPs(ctx context.Context, host string) ([]net.IP, error) {
 	return out, nil
 }
 
+func filterBeginIPs(ips []net.IP, flags uint32) []net.IP {
+	ipv6OK := flags&beginFlagIPv6OK != 0 || flags == 0
+	ipv4OK := flags&beginFlagIPv4NotOK == 0
+	prefer6 := flags&beginFlagIPv6Preferred != 0
+	var v4, v6 []net.IP
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil {
+			if ipv4OK {
+				v4 = append(v4, ip)
+			}
+		} else if ipv6OK {
+			v6 = append(v6, ip)
+		}
+	}
+	if prefer6 {
+		return append(v6, v4...)
+	}
+	return append(v4, v6...)
+}
+
+func dialEndReason(err error) byte {
+	if err == nil {
+		return cell.EndReasonConnRefused
+	}
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		return cell.EndReasonTimeout
+	}
+	s := err.Error()
+	if strings.Contains(s, "refused") {
+		return cell.EndReasonConnRefused
+	}
+	if strings.Contains(s, "reset") {
+		return cell.EndReasonConnReset
+	}
+	if strings.Contains(s, "no route") || strings.Contains(s, "unreachable") {
+		return cell.EndReasonNoRoute
+	}
+	return cell.EndReasonConnRefused
+}
+
 // HandleData 将客户端 DATA 写入远端，并维护入向 SENDME。
 func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn, streamID uint16, data []byte) error {
 	m.mu.Lock()
@@ -263,21 +453,29 @@ func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn,
 	conn := es.conn
 	m.mu.Unlock()
 
-	if _, err := conn.Write(data); err != nil {
+	if err := m.bw.wait(context.Background(), len(data)); err != nil {
 		return err
+	}
+	if _, err := conn.Write(data); err != nil {
+		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonConnReset)
 	}
 
 	sendCirc, sendStream := false, false
 	var circDigest []byte
 	m.mu.Lock()
 	es = m.streams[streamKey{circ.CircuitID, streamID}]
+	flow := m.flowOf(circ.CircuitID)
+	inc := flow.sendmeInc
+	if inc <= 0 {
+		inc = exitCircSendmeInc
+	}
 	m.circInCount[circ.CircuitID]++
-	if m.circInCount[circ.CircuitID] >= exitCircSendmeInc {
+	if m.circInCount[circ.CircuitID] >= inc {
 		m.circInCount[circ.CircuitID] = 0
 		sendCirc = true
 		circDigest = append([]byte(nil), m.lastFwdDigest[circ.CircuitID]...)
 	}
-	if es != nil {
+	if es != nil && !flow.cc {
 		es.deliverCount++
 		if es.deliverCount >= exitStreamSendmeInc {
 			es.deliverCount = 0
@@ -286,6 +484,12 @@ func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn,
 				es.deliverWindow = exitMaxStreamOutWindow
 			}
 			sendStream = true
+		}
+	} else if es != nil && flow.cc {
+		// FlowCtrl=2：不发流级 SENDME，恢复本端防灌窗口
+		es.deliverWindow++
+		if es.deliverWindow > exitMaxStreamOutWindow {
+			es.deliverWindow = exitMaxStreamOutWindow
 		}
 	}
 	m.mu.Unlock()
@@ -306,10 +510,19 @@ func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn,
 func (m *ExitStreamManager) HandleSendme(circID uint32, streamID uint16) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	flow := m.flowOf(circID)
+	inc := flow.sendmeInc
+	if inc <= 0 {
+		inc = exitCircSendmeInc
+	}
 	if streamID == 0 {
-		m.circOutWindow[circID] += exitCircSendmeInc
-		if m.circOutWindow[circID] > exitMaxCircOutWindow {
-			m.circOutWindow[circID] = exitMaxCircOutWindow
+		m.circOutWindow[circID] += inc
+		max := exitMaxCircOutWindow
+		if flow.cc {
+			max = 5000
+		}
+		if m.circOutWindow[circID] > max {
+			m.circOutWindow[circID] = max
 		}
 		return
 	}
@@ -321,22 +534,59 @@ func (m *ExitStreamManager) HandleSendme(circID uint32, streamID uint16) {
 	}
 }
 
-// HandleEnd 关闭出口流。
+// HandleEnd 半关闭出口流（只关写侧，仍可读）。
 func (m *ExitStreamManager) HandleEnd(circID uint32, streamID uint16) {
 	m.mu.Lock()
 	es := m.streams[streamKey{circID, streamID}]
-	if es != nil {
+	if es == nil {
+		m.mu.Unlock()
+		return
+	}
+	if es.halfClosed {
 		delete(m.streams, streamKey{circID, streamID})
 		if m.circStreams[circID] > 0 {
 			m.circStreams[circID]--
 		}
+		m.mu.Unlock()
+		m.teardown(es)
+		return
+	}
+	es.halfClosed = true
+	conn := es.conn
+	m.mu.Unlock()
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.CloseWrite()
+		return
+	}
+	m.mu.Lock()
+	delete(m.streams, streamKey{circID, streamID})
+	if m.circStreams[circID] > 0 {
+		m.circStreams[circID]--
 	}
 	m.mu.Unlock()
 	m.teardown(es)
 }
 
+func (m *ExitStreamManager) removeStream(circID uint32, streamID uint16) *exitStream {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := streamKey{circID, streamID}
+	es := m.streams[key]
+	if es != nil {
+		delete(m.streams, key)
+		if m.circStreams[circID] > 0 {
+			m.circStreams[circID]--
+		}
+	}
+	return es
+}
+
 func (m *ExitStreamManager) pumpRemoteToClient(ctx context.Context, circ *ServerCircuit, clientConn net.Conn, streamID uint16, remote net.Conn) {
-	defer m.HandleEnd(circ.CircuitID, streamID)
+	defer func() {
+		if es := m.removeStream(circ.CircuitID, streamID); es != nil {
+			m.teardown(es)
+		}
+	}()
 	buf := make([]byte, 498)
 	for {
 		select {
@@ -347,19 +597,28 @@ func (m *ExitStreamManager) pumpRemoteToClient(ctx context.Context, circ *Server
 		if !m.waitOutWindow(ctx, circ.CircuitID, streamID) {
 			return
 		}
-		_ = remote.SetReadDeadline(time.Now().Add(60 * time.Second))
+		_ = remote.SetReadDeadline(time.Now().Add(exitIdleTimeout))
 		n, err := remote.Read(buf)
 		if n > 0 {
+			if err := m.bw.wait(ctx, n); err != nil {
+				return
+			}
 			if err := m.sendRelay(circ, clientConn, streamID, cell.RelayData, buf[:n]); err != nil {
 				return
 			}
 			m.consumeOutWindow(circ.CircuitID, streamID)
 		}
 		if err != nil {
+			reason := cell.EndReasonDone
 			if err != io.EOF {
-				m.logger.Debug("exit remote read", "error", err)
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					reason = cell.EndReasonTimeout
+				} else if !strings.Contains(err.Error(), "use of closed") {
+					m.logger.Debug("exit remote read", "error", err)
+					reason = cell.EndReasonConnReset
+				}
 			}
-			_ = m.sendEnd(circ, clientConn, streamID, cell.EndReasonDone)
+			_ = m.sendEnd(circ, clientConn, streamID, reason)
 			return
 		}
 	}
@@ -431,25 +690,36 @@ func (m *ExitStreamManager) sendRelay(circ *ServerCircuit, clientConn net.Conn, 
 	return c.Encode(clientConn)
 }
 
-func parseBeginAddr(data []byte) (host string, port uint16, err error) {
+func parseBeginAddr(data []byte) (host string, port uint16, flags uint32, err error) {
+	nul := -1
+	for i, b := range data {
+		if b == 0 {
+			nul = i
+			break
+		}
+	}
 	s := string(data)
-	if i := strings.IndexByte(s, 0); i >= 0 {
-		s = s[:i]
+	if nul >= 0 {
+		s = string(data[:nul])
+		rest := data[nul+1:]
+		if len(rest) >= 4 {
+			flags = uint32(rest[0])<<24 | uint32(rest[1])<<16 | uint32(rest[2])<<8 | uint32(rest[3])
+		}
 	}
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return "", 0, fmt.Errorf("empty BEGIN")
+		return "", 0, 0, fmt.Errorf("empty BEGIN")
 	}
 	if i := strings.IndexByte(s, ' '); i >= 0 {
 		s = s[:i]
 	}
 	h, pstr, err := net.SplitHostPort(s)
 	if err != nil {
-		return "", 0, err
+		return "", 0, 0, err
 	}
 	p, err := strconv.Atoi(pstr)
 	if err != nil || p < 1 || p > 65535 {
-		return "", 0, fmt.Errorf("bad port")
+		return "", 0, 0, fmt.Errorf("bad port")
 	}
-	return h, uint16(p), nil
+	return h, uint16(p), flags, nil
 }

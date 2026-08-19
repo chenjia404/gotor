@@ -51,7 +51,16 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 		return h.circuits.exits.HandleBegin(ctx, circ, clientConn, relayCell.StreamID, relayCell.Data)
 
 	case cell.RelayBeginDir:
-		return h.rejectExitAttempt(circ, clientConn, relayCell.StreamID)
+		if h.circuits.exits == nil {
+			return h.rejectExitAttempt(circ, clientConn, relayCell.StreamID)
+		}
+		return h.circuits.exits.HandleBeginDir(ctx, circ, clientConn, relayCell.StreamID)
+
+	case cell.RelayResolve:
+		if h.circuits.exits == nil {
+			return h.rejectExitAttempt(circ, clientConn, relayCell.StreamID)
+		}
+		return h.circuits.exits.HandleResolve(ctx, circ, clientConn, relayCell.StreamID, relayCell.Data)
 
 	case cell.RelayData:
 		if h.circuits.exits != nil {
