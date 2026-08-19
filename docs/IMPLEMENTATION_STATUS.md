@@ -257,7 +257,7 @@
 
 | 项 | 原因 | 已知坑 |
 |----|------|--------|
-| Onion Service v3 | 主链路最新协议尚未对齐 | hs-ntor 未做；`BuildRendezvous1Cell` 曾误用 circuit ntor + 32 字节 Ed25519 |
+| Onion Service v3 | 主链路剩余 HSDir/e2e | hs-ntor + INTRODUCE1/2 + RENDEZVOUS1 已对齐；缺真实验收 |
 | Relay 服务端 | 本仓库目标是 client | `pkg/relay/circuit_handler.go` 可能把 Ed25519 当 ntor NODEID |
 | Bridge / PT 生产路径 | 非本轮 | 框架存在，UNVERIFIED |
 
