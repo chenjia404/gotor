@@ -1296,16 +1296,19 @@ func (c *Circuit) StartHSSetupPadding(kind HSSetupKind, middleSupportsPadding2 b
 	if err := ctrl.StartHSSetup(kind); err != nil {
 		return err
 	}
+	hopIdx := ctrl.TargetHop() - 1
+	ctrl.SetPaddingSender(func(rc *cell.RelayCell) error {
+		return c.SendRelayCellToHop(rc, hopIdx)
+	})
 	rc, err := ctrl.BuildNegotiateStart()
 	if err != nil {
 		return err
 	}
-	// 目标跳 = TargetHop（1-based）→ 0-based index
-	hopIdx := ctrl.TargetHop() - 1
 	if err := c.SendRelayCellToHop(rc, hopIdx); err != nil {
 		return fmt.Errorf("send PADDING_NEGOTIATE: %w", err)
 	}
 	ctrl.MarkNegotiateSent()
+	ctrl.SchedulePaddingAfterNegotiate()
 	c.AttachCircpad(ctrl)
 	return nil
 }

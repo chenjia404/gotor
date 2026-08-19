@@ -51,3 +51,19 @@ func TestOfficialCtorCGOVectorsPresent(t *testing.T) {
 		t.Fatalf("cgo_vectors.inc too small: %d", len(b))
 	}
 }
+
+func TestOfficialCtorCellFormatsPresent(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "../.."))
+	path := filepath.Join(root, "testdata/ctor-official/test_cell_formats.c")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("missing official cell formats: %v", err)
+	}
+	if !strings.Contains(string(b), "Copyright") || len(b) < 1000 {
+		t.Fatal("unexpected test_cell_formats.c")
+	}
+}

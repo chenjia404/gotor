@@ -1,6 +1,6 @@
 # Circuit padding（Padding=2 / proposal 302）
 
-**状态**：PARTIAL（2026-08-19：协商单元、HS setup 状态表、运行时控制器与第二跳发送已齐；onion INTRODUCE1 自动触发待 Phase 4）
+**状态**：PARTIAL（2026-08-19：协商+HS setup 表+运行时+**直方图延迟定时器**；onion AfterIntroduce1 已接线）
 
 对照：
 
@@ -30,11 +30,16 @@
 - 协商发往 **第二跳**（`encryptOnion` dest=1）
 - 错误 ctr 忽略；ERR 结束机
 
-## 未接线
+## 直方图延迟
 
-- Onion INTRODUCE1 后自动 `StartHSSetupPaddingOn`（需 Phase 4）
-- 完整直方图延迟采样 WTF-PAD 定时器
-- 真实验收（需 onion 路径）
+- `CircpadHistogram.SampleDelay`：token 权重选 bin，`[edge[i], edge[i+1])` µs 均匀采样
+- 客户端 rend：`[0, 1ms)`；中继 intro：`[1, 10ms)`（对照 C Tor）
+- `SchedulePaddingAfterNegotiate`：negotiate 后 `time.AfterFunc` 发 `RELAY_DROP`
+
+## 未做
+
+- Token removal / 可变直方图拷贝
+- circpad 真实验收（中继侧需对端 Padding=2）
 
 ## 禁止
 

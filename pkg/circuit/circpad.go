@@ -154,6 +154,10 @@ type CircpadHSSetupMachine struct {
 	// LengthUniformMin/Max：OBFUSCATE 状态长度均匀分布（cell 数）；0 表示不适用。
 	LengthUniformMin int
 	LengthUniformMax int
+	// Histogram：OBFUSCATE 状态 IAT 直方图；零值表示不发 padding（intro 客户端）。
+	Histogram CircpadHistogram
+	// SendsPadding：origin rend 机在 negotiate 后发 DROP。
+	SendsPadding bool
 }
 
 // ClientHideIntroCircuits 对照 circpad_machine_client_hide_intro_circuits。
@@ -180,6 +184,8 @@ func RelayHideIntroCircuits() CircpadHSSetupMachine {
 		OriginSide:          false,
 		LengthUniformMin:    IntroMachineMinPadding,
 		LengthUniformMax:    IntroMachineMaxPadding,
+		Histogram:           RelayIntroObfuscateHistogram(),
+		SendsPadding:        true,
 		Transitions: []CircpadTransition{
 			{From: CircpadStateStart, Event: CircpadEventNonpaddingSent, To: CircpadStateObfuscateCircSetup},
 			{From: CircpadStateObfuscateCircSetup, Event: CircpadEventLengthCount, To: CircpadStateEnd},
@@ -194,15 +200,18 @@ func ClientHideRendCircuits() CircpadHSSetupMachine {
 	return CircpadHSSetupMachine{
 		Name:                "client_hide_rend",
 		TargetHop:           2,
-		AllowedPaddingCount: IntroMachineMaxPadding,
+		AllowedPaddingCount: 1,
 		OriginSide:          true,
 		SendsNegotiate:      true,
+		SendsPadding:        true,
 		LengthUniformMin:    1,
 		LengthUniformMax:    1,
+		Histogram:           ClientRendObfuscateHistogram(),
 		Transitions: []CircpadTransition{
 			{From: CircpadStateStart, Event: CircpadEventNonpaddingSent, To: CircpadStateObfuscateCircSetup},
 			{From: CircpadStateObfuscateCircSetup, Event: CircpadEventPaddingRecv, To: CircpadStateEnd},
 			{From: CircpadStateObfuscateCircSetup, Event: CircpadEventLengthCount, To: CircpadStateEnd},
+			{From: CircpadStateObfuscateCircSetup, Event: CircpadEventPaddingSent, To: CircpadStateObfuscateCircSetup},
 		},
 	}
 }

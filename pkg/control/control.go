@@ -39,6 +39,10 @@ type Server struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// SIGNAL hooks（可选）
+	onNewnym   func()
+	onShutdown func()
 }
 
 // authRateLimiter tracks authentication attempts per IP
@@ -279,9 +283,82 @@ func (s *Server) handleCommand(conn *connection, line string) {
 		}
 	case "PROTOCOLINFO":
 		s.handleProtocolInfo(conn, args)
+	case "SIGNAL":
+		s.handleSignal(conn, args)
+	case "MAPADDRESS":
+		s.handleMapAddress(conn, args)
 	default:
 		conn.writeReply(510, fmt.Sprintf("Unrecognized command %q", cmd))
 	}
+}
+
+// SetNewnymHandler 设置 SIGNAL NEWNYM 回调（例如刷新流隔离）。
+func (s *Server) SetNewnymHandler(fn func()) {
+	s.onNewnym = fn
+}
+
+// SetShutdownHandler 设置 SIGNAL SHUTDOWN/HALT 回调。
+func (s *Server) SetShutdownHandler(fn func()) {
+	s.onShutdown = fn
+}
+
+// handleSignal 处理 SIGNAL（control-spec §3.7）。
+func (s *Server) handleSignal(conn *connection, args []string) {
+	if !conn.isAuthenticated() {
+		conn.writeReply(514, "Authentication required")
+		return
+	}
+	if len(args) == 0 {
+		conn.writeReply(512, "Syntax error: SIGNAL requires an argument")
+		return
+	}
+	sig := strings.ToUpper(args[0])
+	switch sig {
+	case "NEWNYM":
+		if s.onNewnym != nil {
+			s.onNewnym()
+		}
+		conn.writeReply(250, "OK")
+		s.logger.Info("SIGNAL NEWNYM")
+	case "CLEARDNSCACHE":
+		// 纯客户端无本地 DNS 缓存时仍返回 OK（兼容 Stem/nyx）
+		conn.writeReply(250, "OK")
+		s.logger.Info("SIGNAL CLEARDNSCACHE")
+	case "HEARTBEAT":
+		conn.writeReply(250, "OK")
+	case "SHUTDOWN", "HALT":
+		conn.writeReply(250, "OK")
+		s.logger.Info("SIGNAL "+sig)
+		if s.onShutdown != nil {
+			go s.onShutdown()
+		}
+	case "RELOAD", "HUP":
+		conn.writeReply(250, "OK")
+		s.logger.Info("SIGNAL RELOAD (no-op for client)")
+	default:
+		conn.writeReply(552, fmt.Sprintf("Unrecognized signal %q", sig))
+	}
+}
+
+// handleMapAddress 最小 MAPADDRESS（control-spec §3.8）：回显请求以兼容探测。
+func (s *Server) handleMapAddress(conn *connection, args []string) {
+	if !conn.isAuthenticated() {
+		conn.writeReply(514, "Authentication required")
+		return
+	}
+	if len(args) == 0 {
+		conn.writeReply(512, "Syntax error: MAPADDRESS requires arguments")
+		return
+	}
+	// 多行 250-... / 250 OK
+	for i, a := range args {
+		if i == len(args)-1 {
+			conn.writeReply(250, a)
+		} else {
+			fmt.Fprintf(conn.writer, "250-%s\r\n", a)
+		}
+	}
+	_ = conn.writer.Flush()
 }
 
 // handleAuthenticate handles AUTHENTICATE command
@@ -598,6 +675,12 @@ func (c *connection) writeReply(code int, message string) {
 	_, _ = c.writer.WriteString(line)
 	// Handle Flush error (AUDIT-012)
 	_ = c.writer.Flush()
+}
+
+func (c *connection) isAuthenticated() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.authenticated
 }
 
 // writeDataReply writes a multi-line reply

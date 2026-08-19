@@ -8,6 +8,7 @@ package circuit
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 )
@@ -43,6 +44,8 @@ type CircpadController struct {
 	negotiateSent bool
 	paddingSent   int
 	paddingRecv   int
+	pendingTimer  *time.Timer
+	sendPadding   func(rc *cell.RelayCell) error // 由 Circuit 注入：定向发往 TargetHop
 }
 
 // NewCircpadController 创建控制器；默认 machineCtr 从 1 起。
@@ -214,6 +217,83 @@ func (c *CircpadController) applyEventLocked(event int) {
 	c.state = next
 	if c.state == CircpadStateEnd {
 		c.active = false
+	}
+}
+
+// SetPaddingSender 注入发往协商目标跳的回调（通常为 Circuit.SendRelayCellToHop）。
+func (c *CircpadController) SetPaddingSender(fn func(rc *cell.RelayCell) error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sendPadding = fn
+}
+
+// SampleNextPaddingDelay 从当前机直方图采样延迟。
+func (c *CircpadController) SampleNextPaddingDelay() (time.Duration, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.active || !c.machine.SendsPadding {
+		return CircpadDelayInfinite, nil
+	}
+	if len(c.machine.Histogram.Bins) == 0 {
+		return CircpadDelayInfinite, nil
+	}
+	return c.machine.Histogram.SampleDelay()
+}
+
+// SchedulePaddingAfterNegotiate 在发出 negotiate 后按直方图调度 DROP。
+func (c *CircpadController) SchedulePaddingAfterNegotiate() {
+	c.mu.Lock()
+	if !c.active || !c.machine.SendsPadding || c.sendPadding == nil {
+		c.mu.Unlock()
+		return
+	}
+	if c.pendingTimer != nil {
+		c.pendingTimer.Stop()
+		c.pendingTimer = nil
+	}
+	hist := c.machine.Histogram
+	sender := c.sendPadding
+	c.mu.Unlock()
+
+	delay, err := hist.SampleDelay()
+	if err != nil || delay < 0 {
+		return
+	}
+	c.mu.Lock()
+	c.pendingTimer = time.AfterFunc(delay, func() {
+		rc, err := cell.NewRelayCell(0, cell.RelayDrop, nil)
+		if err != nil {
+			return
+		}
+		if err := sender(rc); err != nil {
+			return
+		}
+		c.OnPaddingSent()
+	})
+	c.mu.Unlock()
+}
+
+// OnPaddingSent 本端发出 DROP 后调用。
+func (c *CircpadController) OnPaddingSent() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.active {
+		return
+	}
+	c.paddingSent++
+	c.applyEventLocked(CircpadEventPaddingSent)
+	if c.machine.LengthUniformMax > 0 && c.paddingSent >= c.machine.LengthUniformMax {
+		c.applyEventLocked(CircpadEventLengthCount)
+	}
+}
+
+// CancelPending 取消未触发的定时器。
+func (c *CircpadController) CancelPending() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pendingTimer != nil {
+		c.pendingTimer.Stop()
+		c.pendingTimer = nil
 	}
 }
 
