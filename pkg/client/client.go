@@ -8,6 +8,7 @@ import (
 	"net"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -118,7 +119,7 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1"
 	}
-	socksAddr := fmt.Sprintf("%s:%d", listenAddr, cfg.SocksPort)
+	socksAddr := net.JoinHostPort(listenAddr, strconv.Itoa(cfg.SocksPort))
 	socksConfig := &socks.Config{
 		MaxConnections:      1000,
 		IsolationLevel:      parseIsolationLevel(cfg.IsolationLevel),
