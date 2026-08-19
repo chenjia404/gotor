@@ -61,9 +61,10 @@ func TestParseSubprotoRequest(t *testing.T) {
 	}
 }
 
-func TestImplementedNegotiableCapsEmpty(t *testing.T) {
-	if caps := ImplementedNegotiableCaps(); len(caps) != 0 {
-		t.Fatalf("CGO 未实现时不得请求任何 type 3 能力: %#v", caps)
+func TestImplementedNegotiableCapsIncludesCGO(t *testing.T) {
+	caps := ImplementedNegotiableCaps()
+	if len(caps) != 1 || caps[0] != (SubprotoCap{ProtoRelay, CapRelayCGO}) {
+		t.Fatalf("CGO 已实现时必须列出 Relay=6: %#v", caps)
 	}
 }
 
@@ -78,13 +79,17 @@ func (p fakeProto) Supports(name string, ver int) bool {
 	return false
 }
 
-func TestSelectSubprotoRequestRequiresRelay5AndImplemented(t *testing.T) {
-	peer := fakeProto{"Relay": {4, 5, 6}}
+func TestSelectSubprotoRequestRequiresRelay5AndFlowCtrl2(t *testing.T) {
+	peer := fakeProto{"Relay": {4, 5, 6}, "FlowCtrl": {1, 2}}
 	caps, err := SelectSubprotoRequest(peer)
-	if err != nil || len(caps) != 0 {
-		t.Fatalf("未实现 CGO 时即使对端有 Relay=5/6 也不得请求: %v %#v", err, caps)
+	if err != nil || len(caps) != 1 || caps[0] != (SubprotoCap{ProtoRelay, CapRelayCGO}) {
+		t.Fatalf("对端 Relay=5-6 且 FlowCtrl=2 应请求 CGO: %v %#v", err, caps)
 	}
 
+	caps, err = SelectSubprotoRequest(fakeProto{"Relay": {4, 5, 6}, "FlowCtrl": {1}})
+	if err != nil || len(caps) != 0 {
+		t.Fatalf("无 FlowCtrl=2 不得请求 CGO: %v %#v", err, caps)
+	}
 	caps, err = SelectSubprotoRequest(fakeProto{"Relay": {4}})
 	if err != nil || caps != nil {
 		t.Fatalf("无 Relay=5 必须返回空: %v %#v", err, caps)

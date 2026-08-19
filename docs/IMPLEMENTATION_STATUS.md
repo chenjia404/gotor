@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/flowctrl2-vegas-8e65`（基于 `origin/main`，含 ntor-v3 PR #19）  
+**分支**：`cursor/relay6-cgo-8e65`（基于 `origin/main`，含 Relay=5 type 3 cherry-pick）  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + **现行** Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -43,15 +43,15 @@
 | VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | WORKING | VERSIONS CircID=2、CERTS type4 验签、**type 7 RSA 交叉签名强制校验**、NETINFO 已在真实 Guard 通过；AUTH_CHALLENGE 客户端路径按 spec 跳过 |
 | CREATE2 / ntor / CREATED2 | WORKING | 默认 ntor-v3（HTYPE 0x0003，Ed25519 主身份）；真实 Guard CREATE2 + `CC_FIELD_RESPONSE` `sendme_inc=31`。缺密钥或 `Relay<4` 回退经典 ntor |
 | EXTEND2 / EXTENDED2 | WORKING | 真实 3-hop 三跳均为 ntor-v3 + FlowCtrl=2；SOCKS5 `IsTor=true`。IPv6 EXTEND2（Relay=3）未做 |
-| Circuit crypto / digest | WORKING | 真实 RELAY_DROP / EXTEND2 / BEGIN / DATA 已证明 **AES-CTR + SHA-1** 与 Guard 一致。CGO（Relay=6）未做 |
+| Circuit crypto / digest | WORKING / UNVERIFIED | 真实路径已证明 **AES-CTR + SHA-1**。CGO 已实现待真实 3-hop |
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
 | SENDME / flow control | WORKING | FlowCtrl=2 TOR_VEGAS 已实现；真实 soak **1059120** 字节，电路未 DESTROY。10–100MB / 多流仍见 P0.2 |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family ID（Desc=4）未用 |
 | Exit policy | PARTIAL | 已解析 `p` 行并按端口过滤；完整策略与 IPv6 `p6` 未做 |
-| Relay=5 subproto_request | PARTIAL | type 3 编解码与选择已实现；**生产不发送**（CGO 未实现）。单测覆盖排序 / 拒未登记能力 |
-| Relay=6 CGO | MISSING | Counter Galois Onion（proposal 359）；最新电路加密方向 |
+| Relay=5 subproto_request | PARTIAL | type 3 编解码与选择已实现；对端 Relay=5/6 且 FlowCtrl=2 时请求 `[02 06]` |
+| Relay=6 CGO | UNVERIFIED | POLYVAL + AES-128 UIV+；KDF 160 字节；v1 cell；SENDME 16 字节 tag。待真实 3-hop |
 | Conflux=1 | MISSING | 多路径（proposal 329）；mainnet 已广泛宣告，尚未 required |
 | Circuit padding (Padding=2) | PARTIAL | 有定时器骨架，无 HS setup machine（proposal 302） |
 | Onion Service v3 | BROKEN / MISSING | **明确不做**，直到 client 主链路剩余缺口完成 |
@@ -93,30 +93,33 @@
 
 #### 3. Relay=5 `subproto_request`（proposal 346）
 
-- **状态**：PARTIAL。编解码与选择已按 spec 实现；生产 **不发送** type 3。
+- **状态**：PARTIAL。编解码与选择已按 spec 实现；CGO 已实现后会对合格 hop **发送** type 3。
 - **已做**：
   - type 3 DATA：`{protocol_id u8, cap u8}*`，升序；Relay=6 = `[02 06]`
   - 只允许现行表内能力（目前仅 `RELAY_CRYPT_CGO`）
-  - 选择：`Relay=5` ∧ 对端宣告该能力 ∧ `ImplementedNegotiableCaps()`
-  - `ImplementedNegotiableCaps()` 为空（CGO 未做）
-  - 单测：排序、拒空/重复/未登记、与 CC type 1 同框编码
-- **未做**：真正发出 type 3（须等 CGO）；真实网络「请求已实现能力」验收
+  - 选择：`Relay=5` ∧ `Relay=6` ∧ `FlowCtrl=2` ∧ `ImplementedNegotiableCaps()`
+  - `ImplementedNegotiableCaps()` 现含 CGO
+- **未做**：真实网络「请求已实现能力」验收（见 P1.4）
 - **Spec**：https://spec.torproject.org/tor-spec/create-created-cells.html ；https://spec.torproject.org/proposals/346-protovers-again.html
 - **现有代码**：`pkg/crypto/subproto.go`、`pkg/crypto/ntorv3.go`、`pkg/circuit/extension.go`
-- **禁止**：未实现 CGO 时请求 `[02 06]`。
+- **禁止**：对未宣告 Relay=5/6 的节点发 type 3。
 
 #### 4. Relay=6 CGO（Counter Galois Onion）
 
-- **状态**：MISSING。当前 hop 加密仍是 AES-CTR + SHA-1 digest（Relay=2 时代算法）。
+- **状态**：UNVERIFIED。密码学与 hop 接入已按 C Tor 0.4.9 / proposal 359 实现。
+- **已做**：
+  - POLYVAL（RFC 8452 + C Tor ctmul64 约化）
+  - ET / PRF / UIV+；客户端 DEC_UIV；`CGO_AES_BITS=128`（**不是** AES-256）
+  - 每方向 80 字节，双向 KDF **160** 字节（`cgo_key_material_len(128)*2`）
+  - v1 relay message（C Tor `relay_msg.c`：cmd@16、len@17、可选 stream_id@19）
+  - SENDME v1 DATA_LEN=16（CGO tag T）；CGO hop 上不发流级 SENDME
+  - 混合电路：逐跳 CGO 或 tor1，未协商成功禁止回退
+  - 官方向量：`pkg/crypto/cgo_test.go`（C Tor `cgo_vectors.inc` 的 ET/PRF/UIV/UPDATE/client originate zeros）
+- **未做**：真实 3-hop CGO + BEGIN/DATA / `IsTor=true`
 - **Spec**：https://spec.torproject.org/proposals/359-cgo-redux.html
-- **要点**：POLYVAL + AES-256；`MSG_LEN=509`；`BLK_LEN=16`；非延展、前向保密、128-bit 认证。替换 hop 的 Df/Db/Kf/Kb 用法。
-- **协商**：ntor-v3 + `subproto_request` 请求 `Relay=6`；KDF 输出长度与 AES-CTR-SHA1 的 72 字节不同，必须对照 C Tor / Arti 的 CGO key schedule。
-- **C Tor / Arti**：以当时仓库里 `cgo` / `tor-proto` 实现为准，不要猜密钥长度。
-- **验收**：
-  - 官方向量（proposal / C Tor testdata）先过
-  - 再真实 3-hop：协商 CGO 后 RELAY_BEGIN / DATA / `IsTor=true`
+- **C Tor**：`relay_crypto_cgo.c`、`relay_crypto.c`（`CGO_AES_BITS 128`）、`src/test/cgo_vectors.inc`
 - **禁止**：未协商成功时偷偷回退到 AES-CTR 还宣称 CGO WORKING。
-- **注意**：2026-02 `recommended-client-protocols` 仍是 `Relay=2-4`。CGO 是最新方向，但 **不要** 在 Guard 未宣告 `Relay=5/6` 时强制请求。
+- **注意**：2026-02 `recommended-client-protocols` 仍是 `Relay=2-4`。不要对未宣告 `Relay=5/6` 的 hop 强制请求。
 
 ### P2 — 已广泛宣告、提升兼容与匿名性
 
@@ -330,4 +333,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准（尚未达到）：** 更大流量 soak（10–100MB）或 Relay=5 `subproto_request`。再往后：CGO、Conflux。
+**下一轮完成标准（尚未达到）：** Relay=6 CGO 真实 3-hop + `IsTor=true`。再往后：更大 soak、Conflux。

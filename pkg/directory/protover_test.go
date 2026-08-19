@@ -65,7 +65,7 @@ func TestSelectSubprotoRequestViaRelay(t *testing.T) {
 		t.Fatal("Relay=4-6 includes 5")
 	}
 	caps, err := crypto.SelectSubprotoRequest(r)
-	if err != nil || len(caps) != 0 {
-		t.Fatalf("CGO 未实现时不得对 Relay=6 发出 type 3: %v %#v", err, caps)
+	if err != nil || len(caps) != 1 || caps[0].Cap != 6 {
+		t.Fatalf("对端 Relay=5-6 + FlowCtrl=2 应请求 CGO: %v %#v", err, caps)
 	}
 }
