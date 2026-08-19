@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -113,7 +114,11 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 	}
 
 	// Initialize SOCKS5 server with isolation config
-	socksAddr := fmt.Sprintf("127.0.0.1:%d", cfg.SocksPort)
+	listenAddr := cfg.SocksListenAddr
+	if listenAddr == "" {
+		listenAddr = "127.0.0.1"
+	}
+	socksAddr := fmt.Sprintf("%s:%d", listenAddr, cfg.SocksPort)
 	socksConfig := &socks.Config{
 		MaxConnections:      1000,
 		IsolationLevel:      parseIsolationLevel(cfg.IsolationLevel),
@@ -148,11 +153,16 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 
 	// Initialize control protocol server
 	controlAddr := fmt.Sprintf("127.0.0.1:%d", cfg.ControlPort)
-	if cfg.ControlPassword != "" {
-		client.controlServer = control.NewServerWithPassword(controlAddr, &clientStatsAdapter{client: client}, cfg.ControlPassword, log)
-	} else {
-		client.controlServer = control.NewServer(controlAddr, &clientStatsAdapter{client: client}, log)
+	auth := control.AuthOptions{
+		Password:              cfg.ControlPassword,
+		HashedControlPassword: cfg.HashedControlPassword,
+		CookieAuthentication:  cfg.CookieAuthentication,
+		CookieAuthFile:        cfg.CookieAuthFile,
 	}
+	if auth.CookieAuthFile == "" && cfg.CookieAuthentication && cfg.DataDirectory != "" {
+		auth.CookieAuthFile = filepath.Join(cfg.DataDirectory, "control_auth_cookie")
+	}
+	client.controlServer = control.NewServerWithAuth(controlAddr, &clientStatsAdapter{client: client}, auth, log)
 	client.controlServer.SetNewnymHandler(func() {
 		client.handleNewnym()
 	})
@@ -238,6 +248,11 @@ func (c *Client) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to build initial circuits: %w", err)
 	}
 	c.logger.Info("Initial circuits built successfully")
+
+	// Step 4.5: 托管洋葱服务（HiddenServiceDir/Port）
+	if err := c.startConfiguredOnionServices(ctx); err != nil {
+		c.logger.Warn("configured onion service start failed", "error", err)
+	}
 
 	// Step 5: Start SOCKS5 proxy server
 	c.logger.Info("Starting SOCKS5 proxy server", "port", c.config.SocksPort)

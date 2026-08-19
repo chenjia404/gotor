@@ -43,7 +43,7 @@ cd go-tor
 make build
 ```
 
-The compiled binary will be available at `bin/tor-client`.
+The compiled binary will be available at `bin/gotor`.
 
 ### Docker Installation
 
@@ -59,22 +59,22 @@ docker run -d --name tor-client -p 9050:9050 go-tor:latest
 
 ## Usage
 
-### Command-Line Client
+### Command-Line Client (`gotor`)
 
-Zero-configuration mode automatically detects settings and starts the Tor client:
+兼容常用 torrc 与 C Tor 风格参数（详见 `docs/TOR_DROPIN.md`）：
 
 ```bash
-# Run with default settings (SOCKS on port 9050)
-./bin/tor-client
+# 零配置
+./bin/gotor
 
-# Specify custom SOCKS port
-./bin/tor-client -socks-port 9150
+# 加载 torrc
+./bin/gotor -f /etc/tor/torrc
 
-# Use configuration file
-./bin/tor-client -config /etc/tor/torrc
+# 命令行覆盖
+./bin/gotor SocksPort 9150 ControlPort 9151
 
-# Enable HTTP metrics endpoint
-./bin/tor-client -metrics-port 9052
+# 生成 HashedControlPassword
+./bin/gotor --hash-password 'secret'
 ```
 
 First connection requires 60-90 seconds for consensus download and circuit building. Subsequent starts are faster.

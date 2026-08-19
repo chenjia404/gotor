@@ -56,7 +56,7 @@ func main() {
 	fmt.Println("\n4. Parsed Information:")
 	fmt.Printf("   Rendezvous Cookie: %x\n", request.RendezvousCookie)
 	fmt.Printf("   Client Onion Key:  %x...\n", request.ClientOnionKey[:16])
-	fmt.Printf("   Client Auth Key:   %x...\n", request.ClientAuthKey[:16])
+	fmt.Printf("   Intro Auth Key:    %x...\n", request.IntroAuthKey[:16])
 	fmt.Printf("   Link Specifiers:   %d\n", len(request.LinkSpecifiers))
 
 	// Step 5: Extract rendezvous point address
