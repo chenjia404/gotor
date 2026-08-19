@@ -153,6 +153,12 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 	} else {
 		client.controlServer = control.NewServer(controlAddr, &clientStatsAdapter{client: client}, log)
 	}
+	client.controlServer.SetNewnymHandler(func() {
+		client.handleNewnym()
+	})
+	client.controlServer.SetShutdownHandler(func() {
+		_ = client.Stop()
+	})
 
 	// Initialize HTTP metrics server if enabled
 	if cfg.EnableMetrics && cfg.MetricsPort > 0 {
@@ -294,6 +300,28 @@ func (c *Client) Start(ctx context.Context) error {
 
 	c.logger.Info("Tor client started successfully")
 	return nil
+}
+
+// handleNewnym 实现 SIGNAL NEWNYM：关闭预建/遗留电路，迫使后续流新建。
+func (c *Client) handleNewnym() {
+	c.logger.Info("SIGNAL NEWNYM: rotating circuits")
+	if c.circuitPool != nil {
+		if err := c.circuitPool.Close(); err != nil {
+			c.logger.Warn("NEWNYM: failed to close circuit pool", "error", err)
+		}
+	}
+	c.circuitsMu.Lock()
+	legacy := append([]*circuit.Circuit(nil), c.circuits...)
+	c.circuits = c.circuits[:0]
+	c.circuitsMu.Unlock()
+	for _, circ := range legacy {
+		if circ == nil {
+			continue
+		}
+		if err := c.circuitMgr.CloseCircuit(circ.ID); err != nil {
+			c.logger.Debug("NEWNYM close circuit", "id", circ.ID, "error", err)
+		}
+	}
 }
 
 // Stop gracefully stops the Tor client
