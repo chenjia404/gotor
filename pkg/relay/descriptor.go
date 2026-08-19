@@ -4,9 +4,11 @@ package relay
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1" // #nosec G505 - SHA1 required by Tor protocol
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/crypto"
+	"github.com/opd-ai/go-tor/pkg/protocol"
 	"golang.org/x/crypto/curve25519"
 )
 
@@ -43,10 +46,11 @@ type ServerDescriptor struct {
 	NtorOnionKey    []byte            // Curve25519 ntor onion key (32 bytes)
 
 	// Internal fields
-	rsaPrivate    *rsa.PrivateKey // RSA private key for signing
-	Digest        []byte          // SHA-1 digest of descriptor (computed)
-	Signature     []byte          // RSA signature of descriptor
-	RawDescriptor []byte          // Complete descriptor text
+	rsaPrivate     *rsa.PrivateKey    // RSA private key for signing
+	ed25519Private ed25519.PrivateKey // Ed25519 主身份私钥，签发 type-04
+	Digest         []byte             // SHA-1 digest of descriptor (computed)
+	Signature      []byte             // RSA signature of descriptor
+	RawDescriptor  []byte             // Complete descriptor text
 }
 
 // ExtraInfoDescriptor represents optional extra-info descriptor
@@ -73,6 +77,7 @@ type DescriptorConfig struct {
 	BandwidthBurst uint64   // Burst bandwidth (default: 2MB/s)
 	IPv6Addr       string   // IPv6 address:port (optional)
 	IsBridge       bool     // Whether this is a bridge relay
+	Uptime         int      // 已运行秒数
 }
 
 // GenerateServerDescriptor creates a signed server descriptor
@@ -129,7 +134,7 @@ func GenerateServerDescriptor(keys *RelayKeys, config *DescriptorConfig) (*Serve
 		DirPort:         config.DirPort,
 		Platform:        "go-tor 0.1.0 on Go",
 		PublishedTime:   time.Now().UTC(),
-		Uptime:          0, // Will be updated by relay runtime
+		Uptime:          config.Uptime,
 		BandwidthAvg:    bandwidthAvg,
 		BandwidthBurst:  bandwidthBurst,
 		BandwidthObs:    bandwidthObs,
@@ -141,6 +146,7 @@ func GenerateServerDescriptor(keys *RelayKeys, config *DescriptorConfig) (*Serve
 		Ed25519Identity: keys.Ed25519Public,
 		NtorOnionKey:    ntorPublic[:],
 		rsaPrivate:      keys.RSAPrivate,
+		ed25519Private:  keys.Ed25519Private,
 	}
 
 	// Build and sign descriptor
@@ -153,94 +159,139 @@ func GenerateServerDescriptor(keys *RelayKeys, config *DescriptorConfig) (*Serve
 
 // build constructs the descriptor text and computes digest/signature
 func (d *ServerDescriptor) build() error {
-	var buf bytes.Buffer
+	if d.rsaPrivate == nil {
+		return fmt.Errorf("RSA private key is required to sign descriptor")
+	}
+	signPub, signPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate descriptor signing key: %w", err)
+	}
+	idCert, err := makeEd25519SigningCert(d.ed25519Private, signPub)
+	if err != nil {
+		return fmt.Errorf("identity-ed25519 cert: %w", err)
+	}
+	tapKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		return fmt.Errorf("generate TAP onion-key: %w", err)
+	}
 
-	// Per dir-spec.txt §2.1, descriptor format:
-	// router <nickname> <address> <ORPort> <SOCKSPort> <DirPort>
+	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "router %s %s %d 0 %d\n",
 		d.Nickname, d.Address, d.ORPort, d.DirPort)
-
-	// IPv6 address (optional)
 	if d.IPv6Addr != "" {
 		fmt.Fprintf(&buf, "or-address %s\n", d.IPv6Addr)
 	}
-
-	// Platform
+	writePEMBlock(&buf, "identity-ed25519", "ED25519 CERT", idCert)
+	fmt.Fprintf(&buf, "master-key-ed25519 %s\n",
+		base64.RawStdEncoding.EncodeToString(d.Ed25519Identity))
 	fmt.Fprintf(&buf, "platform %s\n", d.Platform)
-
-	// Protocols (link protocol versions we support: 3-5)
-	fmt.Fprintf(&buf, "proto Link=3-5 Circuit=1-2\n")
-
-	// Published time (UTC, format: "YYYY-MM-DD HH:MM:SS")
+	fmt.Fprintf(&buf, "proto Link=3-5 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1\n")
 	fmt.Fprintf(&buf, "published %s\n",
 		d.PublishedTime.Format("2006-01-02 15:04:05"))
-
-	// RSA identity key (PKCS#1 format)
-	rsaPEM, err := crypto.RSAPublicKeyToPEM(d.RSAIdentity)
-	if err != nil {
-		return fmt.Errorf("failed to encode RSA key: %w", err)
-	}
-	// Remove PEM headers and format as Tor expects
-	rsaB64 := strings.TrimPrefix(string(rsaPEM), "-----BEGIN RSA PUBLIC KEY-----\n")
-	rsaB64 = strings.TrimSuffix(rsaB64, "-----END RSA PUBLIC KEY-----\n")
-	fmt.Fprintf(&buf, "identity-ed25519\n-----BEGIN ED25519 CERT-----\n")
-	// Ed25519 identity is encoded as base64
-	fmt.Fprintf(&buf, "%s\n", base64.StdEncoding.EncodeToString(d.Ed25519Identity))
-	fmt.Fprintf(&buf, "-----END ED25519 CERT-----\n")
-
-	// Master key ed25519 (32-byte public key)
-	fmt.Fprintf(&buf, "master-key-ed25519 %s\n",
-		base64.StdEncoding.EncodeToString(d.Ed25519Identity))
-
-	// Bandwidth (avg, burst, observed in bytes/sec)
+	fmt.Fprintf(&buf, "fingerprint %s\n", formatFingerprintGroups(d.Fingerprint()))
+	fmt.Fprintf(&buf, "uptime %d\n", d.Uptime)
 	fmt.Fprintf(&buf, "bandwidth %d %d %d\n",
 		d.BandwidthAvg, d.BandwidthBurst, d.BandwidthObs)
-
-	// Uptime
-	fmt.Fprintf(&buf, "uptime %d\n", d.Uptime)
-
-	// ntor onion key (base64-encoded Curve25519 public key)
+	if err := writeRSAPublicPEM(&buf, "onion-key", &tapKey.PublicKey); err != nil {
+		return err
+	}
 	fmt.Fprintf(&buf, "ntor-onion-key %s\n",
-		base64.StdEncoding.EncodeToString(d.NtorOnionKey))
-
-	// Contact (optional)
+		base64.RawStdEncoding.EncodeToString(d.NtorOnionKey))
+	if err := writeRSAPublicPEM(&buf, "signing-key", d.RSAIdentity); err != nil {
+		return err
+	}
 	if d.Contact != "" {
 		fmt.Fprintf(&buf, "contact %s\n", d.Contact)
 	}
-
-	// Family (optional)
 	if len(d.Family) > 0 {
 		fmt.Fprintf(&buf, "family %s\n", strings.Join(d.Family, " "))
 	}
-
-	// Exit policy
 	fmt.Fprintf(&buf, "reject *:*\n")
+	if d.DirPort == 0 {
+		fmt.Fprintf(&buf, "tunnelled-dir-server\n")
+	}
 
-	// Router signature follows
-	// Compute digest before signature
-	descriptorBody := buf.String()
+	edPrefix := []byte("Tor router descriptor signature v1")
+	edSig := ed25519.Sign(signPriv, append(edPrefix, buf.Bytes()...))
+	fmt.Fprintf(&buf, "router-sig-ed25519 %s\n",
+		base64.RawStdEncoding.EncodeToString(edSig))
 
-	// Compute SHA-1 digest of descriptor (required per Tor spec)
-	// #nosec G401 - SHA1 required by Tor protocol
+	// RSA 签名覆盖含 router-signature 行、不含 PEM 签名体（dir-spec）
+	rsaBody := buf.String() + "router-signature\n"
 	h := sha1.New() // #nosec G401
-	h.Write([]byte(descriptorBody))
+	h.Write([]byte(rsaBody))
 	d.Digest = h.Sum(nil)
-
-	// Sign with RSA identity key
-	// Per dir-spec.txt, signature is over SHA-1 digest
-	signature, err := rsa.SignPKCS1v15(nil, d.rsaPrivate, 0, d.Digest)
+	signature, err := rsa.SignPKCS1v15(rand.Reader, d.rsaPrivate, 0, d.Digest)
 	if err != nil {
 		return fmt.Errorf("failed to sign descriptor: %w", err)
 	}
 	d.Signature = signature
-
-	// Append signature to descriptor
-	fmt.Fprintf(&buf, "router-signature\n-----BEGIN SIGNATURE-----\n")
-	fmt.Fprintf(&buf, "%s\n", base64.StdEncoding.EncodeToString(signature))
-	fmt.Fprintf(&buf, "-----END SIGNATURE-----\n")
-
+	fmt.Fprintf(&buf, "router-signature\n")
+	writePEMBlock(&buf, "", "SIGNATURE", signature)
 	d.RawDescriptor = buf.Bytes()
 	return nil
+}
+
+func writeRSAPublicPEM(buf *bytes.Buffer, keyword string, pub *rsa.PublicKey) error {
+	pemBytes, err := crypto.RSAPublicKeyToPEM(pub)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", keyword, err)
+	}
+	if keyword != "" {
+		fmt.Fprintf(buf, "%s\n", keyword)
+	}
+	buf.Write(pemBytes)
+	if !bytes.HasSuffix(pemBytes, []byte("\n")) {
+		buf.WriteByte('\n')
+	}
+	return nil
+}
+
+func writePEMBlock(buf *bytes.Buffer, keyword, pemType string, der []byte) {
+	if keyword != "" {
+		fmt.Fprintf(buf, "%s\n", keyword)
+	}
+	fmt.Fprintf(buf, "-----BEGIN %s-----\n", pemType)
+	b64 := base64.StdEncoding.EncodeToString(der)
+	for i := 0; i < len(b64); i += 64 {
+		end := i + 64
+		if end > len(b64) {
+			end = len(b64)
+		}
+		fmt.Fprintf(buf, "%s\n", b64[i:end])
+	}
+	fmt.Fprintf(buf, "-----END %s-----\n", pemType)
+}
+
+func formatFingerprintGroups(hex40 string) string {
+	hex40 = strings.ToUpper(hex40)
+	if len(hex40) != 40 {
+		return hex40
+	}
+	var b strings.Builder
+	for i := 0; i < 40; i += 4 {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(hex40[i : i+4])
+	}
+	return b.String()
+}
+
+// makeEd25519SigningCert 生成 cert-spec type-04：Ed25519 签名钥由主身份签发。
+func makeEd25519SigningCert(idPriv ed25519.PrivateKey, signPub ed25519.PublicKey) ([]byte, error) {
+	if len(idPriv) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("invalid Ed25519 identity private key")
+	}
+	cert := &protocol.Ed25519Certificate{
+		Version:      1,
+		CertType:     uint8(protocol.CertTypeEd25519Signing),
+		ExpiresAt:    time.Now().UTC().Add(30 * 24 * time.Hour),
+		CertKeyType:  1,
+		CertifiedKey: append([]byte(nil), signPub...),
+	}
+	protocol.SignEd25519Certificate(cert, idPriv)
+	return protocol.EncodeEd25519Certificate(cert), nil
 }
 
 // generateNickname creates a default nickname from relay fingerprint
@@ -257,11 +308,9 @@ func (d *ServerDescriptor) Fingerprint() string {
 	if d.RSAIdentity == nil {
 		return ""
 	}
-	// Compute SHA-1 of RSA public key DER encoding
-	// #nosec G401 - SHA1 required by Tor protocol
-	h := sha1.New() // #nosec G401
-	h.Write(d.RSAIdentity.N.Bytes())
-	return strings.ToUpper(hex.EncodeToString(h.Sum(nil)))
+	der := x509.MarshalPKCS1PublicKey(d.RSAIdentity)
+	sum := sha1.Sum(der) // #nosec G401
+	return strings.ToUpper(hex.EncodeToString(sum[:]))
 }
 
 // Ed25519Fingerprint returns base64-encoded Ed25519 identity

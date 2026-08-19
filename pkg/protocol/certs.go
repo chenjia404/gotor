@@ -494,6 +494,13 @@ func (e *Ed25519Certificate) reconstructSignedBytes() []byte {
 	return signedData
 }
 
+// SignEd25519Certificate 用 priv 按 cert-spec 签发证书（填充 SignedBytes 与 Signature）。
+func SignEd25519Certificate(cert *Ed25519Certificate, priv ed25519.PrivateKey) {
+	msg := cert.reconstructSignedBytes()
+	cert.SignedBytes = msg
+	cert.Signature = ed25519.Sign(priv, msg)
+}
+
 // EncodeEd25519Certificate 按 cert-spec 编码（测试与向量生成用）。
 func EncodeEd25519Certificate(cert *Ed25519Certificate) []byte {
 	body := cert.signedMessage()

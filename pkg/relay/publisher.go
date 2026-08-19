@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
@@ -27,6 +29,19 @@ var DefaultBridgeAuthorities = []BridgeAuthority{
 		Address: "86.59.21.38:80",
 		URL:     "http://86.59.21.38/tor/",
 	},
+}
+
+// DefaultDirectoryAuthorities 返回当前硬编码的 v3 目录权威上传端点。
+// 公开中继应 POST 到这些权威，而不是桥权威。
+func DefaultDirectoryAuthorities() []BridgeAuthority {
+	out := make([]BridgeAuthority, 0, len(directory.KnownAuthorities))
+	for _, a := range directory.KnownAuthorities {
+		out = append(out, BridgeAuthority{
+			Address: a.Address,
+			URL:     "http://" + a.Address + "/tor/post/upload",
+		})
+	}
+	return out
 }
 
 // DescriptorPublisher handles publishing server descriptors to bridge authorities
@@ -180,22 +195,49 @@ func (p *DescriptorPublisher) publishToAuthority(ctx context.Context, auth Bridg
 	return fmt.Errorf("all upload attempts failed: %w", lastErr)
 }
 
-// uploadDescriptor performs a single HTTP POST upload
+// uploadDescriptor 按 dir-spec 向权威 POST 描述符。
+// 先试 /tor/post/upload，失败再试历史路径 /tor/。
 func (p *DescriptorPublisher) uploadDescriptor(ctx context.Context, auth BridgeAuthority, descriptorData []byte) error {
-	// Bridge descriptors are posted to /tor/ endpoint
-	url := auth.URL
-	if url == "" {
-		url = fmt.Sprintf("http://%s/tor/", auth.Address)
+	var lastErr error
+	for _, url := range authorityUploadURLs(auth) {
+		err := p.postDescriptor(ctx, url, descriptorData)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		p.logger.Debug("upload URL failed, trying next", "url", url, "error", err)
 	}
+	if lastErr == nil {
+		return fmt.Errorf("no upload URL for authority %s", auth.Address)
+	}
+	return lastErr
+}
 
+func authorityUploadURLs(auth BridgeAuthority) []string {
+	if auth.URL != "" {
+		urls := []string{auth.URL}
+		trimmed := strings.TrimRight(auth.URL, "/")
+		if strings.HasSuffix(trimmed, "/tor") && !strings.Contains(auth.URL, "/tor/post/upload") {
+			urls = []string{trimmed + "/post/upload", auth.URL}
+		}
+		if strings.HasSuffix(trimmed, "/tor/post/upload") {
+			urls = []string{auth.URL, strings.TrimSuffix(trimmed, "/post/upload") + "/"}
+		}
+		return urls
+	}
+	return []string{
+		fmt.Sprintf("http://%s/tor/post/upload", auth.Address),
+		fmt.Sprintf("http://%s/tor/", auth.Address),
+	}
+}
+
+func (p *DescriptorPublisher) postDescriptor(ctx context.Context, url string, descriptorData []byte) error {
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(descriptorData))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-
-	// Set Content-Type per dir-spec.txt §4.3
 	req.Header.Set("Content-Type", "application/octet-stream")
-	req.Header.Set("User-Agent", "go-tor/0.1.0")
+	req.Header.Set("User-Agent", "gotor/0.1.0")
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -203,14 +245,10 @@ func (p *DescriptorPublisher) uploadDescriptor(ctx context.Context, auth BridgeA
 	}
 	defer resp.Body.Close()
 
-	// Read response body for error details
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-
-	// Accept 200 OK or 202 Accepted as success
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		return fmt.Errorf("upload failed: status %d: %s", resp.StatusCode, string(body))
 	}
-
 	return nil
 }
 

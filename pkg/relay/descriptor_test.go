@@ -167,9 +167,13 @@ func TestGenerateServerDescriptor(t *testing.T) {
 				"platform",
 				"proto Link=",
 				"published",
+				"fingerprint",
 				"bandwidth",
+				"onion-key",
+				"signing-key",
 				"ntor-onion-key",
 				"reject *:*",
+				"router-sig-ed25519",
 				"router-signature",
 			}
 
