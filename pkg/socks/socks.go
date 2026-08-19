@@ -158,6 +158,14 @@ type Server struct {
 
 	circpadCfg    circuit.CircpadConfig
 	circpadCfgSet bool
+
+	eventPub EventPublisher
+}
+
+// EventPublisher 向 Control 口推送 STREAM/NOTICE 等事件（可选）。
+type EventPublisher interface {
+	PublishStream(streamID, circuitID uint32, status, target string)
+	PublishNotice(msg string)
 }
 
 // NewServer creates a new SOCKS5 proxy server
@@ -241,6 +249,22 @@ func (s *Server) wireOnionCircpad() {
 			return nil
 		}
 		return circ.StartHSSetupPadding(circuit.HSSetupIntro, true, cfg)
+	}
+}
+
+// SetEventPublisher 注入 Control 事件发布器。
+func (s *Server) SetEventPublisher(p EventPublisher) {
+	s.mu.Lock()
+	s.eventPub = p
+	s.mu.Unlock()
+}
+
+func (s *Server) publishStream(streamID, circuitID uint32, status, target string) {
+	s.mu.Lock()
+	p := s.eventPub
+	s.mu.Unlock()
+	if p != nil {
+		p.PublishStream(streamID, circuitID, status, target)
 	}
 }
 
@@ -587,6 +611,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		s.logger.Info("Successfully connected to onion service",
 			"address", host,
 			"circuit_id", circuitID)
+		s.publishStream(0, circuitID, "SUCCEEDED", targetAddr)
 
 		// 解析端口（默认 80）
 		onionPort := uint16(80)
@@ -736,6 +761,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		"stream_id", strm.ID,
 		"circuit_id", circ.ID,
 		"target", targetAddr)
+	s.publishStream(uint32(strm.ID), circ.ID, "NEW", targetAddr)
 
 	// Update stream state
 	strm.SetState(stream.StateConnecting)
@@ -744,12 +770,14 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	// AUDIT-MED-2 FIX: Pass ctx to respect connection-scoped context
 	if err := circ.OpenStream(ctx, strm.ID, hostStr, port); err != nil {
 		s.logger.Error("Failed to open stream", "stream_id", strm.ID, "error", err)
+		s.publishStream(uint32(strm.ID), circ.ID, "FAILED", targetAddr)
 		s.sendReply(conn, replyHostUnreachable, nil)
 		return
 	}
 
 	// Stream is now connected
 	strm.SetState(stream.StateConnected)
+	s.publishStream(uint32(strm.ID), circ.ID, "SUCCEEDED", targetAddr)
 
 	s.logger.Info("Stream connected",
 		"stream_id", strm.ID,
@@ -760,6 +788,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 	// Relay data bidirectionally between SOCKS client and Tor circuit
 	s.relayDataThroughCircuit(ctx, conn, circ, strm)
+	s.publishStream(uint32(strm.ID), circ.ID, "CLOSED", targetAddr)
 }
 
 // handshake performs SOCKS5 handshake and returns optional username for isolation

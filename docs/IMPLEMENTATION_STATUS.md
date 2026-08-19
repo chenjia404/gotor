@@ -56,7 +56,7 @@
 | Circuit padding (Padding=2) | PARTIAL | 协商+HS setup+**直方图定时 DROP**；SOCKS AfterIntroduce1 已接线。真实验收需对端 Padding=2 |
 | Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB） |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
-| Control Protocol | PARTIAL | GETINFO/SETCONF/SETEVENTS + **SIGNAL/MAPADDRESS**；缺完整事件面 |
+| Control Protocol | PARTIAL | GETINFO/SETCONF/SETEVENTS + SIGNAL/MAPADDRESS + **ADDRMAP/STATUS_CLIENT/NOTICE**；SOCKS→STREAM 已桥接 |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
 
 ---
@@ -233,7 +233,8 @@
   - `pkg/crypto/cgo_test.go` / `ntorv3_test.go` 已对齐这些 hex
 - `testdata/ctor-vectors/*.json` 仍为规范重算，**不得**单独宣称原样官方
 - 已追加：`test_cell_formats.c` 原样导入
-- 剩余：Arti 侧原样目录；从 cell_formats 抽取 Go fixture
+- **已追加**：`testdata/arti-official/{ntor_v3.rs,hs_ntor.rs}` 原样；`test_cell_formats.c`
+- 剩余：从 cell_formats 抽取独立 Go fixture JSON
 
 #### 12. Family ID（Desc=4）
 
@@ -416,4 +417,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准：** circpad 真实验收；Control 事件面；更多 Arti 原样向量。
+**下一轮完成标准：** circpad 真实验收（对端 Padding=2）；洋葱服务托管；cell_formats→Go fixture。

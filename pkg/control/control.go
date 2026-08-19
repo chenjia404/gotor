@@ -523,6 +523,12 @@ func (s *Server) getInfoValue(key string, stats StatsProvider) (string, bool) {
 	// Help information
 	case "info/names":
 		return s.getInfoNames(), true
+	case "events/names":
+		names := make([]string, 0, len(KnownEventTypes()))
+		for _, e := range KnownEventTypes() {
+			names = append(names, string(e))
+		}
+		return strings.Join(names, " "), true
 
 	default:
 		return "", false
@@ -549,6 +555,7 @@ func (s *Server) getInfoNames() string {
 		"net/listeners/socks",
 		"net/listeners/control",
 		"info/names",
+		"events/names",
 	}
 	return strings.Join(keys, " ")
 }
@@ -643,20 +650,28 @@ func (s *Server) handleSetEvents(conn *connection, args []string) {
 		return
 	}
 
-	conn.mu.Lock()
-	// Clear existing events
-	conn.events = make(map[string]bool)
-
-	// Register new events with connection and dispatcher
+	known := make(map[EventType]bool)
+	for _, e := range KnownEventTypes() {
+		known[e] = true
+	}
 	var eventTypes []EventType
 	for _, event := range args {
 		eventUpper := strings.ToUpper(event)
-		conn.events[eventUpper] = true
-		eventTypes = append(eventTypes, EventType(eventUpper))
+		et := EventType(eventUpper)
+		if !known[et] {
+			conn.writeReply(552, fmt.Sprintf("Unrecognized event %q", eventUpper))
+			return
+		}
+		eventTypes = append(eventTypes, et)
+	}
+
+	conn.mu.Lock()
+	conn.events = make(map[string]bool)
+	for _, et := range eventTypes {
+		conn.events[string(et)] = true
 	}
 	conn.mu.Unlock()
 
-	// Update dispatcher subscriptions
 	s.dispatcher.Subscribe(conn, eventTypes)
 
 	conn.writeReply(250, "OK")

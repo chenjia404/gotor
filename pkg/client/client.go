@@ -159,6 +159,9 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 	client.controlServer.SetShutdownHandler(func() {
 		_ = client.Stop()
 	})
+	client.socksServer.SetEventPublisher(&controlEventBridge{
+		dispatcher: client.controlServer.GetEventDispatcher(),
+	})
 
 	// Initialize HTTP metrics server if enabled
 	if cfg.EnableMetrics && cfg.MetricsPort > 0 {

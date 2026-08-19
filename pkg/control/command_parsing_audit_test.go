@@ -543,7 +543,7 @@ func TestCommandParsingErrorHandling(t *testing.T) {
 		{
 			name:       "setevents_invalid_event",
 			commands:   []string{"AUTHENTICATE", "SETEVENTS INVALIDEVENT"},
-			expectCode: []string{"250", "250"}, // Unknown events are ignored per spec
+			expectCode: []string{"250", "552"}, // Unrecognized event names are rejected
 		},
 		{
 			name:       "multiple_errors_in_sequence",

@@ -67,3 +67,42 @@ func TestOfficialCtorCellFormatsPresent(t *testing.T) {
 		t.Fatal("unexpected test_cell_formats.c")
 	}
 }
+
+func TestOfficialArtiNtorV3Present(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "../.."))
+	path := filepath.Join(root, "testdata/arti-official/ntor_v3.rs")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("missing Arti ntor_v3.rs: %v", err)
+	}
+	s := string(b)
+	for _, needle := range []string{
+		"4051daa5921cfa2a1c27b08451324919538e79e788a81b38cbed097a5dff454a",
+		"ntor v3",
+		"68656c6c6f20776f726c64",
+	} {
+		if !strings.Contains(s, needle) {
+			t.Fatalf("arti ntor_v3.rs missing %q", needle)
+		}
+	}
+}
+
+func TestOfficialArtiHsNtorPresent(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "../.."))
+	path := filepath.Join(root, "testdata/arti-official/hs_ntor.rs")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("missing Arti hs_ntor.rs: %v", err)
+	}
+	if len(b) < 1000 {
+		t.Fatal("unexpected hs_ntor.rs size")
+	}
+}
