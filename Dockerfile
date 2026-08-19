@@ -1,6 +1,8 @@
 # Multi-stage Dockerfile for go-tor
 # Stage 1: Build the Go binary
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.26-alpine AS builder
+
+RUN apk add --no-cache ca-certificates tzdata git
 
 # Set working directory
 WORKDIR /build
