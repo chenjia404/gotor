@@ -2,7 +2,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,14 +14,26 @@ import (
 
 // CLIResult 是解析 argv 后的动作与配置。
 type CLIResult struct {
-	Config          *Config
-	ShowVersion     bool
-	ShowHelp        bool
-	ListTorrcOpts   bool
-	HashPassword    bool
-	HashPasswordArg string // 若命令行直接给出明文
-	ConfigFile      string // -f / --config 最终路径
-	DefaultsTorrc   string
+	Config            *Config
+	ShowVersion       bool
+	ShowHelp          bool
+	ListTorrcOpts     bool
+	ListDeprecated    bool
+	ListModules       bool
+	ListFingerprint   bool
+	FingerprintType   string // rsa | ed25519
+	HashPassword      bool
+	HashPasswordArg   string
+	Keygen            bool
+	VerifyConfig      bool
+	DumpConfig        string // short | full；空表示不 dump
+	Quiet             bool
+	Hush              bool
+	NTService         bool
+	ConfigFile        string // -f / --config 最终路径；"-" 表示 stdin
+	DefaultsTorrc     string
+	AllowMissingTorrc bool
+	ReadStdin         bool
 }
 
 // legacyOverrides 在 torrc 加载后再应用，保证命令行优先于文件。
@@ -35,17 +50,14 @@ type legacyOverrides struct {
 	logLevelSet bool
 }
 
-// ParseCLI 解析类似 C Tor 的 argv。
-//
-// 支持：
-//   - -f / --config PATH
-//   - --defaults-torrc PATH
-//   - --hash-password [PASSWORD]
-//   - --version / -version / -h / --help / --list-torrc-options
-//   - 遗留：-socks-port、-control-port、-data-dir、-log-level、-metrics-port（覆盖 torrc）
-//   - 其余位置参数：Key Value...（最后覆盖）
+// ParseCLI 解析类似 C Tor 的 argv。使用 DefaultCLIConfig()，不改变 DefaultConfig() 库行为。
 func ParseCLI(args []string) (*CLIResult, error) {
-	res := &CLIResult{Config: DefaultConfig()}
+	return ParseCLIWithStdin(args, os.Stdin)
+}
+
+// ParseCLIWithStdin 允许测试注入 stdin（-f -）。
+func ParseCLIWithStdin(args []string, stdin io.Reader) (*CLIResult, error) {
+	res := &CLIResult{Config: DefaultCLIConfig()}
 	var positional []string
 	var leg legacyOverrides
 
@@ -53,13 +65,15 @@ func ParseCLI(args []string) (*CLIResult, error) {
 	for i < len(args) {
 		a := args[i]
 		switch {
-		case a == "-f" || a == "--torrc" || a == "-config" || a == "--config":
+		case a == "-f" || a == "--torrc" || a == "--torrc-file" || a == "-config" || a == "--config":
 			if i+1 >= len(args) {
 				return nil, fmt.Errorf("%s requires a path", a)
 			}
 			res.ConfigFile = args[i+1]
 			i += 2
-		case strings.HasPrefix(a, "-f=") || strings.HasPrefix(a, "--config=") || strings.HasPrefix(a, "-config="):
+		case strings.HasPrefix(a, "-f=") || strings.HasPrefix(a, "--config=") ||
+			strings.HasPrefix(a, "-config=") || strings.HasPrefix(a, "--torrc-file=") ||
+			strings.HasPrefix(a, "--torrc="):
 			res.ConfigFile = a[strings.Index(a, "=")+1:]
 			i++
 		case a == "--defaults-torrc":
@@ -68,6 +82,12 @@ func ParseCLI(args []string) (*CLIResult, error) {
 			}
 			res.DefaultsTorrc = args[i+1]
 			i += 2
+		case strings.HasPrefix(a, "--defaults-torrc="):
+			res.DefaultsTorrc = a[strings.Index(a, "=")+1:]
+			i++
+		case a == "--allow-missing-torrc" || a == "--ignore-missing-torrc":
+			res.AllowMissingTorrc = true
+			i++
 		case a == "--hash-password":
 			res.HashPassword = true
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
@@ -76,15 +96,58 @@ func ParseCLI(args []string) (*CLIResult, error) {
 			} else {
 				i++
 			}
+		case a == "--verify-config":
+			res.VerifyConfig = true
+			i++
+		case a == "--dump-config":
+			res.DumpConfig = "short"
+			if i+1 < len(args) && (args[i+1] == "short" || args[i+1] == "full") {
+				res.DumpConfig = args[i+1]
+				i += 2
+			} else {
+				i++
+			}
+		case a == "--quiet":
+			res.Quiet = true
+			i++
+		case a == "--hush":
+			res.Hush = true
+			i++
+		case a == "--list-torrc-options":
+			res.ListTorrcOpts = true
+			i++
+		case a == "--list-deprecated-options":
+			res.ListDeprecated = true
+			i++
+		case a == "--list-modules":
+			res.ListModules = true
+			i++
+		case a == "--list-fingerprint":
+			res.ListFingerprint = true
+			res.FingerprintType = "rsa"
+			if i+1 < len(args) && (args[i+1] == "rsa" || args[i+1] == "ed25519") {
+				res.FingerprintType = args[i+1]
+				i += 2
+			} else {
+				i++
+			}
+		case a == "--keygen":
+			res.Keygen = true
+			i++
+		case a == "--service" || a == "--nt-service":
+			res.NTService = true
+			i++
 		case a == "--version" || a == "-version":
 			res.ShowVersion = true
 			i++
 		case a == "-h" || a == "--help" || a == "-help":
 			res.ShowHelp = true
 			i++
-		case a == "--list-torrc-options":
-			res.ListTorrcOpts = true
+		case strings.HasPrefix(a, "--dbg-"):
 			i++
+			if i < len(args) && !strings.HasPrefix(args[i], "-") && !looksLikeTorrcKey(args[i]) {
+				i++
+			}
 		case a == "-socks-port" || a == "--socks-port":
 			if i+1 >= len(args) {
 				return nil, fmt.Errorf("%s requires a port", a)
@@ -135,32 +198,79 @@ func ParseCLI(args []string) (*CLIResult, error) {
 		}
 	}
 
-	if res.ShowVersion || res.ShowHelp || res.ListTorrcOpts || res.HashPassword {
+	if res.ShowVersion || res.ShowHelp || res.ListTorrcOpts || res.ListDeprecated ||
+		res.ListModules || res.HashPassword || res.NTService {
 		return res, nil
 	}
 
-	// 加载 defaults → 主 torrc → 遗留 flag → 位置 Key Value（后者覆盖前者）
-	if res.DefaultsTorrc != "" {
-		if err := LoadFromFile(res.DefaultsTorrc, res.Config); err != nil {
-			return nil, fmt.Errorf("defaults-torrc: %w", err)
+	if err := loadCLIConfig(res, stdin); err != nil {
+		return nil, err
+	}
+	applyLegacyOverrides(res.Config, leg)
+	if err := applyPositionalOverrides(res.Config, positional); err != nil {
+		return nil, err
+	}
+	if res.Config.CacheDirectory == "" {
+		res.Config.CacheDirectory = res.Config.DataDirectory
+	}
+	if res.Quiet {
+		res.Config.LogLevel = "error"
+	} else if res.Hush && (res.Config.LogLevel == "debug" || res.Config.LogLevel == "info") {
+		res.Config.LogLevel = "warn"
+	}
+	res.Config.EnsureControlAuth()
+	return res, nil
+}
+
+func loadCLIConfig(res *CLIResult, stdin io.Reader) error {
+	if res.DefaultsTorrc == "" {
+		if st, err := os.Stat("/etc/tor/torrc-defaults"); err == nil && !st.IsDir() {
+			res.DefaultsTorrc = "/etc/tor/torrc-defaults"
 		}
 	}
+	if res.DefaultsTorrc != "" {
+		if err := LoadFromFile(res.DefaultsTorrc, res.Config); err != nil {
+			if !(res.AllowMissingTorrc && isNotExistErr(err)) {
+				return fmt.Errorf("defaults-torrc: %w", err)
+			}
+		}
+	}
+
 	cfgPath := res.ConfigFile
 	if cfgPath == "" {
 		cfgPath = findDefaultTorrc()
 		res.ConfigFile = cfgPath
 	}
-	if cfgPath != "" {
-		if err := LoadFromFile(cfgPath, res.Config); err != nil {
-			return nil, fmt.Errorf("load torrc %s: %w", cfgPath, err)
+	if cfgPath == "-" {
+		res.ReadStdin = true
+		if stdin == nil {
+			stdin = os.Stdin
 		}
+		if err := LoadFromReader(stdin, res.Config); err != nil {
+			return fmt.Errorf("load torrc from stdin: %w", err)
+		}
+		return nil
 	}
-	applyLegacyOverrides(res.Config, leg)
+	if cfgPath == "" {
+		return nil
+	}
+	if err := LoadFromFile(cfgPath, res.Config); err != nil {
+		if res.AllowMissingTorrc && isNotExistErr(err) {
+			return nil
+		}
+		return fmt.Errorf("load torrc %s: %w", cfgPath, err)
+	}
+	return nil
+}
 
-	if err := applyPositionalOverrides(res.Config, positional); err != nil {
-		return nil, err
+// isNotExistErr 仅在文件确实不存在时为真。
+// 不得把权限错误、解析错误等“打不开配置”一律当成缺失，否则
+// --allow-missing-torrc 会静默丢掉本应生效的认证/访问限制。
+func isNotExistErr(err error) bool {
+	if err == nil {
+		return false
 	}
-	return res, nil
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, fs.ErrNotExist)
 }
 
 func applyLegacyOverrides(cfg *Config, leg legacyOverrides) {
@@ -186,15 +296,15 @@ func isTorrcKeyLookalike(a string) bool {
 	return false
 }
 
+// findDefaultTorrc 对齐 C Tor：先 /etc/tor/torrc，再 $HOME/.torrc。
+// ./torrc 仅作为额外便利放在最后，不会盖过 C Tor 顺序。
 func findDefaultTorrc() string {
-	candidates := []string{
-		"torrc",
-		filepath.Join(".", "torrc"),
-	}
+	var candidates []string
+	candidates = append(candidates, "/etc/tor/torrc")
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates, filepath.Join(home, ".torrc"))
 	}
-	candidates = append(candidates, "/etc/tor/torrc")
+	candidates = append(candidates, "torrc", filepath.Join(".", "torrc"))
 	for _, c := range candidates {
 		if st, err := os.Stat(c); err == nil && !st.IsDir() {
 			return c
@@ -245,12 +355,22 @@ func looksLikeTorrcKey(s string) bool {
 // KnownTorrcOptions 列出 gotor 已识别的 torrc 键（--list-torrc-options）。
 func KnownTorrcOptions() []string {
 	return []string{
-		"SocksPort", "SocksListenAddress", "ControlPort", "DataDirectory",
+		"SocksPort", "SocksListenAddress", "ControlPort", "ControlSocket", "DataDirectory",
+		"CacheDirectory", "PidFile", "RunAsDaemon", "ClientOnly", "DisableNetwork",
+		"HTTPTunnelPort", "DNSPort",
 		"CookieAuthentication", "CookieAuthFile", "HashedControlPassword", "ControlPassword",
 		"CircuitBuildTimeout", "MaxCircuitDirtiness", "NewCircuitPeriod", "NumEntryGuards",
 		"UseEntryGuards", "UseBridges", "Bridge", "ExcludeNodes", "ExcludeExitNodes",
 		"ExitNodes", "EntryNodes", "StrictNodes",
 		"ConnLimit", "DormantTimeout", "LogLevel", "Log",
+		"ClientUseIPv4", "ClientUseIPv6", "ClientPreferIPv6ORPort",
+		"MapAddress", "AutomapHostsOnResolve", "AutomapHostsSuffixes",
+		"VirtualAddrNetworkIPv4", "VirtualAddrNetworkIPv6",
+		"ClientOnionAuthDir", "SafeSocks", "TestSocks", "ClientRejectInternalAddresses",
+		"UnixSocksGroupWritable",
+		"CircuitPadding", "ReducedCircuitPadding", "ConnectionPadding",
+		"SocksTimeout", "FallbackDir", "UseDefaultFallbackDirs", "AvoidDiskWrites",
+		"TransPort", "NATDPort",
 		"ClientTransportPlugin", "ServerTransportPlugin", "ServerTransportListenAddr",
 		"ServerTransportOptions", "TransportProxy",
 		"HiddenServiceDir", "HiddenServicePort", "HiddenServiceVersion", "HiddenServiceMaxStreams",

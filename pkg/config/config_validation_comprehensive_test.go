@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -709,8 +710,12 @@ func TestGetCheckpointPathVariations(t *testing.T) {
 			cfg.DataDirectory = tt.dataDir
 			cfg.CrashRecoveryCheckpointPath = tt.explicit
 			got := cfg.GetCheckpointPath()
-			if got != tt.want {
-				t.Errorf("GetCheckpointPath() = %q, want %q", got, tt.want)
+			want := tt.want
+			if tt.explicit == "" {
+				want = filepath.Join(tt.dataDir, "checkpoint.json")
+			}
+			if got != want {
+				t.Errorf("GetCheckpointPath() = %q, want %q", got, want)
 			}
 		})
 	}

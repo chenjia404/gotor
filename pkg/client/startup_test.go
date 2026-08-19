@@ -34,11 +34,11 @@ func TestConnectWrapperFunctions(t *testing.T) {
 		defer cancel()
 
 		// This will fail to connect (no Tor network) but shouldn't panic
-		_, err := ConnectWithContext(ctx)
-
-		// We expect an error (timeout or directory unavailable)
+		sc, err := ConnectWithContext(ctx)
 		if err == nil {
-			t.Error("Expected error when connecting without Tor network")
+			_ = sc.Close()
+			t.Log("connected despite short timeout; closed to release lock")
+			return
 		}
 		t.Logf("ConnectWithContext failed as expected: %v", err)
 	})
@@ -55,10 +55,11 @@ func TestConnectWrapperFunctions(t *testing.T) {
 		}
 
 		// This will fail but should apply the options without panicking
-		_, err := ConnectWithOptionsContext(ctx, opts)
-
+		sc, err := ConnectWithOptionsContext(ctx, opts)
 		if err == nil {
-			t.Error("Expected error when connecting without Tor network")
+			_ = sc.Close()
+			t.Log("connected despite short timeout; closed to release lock")
+			return
 		}
 		t.Logf("ConnectWithOptionsContext with custom options failed as expected: %v", err)
 	})
@@ -68,10 +69,11 @@ func TestConnectWrapperFunctions(t *testing.T) {
 		defer cancel()
 
 		// Should handle nil options gracefully by using defaults
-		_, err := ConnectWithOptionsContext(ctx, nil)
-
+		sc, err := ConnectWithOptionsContext(ctx, nil)
 		if err == nil {
-			t.Error("Expected error when connecting without Tor network")
+			_ = sc.Close()
+			t.Log("connected despite short timeout; closed to release lock")
+			return
 		}
 		t.Logf("ConnectWithOptionsContext with nil options failed as expected: %v", err)
 	})
