@@ -4,6 +4,8 @@
 
 HTTP 目录端口仍可能 `InsecureSkipVerify`。没有密码学验签时，MITM 可喂假共识。验签后，攻击者必须同时掌握 **≥5 个** 硬编码权威的 identity 私钥。
 
+`r` / `valid-*` / `params` **只解析签名范围**（`network-status-version` … 第一个 `directory-signature `）。签名行从该关键字起另解析。未签名前缀/后缀里的 relay 或 `valid-until` 不得进入结果。
+
 ## 对照
 
 - Spec：https://spec.torproject.org/dir-spec/consensus-formats.html

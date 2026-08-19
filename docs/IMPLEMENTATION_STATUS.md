@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/dns-resolve-leak-0ece`  
+**分支**：`cursor/audit-fixes-0ece`  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -52,6 +52,7 @@
 - `valid-after` / `fresh-until` / `valid-until`、flags、bandwidth、`m` digest 有解析。
 - Authority 列表已更新到当前公开 IP。
 - 生产 `FetchConsensus` 在 metadata 之外强制 `VerifyConsensusSignatures`：`/tor/keys/fp/<id>`、`dir-signing-key`、`dir-key-certification`、`dir-key-crosscert`、majority（5/9）。
+- `r` / `valid-*` / `params` 只解析 signed body；未签名前缀/后缀不得注入 relay 或改写有效期。
 - 真实网络：`TestRealConsensusSignatures` 验证 **9/9** 权威签名，共识含 10143 个 relay。
 - 详见 `docs/interop/consensus.md`。
 - **缺口**：证书未落盘；缺官方长期 fixture。`docs/MICRODESCRIPTOR_FETCHING.md` 仍写错 `a sha256=` 行（实际是 `m` 行）。
@@ -128,7 +129,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 - 真实网络：`TestRealFlowControlSoak` 经 SOCKS 下载 282KB，电路未 DESTROY。
 - **缺口**：1MB–100MB soak、FlowCtrl=2（ntor-v3 congestion control）。
 
-### SOCKS5 / DNS — WORKING（CONNECT） / PARTIAL（RESOLVE）
+### SOCKS5 / DNS — WORKING（CONNECT + RESOLVE）
 
 - SOCKS5 CONNECT：域名 / IPv4 / IPv6。
 - 域名走 Exit 解析（`socks5h` / RELAY_BEGIN hostname）。
@@ -179,6 +180,9 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 | 15 | 大流量 DESTROY / hang | 电路级 SENDME 发空 v0，现代 exit 拒收 | flow-control SENDME v1；C Tor sendme.c；Arti SendmeValidator |
 | 16 | 共识只数签名个数 | `VerifyConsensusSignatures` 从未被 `FetchConsensus` 调用；证书取第一把 RSA（identity） | dir-spec consensus-formats / authority-key-certificates；C Tor signed boundaries |
 | 17 | RELAY_RESOLVE 被 exit 丢掉 | StreamID=0（C Tor bug 7889）；PTR 发二进制而非 arpa 名 | remote-hostname-lookup；relay-cells |
+| 18 | 验签未绑定解析结果 | 整份 HTTP 文档都解析，签名只覆盖 prefix；可注入未签名 r 行 | 只解析 signed body；签名行另取 |
+| 19 | SENDME 竞态 / 重复发出 / window=0 漏 tag | 减窗与记 tag 分锁；inbound 突发重复 SENDME；`packageWindow > 0` | 原子减窗；凑满 100 立即占位；含 window=0 |
+| 20 | CREATE2 waiter 竞态与 mux 泄漏 | 先发 CREATE2 再登记 waiter；失败不关 mux | ExpectCreated2 在发送前；Close 停 mux |
 
 ---
 

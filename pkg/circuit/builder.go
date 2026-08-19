@@ -118,7 +118,7 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 
 	ext, err := b.handshakeAndCreateGuard(buildCtx, circuit, p.Guard)
 	if err != nil {
-		circuit.SetState(StateFailed)
+		circuit.Close()
 		return nil, err
 	}
 
@@ -126,7 +126,7 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 	ext.SetTargetRelay(p.Middle)
 	middleAddr := fmt.Sprintf("%s:%d", p.Middle.Address, p.Middle.ORPort)
 	if err := ext.ExtendCircuit(buildCtx, middleAddr, HandshakeTypeNTor); err != nil {
-		circuit.SetState(StateFailed)
+		circuit.Close()
 		return nil, fmt.Errorf("failed to extend to middle hop: %w", err)
 	}
 
@@ -136,7 +136,7 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 	ext.SetTargetRelay(p.Exit)
 	exitAddr := fmt.Sprintf("%s:%d", p.Exit.Address, p.Exit.ORPort)
 	if err := ext.ExtendCircuit(buildCtx, exitAddr, HandshakeTypeNTor); err != nil {
-		circuit.SetState(StateFailed)
+		circuit.Close()
 		return nil, fmt.Errorf("failed to extend to exit hop: %w", err)
 	}
 
@@ -167,7 +167,7 @@ func (b *Builder) BuildFirstHop(ctx context.Context, guard *directory.Relay, tim
 	defer cancel()
 
 	if _, err := b.handshakeAndCreateGuard(buildCtx, circuit, guard); err != nil {
-		circuit.SetState(StateFailed)
+		circuit.Close()
 		return nil, err
 	}
 	return circuit, nil
@@ -197,6 +197,7 @@ func (b *Builder) handshakeAndCreateGuard(ctx context.Context, circuit *Circuit,
 	ext := NewExtension(circuit, b.logger)
 	ext.SetTargetRelay(guard)
 	if err := ext.CreateFirstHop(ctx, HandshakeTypeNTor); err != nil {
+		circuit.Close()
 		return nil, fmt.Errorf("failed to create first hop: %w", err)
 	}
 	b.logger.Info("First hop created with ntor handshake", "guard", guard.Nickname)
