@@ -254,6 +254,9 @@ func (c *Client) parseMicrodescriptors(data []byte, digestMap map[string][]*Rela
 			if len(fields.family) > 0 {
 				relay.Family = fields.family
 			}
+			if len(fields.familyIDs) > 0 {
+				relay.FamilyIDs = fields.familyIDs
+			}
 			if fields.policy != nil {
 				relay.ExitPolicy = fields.policy
 			}
@@ -303,6 +306,7 @@ type microdescFields struct {
 	ntorKey     []byte
 	identityKey []byte
 	family      []string
+	familyIDs   []string
 	policy      *ExitPolicySummary
 	policyIPv6  *ExitPolicySummary
 	ipv6        string
@@ -334,6 +338,10 @@ func parseMicrodescriptorFields(doc []byte) microdescFields {
 		case "family":
 			if len(fields) > 1 {
 				out.family = append([]string{}, fields[1:]...)
+			}
+		case "family-ids":
+			if len(fields) > 1 {
+				out.familyIDs = parseFamilyIDs(fields[1:])
 			}
 		case "p":
 			if pol, err := ParseExitPolicySummary(line); err == nil {

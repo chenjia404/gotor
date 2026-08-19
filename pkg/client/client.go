@@ -468,6 +468,19 @@ func (c *Client) buildCircuitForTarget(ctx context.Context, target path.ExitTarg
 			return nil, fmt.Errorf("failed to fetch path microdescriptors: %w", err)
 		}
 
+		// microdesc 补齐 family-ids / family 后，同家族 hop 必须重选。
+		if path.PathHopsShareFamily(c.directory, selectedPath) {
+			c.logger.Warn("path hops share family, selecting another path",
+				"guard", selectedPath.Guard.Nickname,
+				"middle", selectedPath.Middle.Nickname,
+				"exit", selectedPath.Exit.Nickname,
+				"attempt", attempt)
+			if attempt == maxCircuitPathAttempts {
+				return nil, fmt.Errorf("no family-diverse path after %d attempts", maxCircuitPathAttempts)
+			}
+			continue
+		}
+
 		// microdesc 补齐 p/p6 后，丢掉不允许该目标的 exit 并重选。
 		if !selectedPath.Exit.AllowsExitTarget(target.Port, target.IP) {
 			c.logger.Warn("Exit policy rejects target, selecting another path",
@@ -561,14 +574,29 @@ func (c *Client) buildCircuitForTarget(ctx context.Context, target path.ExitTarg
 // tryLinkConflux 在第一路已建好且三跳均宣告 Conflux 时按需建第二腿并做 LINK。
 // 第二腿建路失败：保持单电路，不标 Conflux。握手已发 LINK 后失败：两条都关。
 func (c *Client) tryLinkConflux(ctx context.Context, builder *circuit.Builder, first *path.Path, primary *circuit.Circuit) error {
-	secondPath, err := c.pathSelector.SelectConfluxSecondPath(first)
-	if err != nil {
-		return err
-	}
-	if err := c.directory.FetchMicrodescriptorsFor(ctx, []*directory.Relay{
-		secondPath.Guard, secondPath.Middle, secondPath.Exit,
-	}); err != nil {
-		return fmt.Errorf("conflux second path microdescriptors: %w", err)
+	var secondPath *path.Path
+	for attempt := 1; attempt <= maxCircuitPathAttempts; attempt++ {
+		var err error
+		secondPath, err = c.pathSelector.SelectConfluxSecondPath(first)
+		if err != nil {
+			return err
+		}
+		if err := c.directory.FetchMicrodescriptorsFor(ctx, []*directory.Relay{
+			secondPath.Guard, secondPath.Middle, secondPath.Exit,
+		}); err != nil {
+			return fmt.Errorf("conflux second path microdescriptors: %w", err)
+		}
+		if path.PathHopsShareFamily(c.directory, secondPath) || path.ConfluxLegsShareFamily(c.directory, first, secondPath) {
+			c.logger.Warn("conflux second path shares family, selecting another",
+				"guard", secondPath.Guard.Nickname,
+				"middle", secondPath.Middle.Nickname,
+				"attempt", attempt)
+			if attempt == maxCircuitPathAttempts {
+				return fmt.Errorf("conflux second path shares family after %d attempts", maxCircuitPathAttempts)
+			}
+			continue
+		}
+		break
 	}
 
 	c.logger.Info("Building Conflux second leg",

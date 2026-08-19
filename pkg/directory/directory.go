@@ -135,7 +135,8 @@ type Relay struct {
 	IdentityKey     []byte             // Ed25519 identity key (32 bytes)
 	NtorOnionKey    []byte             // Curve25519 ntor onion key (32 bytes)
 	MicrodescDigest string             // SHA256 digest of microdescriptor (base64, no padding)
-	Family          []string           // Relay family members (fingerprints) - Path Selection Enhancement
+	Family          []string           // microdesc / descriptor 的 family 列表（$HEX 或 nickname）
+	FamilyIDs       []string           // microdesc family-ids（Desc=4 / happy families）
 	Bandwidth       uint64             // Advertised bandwidth in bytes/sec (from "w" line) - path-spec.txt §2.2
 	ExitPolicy      *ExitPolicySummary // 共识或 microdescriptor 的 p 行（IPv4 摘要）
 	ExitPolicyIPv6  *ExitPolicySummary // microdescriptor 的 p6 / descriptor 的 ipv6-policy
@@ -810,37 +811,6 @@ func allZero(b []byte) bool {
 		acc |= v
 	}
 	return acc == 0
-}
-
-// InSameFamily checks if this relay is in the same family as another relay
-// Family relationships are bidirectional - both relays must list each other
-// This implements family validation per path-spec.txt §2.2.1
-func (r *Relay) InSameFamily(other *Relay) bool {
-	if r.Fingerprint == other.Fingerprint {
-		return true // Same relay
-	}
-
-	// Check if other relay is in this relay's family
-	thisHasOther := false
-	for _, member := range r.Family {
-		// Family members can be listed as fingerprints or nicknames
-		if member == other.Fingerprint || member == other.Nickname {
-			thisHasOther = true
-			break
-		}
-	}
-
-	// Check if this relay is in other relay's family
-	otherHasThis := false
-	for _, member := range other.Family {
-		if member == r.Fingerprint || member == r.Nickname {
-			otherHasThis = true
-			break
-		}
-	}
-
-	// Family relationship is valid only if bidirectional
-	return thisHasOther && otherHasThis
 }
 
 // InSameSubnet checks if this relay shares a /16 subnet with another relay

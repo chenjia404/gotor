@@ -141,6 +141,50 @@ func TestSelectConfluxSecondPathExcludesFamily(t *testing.T) {
 	}
 }
 
+func TestSelectConfluxSecondPathExcludesFamilyID(t *testing.T) {
+	g1 := confluxRelay("G1", "AAAA1111AAAA1111AAAA1111AAAA1111AAAA1111", "10.0.1.1", []string{"Running", "Valid", "Guard", "Stable"})
+	gFam := confluxRelay("Gfam", "AAAA3333AAAA3333AAAA3333AAAA3333AAAA3333", "11.0.1.1", []string{"Running", "Valid", "Guard", "Stable"})
+	g2 := confluxRelay("G2", "AAAA2222AAAA2222AAAA2222AAAA2222AAAA2222", "10.1.1.2", []string{"Running", "Valid", "Guard", "Stable"})
+	g1.FamilyIDs = []string{"ed25519:HAPPYFAM"}
+	gFam.FamilyIDs = []string{"ed25519:HAPPYFAM"}
+	m1 := confluxRelay("M1", "BBBB1111BBBB1111BBBB1111BBBB1111BBBB1111", "172.16.2.1", []string{"Running", "Valid"})
+	m2 := confluxRelay("M2", "BBBB2222BBBB2222BBBB2222BBBB2222BBBB2222", "172.17.2.2", []string{"Running", "Valid"})
+	e1 := confluxRelay("E1", "CCCC1111CCCC1111CCCC1111CCCC1111CCCC1111", "192.168.3.1", []string{"Running", "Valid", "Exit"})
+	sel := newConfluxSelector([]*directory.Relay{g1, gFam, g2, m1, m2, e1}, []*directory.Relay{g1, gFam, g2})
+	second, err := sel.SelectConfluxSecondPath(&Path{Guard: g1, Middle: m1, Exit: e1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Guard == gFam {
+		t.Fatal("第二腿 Guard 不得与第一腿共享 family-ids")
+	}
+	if second.Guard != g2 {
+		t.Fatalf("want G2, got %s", second.Guard.Nickname)
+	}
+}
+
+func TestSelectConfluxSecondPathGuardAvoidsExitFamilyID(t *testing.T) {
+	g1 := confluxRelay("G1", "AAAA1111AAAA1111AAAA1111AAAA1111AAAA1111", "10.0.1.1", []string{"Running", "Valid", "Guard", "Stable"})
+	gExitFam := confluxRelay("Gex", "AAAA3333AAAA3333AAAA3333AAAA3333AAAA3333", "11.0.1.1", []string{"Running", "Valid", "Guard", "Stable"})
+	g2 := confluxRelay("G2", "AAAA2222AAAA2222AAAA2222AAAA2222AAAA2222", "10.1.1.2", []string{"Running", "Valid", "Guard", "Stable"})
+	m1 := confluxRelay("M1", "BBBB1111BBBB1111BBBB1111BBBB1111BBBB1111", "172.16.2.1", []string{"Running", "Valid"})
+	m2 := confluxRelay("M2", "BBBB2222BBBB2222BBBB2222BBBB2222BBBB2222", "172.17.2.2", []string{"Running", "Valid"})
+	e1 := confluxRelay("E1", "CCCC1111CCCC1111CCCC1111CCCC1111CCCC1111", "192.168.3.1", []string{"Running", "Valid", "Exit"})
+	e1.FamilyIDs = []string{"ed25519:EXITFAM"}
+	gExitFam.FamilyIDs = []string{"ed25519:EXITFAM"}
+	sel := newConfluxSelector([]*directory.Relay{g1, gExitFam, g2, m1, m2, e1}, []*directory.Relay{g1, gExitFam, g2})
+	second, err := sel.SelectConfluxSecondPath(&Path{Guard: g1, Middle: m1, Exit: e1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Guard == gExitFam {
+		t.Fatal("第二腿 Guard 不得与共享 Exit 同 family-ids")
+	}
+	if second.Guard != g2 {
+		t.Fatalf("want G2, got %s", second.Guard.Nickname)
+	}
+}
+
 func TestSelectConfluxSecondPathRequiresDistinctGuard(t *testing.T) {
 	g1 := confluxRelay("G1", "AAAA1111AAAA1111AAAA1111AAAA1111AAAA1111", "10.0.1.1", []string{"Running", "Valid", "Guard", "Stable"})
 	m1 := confluxRelay("M1", "BBBB1111BBBB1111BBBB1111BBBB1111BBBB1111", "172.16.2.1", []string{"Running", "Valid"})

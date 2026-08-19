@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/authcert-disk-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
+**分支**：`cursor/family-ids-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + **现行** Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -48,7 +48,7 @@
 | SENDME / flow control | WORKING | FlowCtrl=2 TOR_VEGAS 已实现；真实 soak **1059120** 字节，电路未 DESTROY。10–100MB / 多流仍见 P0.2 |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
-| Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family ID（Desc=4）未用 |
+| Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family-ids（Desc=4）已用于避让，待真实验收 |
 | Exit policy | PARTIAL | 已解析 `p`/`p6` 与完整 accept/reject；IPv6 字面量按 p6 选路。真实验收待 `TestRealExitPolicyP6` |
 | Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
@@ -213,9 +213,18 @@
 
 #### 12. Family ID（Desc=4）
 
-- **状态**：MISSING。microdesc 可能已有 family 行解析，但选路未按 family cert / family ID 避让。
-- **Spec**：dir-spec family IDs；proposal 321/355
-- **验收**：明确同一 family 的 Guard/Middle/Exit 不会被选到同一条电路。
+- **状态**：PARTIAL（microdesc `family-ids` + `InSameFamily`；未跑真实网络）。
+- **已做**：
+  - 解析 `family-ids`（含未识别格式）；共享任一 ID 即同家族
+  - 旧 `family` 列表仍要求双向；支持 `$HEX` / `$HEX=name` / `$HEX~name`
+  - 共识 `use-family-ids` / `use-family-lists`（缺省 1）
+  - 选路与 Conflux 第二腿走同一判断
+  - 建路前（及 Conflux 第二腿）在 microdesc 补齐后重验，冲突则重选
+- **未做**：从 server descriptor 的 `family-cert` 本地导出 ID（microdesc 客户端不需要）
+- **Spec**：path-spec determining family membership；dir-spec family-ids；proposal 321
+- **现有代码**：`pkg/directory/family.go`；文档 `docs/interop/family-ids.md`
+- **验收**：同一 family ID 不会出现在同一条电路的多个 hop。真实验收后标 WORKING。
+- **禁止**：忽略 family-ids 只靠 nickname；为过测试放松双向列表；C 库 / CGO。
 
 #### 13. 文档债务
 
@@ -322,6 +331,7 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 - build 前 `FetchMicrodescriptorsFor`，缺 key 则失败。
 - 预建按端口 443 选 exit；禁止把非 Exit 当 fallback。
 - IPv6 字面量按 `p6` 选路；缺 p6 拒绝。完整 `accept`/`reject` 已解析。
+- 选路按 `family-ids` 与双向 `family` 列表避让；见 `docs/interop/family-ids.md`。
 
 ---
 
