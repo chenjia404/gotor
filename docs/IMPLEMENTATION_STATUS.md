@@ -184,8 +184,8 @@
   - `SendRelayCellToHop`：协商发往第二跳（`encryptOnion` dest）
   - `Client.refreshCircpadConfig` / `StartHSSetupPaddingOn`（读 `circpad_padding_disabled`）
   - Intro DROPs 7–10；单测覆盖编解码与状态机
-- **未做**：完整直方图延迟定时器；onion e2e 真实验收 circpad；BEGIN_DIR 拉 HS 描述符
-- **已接线**：`onion.Client.AfterIntroduce1` → socks `StartHSSetupPadding(HSSetupIntro)`；共识 `SetCircpadConfig`
+- **未做**：完整直方图延迟定时器；onion e2e 真实验收 circpad；完整 KEYBLIND（BEGIN_DIR 传输已 WORKING）
+- **已接线**：`onion.Client.AfterIntroduce1` → socks `StartHSSetupPadding(HSSetupIntro)`；共识 `SetCircpadConfig`；`BegindirFetcher`
 - **Spec**：https://spec.torproject.org/padding-spec ；proposal 302
 - **现有代码**：`pkg/circuit/circpad.go`、`circpad_runtime.go`、`circuit.go`；`pkg/client`；`docs/interop/circuit-padding.md`
 - **禁止**：发明与 spec 不符的随机 padding 并宣称合规。
