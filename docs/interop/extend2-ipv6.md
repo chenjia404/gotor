@@ -38,8 +38,11 @@ IPv4-only：NSPEC=3，无 `[01]`。
 - 用 C 库 / `import "C"` / CGO。
 - 无真实双栈 EXTENDED2 就把状态标成 WORKING。
 
-## 真实网络
+## 真实网络（2026-08-19）
 
 `TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration -run TestRealExtend2IPv6`
 
-未跑通前本项为 UNVERIFIED。
+- 共识 10186 个中继，5532 个有 IPv6 ORPort，全部宣告 `Relay=3`
+- Guard `NTH115R1` → Middle `prsv` EXTEND2 NSPEC=4 `[01] [2001:41d0:701:1100::7a21]:9200` → EXTENDED2
+- Middle → Exit `DFRI80` EXTEND2 NSPEC=4 `[01] [2001:67c:289c:2::40]:80` → EXTENDED2
+- 3-hop READY

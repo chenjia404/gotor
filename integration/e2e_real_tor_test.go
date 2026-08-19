@@ -594,7 +594,7 @@ func TestRealExtend2IPv6(t *testing.T) {
 	if circ.Length() != 3 || circ.GetState() != circuit.StateOpen {
 		t.Fatalf("state=%s hops=%d", circ.GetState(), circ.Length())
 	}
-	t.Logf("EXTEND2 IPv6 OK\n  Guard  %s %s relay3=%v\n  Middle %s %s ipv6=%s:%d\n  Exit   %s %s ipv6=%s:%d",
+	t.Logf("EXTEND2 IPv6 OK\n  Guard  %s %s relay3=%v\n  Middle %s %s ipv6=[%s]:%d\n  Exit   %s %s ipv6=[%s]:%d",
 		selected.Guard.Nickname, selected.Guard.GetFingerprintHex(), selected.Guard.AdvertisesExtendIPv6(),
 		selected.Middle.Nickname, selected.Middle.GetFingerprintHex(), selected.Middle.IPv6, selected.Middle.IPv6Port,
 		selected.Exit.Nickname, selected.Exit.GetFingerprintHex(), selected.Exit.IPv6, selected.Exit.IPv6Port)

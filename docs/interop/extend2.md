@@ -67,3 +67,5 @@ RELAY_EARLY、StreamID=0、Length = Data 长度。
 5. 目标字符串本身已是 IPv6 时，不重复第二个 `[01]`。
 
 仍兼容极旧的 `a sha256=`（microdesc digest 现已在 `m` 行）。
+
+真实网络（2026-08-19 `TestRealExtend2IPv6`）：`NTH115R1` → `prsv` `[2001:41d0:701:1100::7a21]:9200` → `DFRI80` `[2001:67c:289c:2::40]:80`，两次 NSPEC=4 + EXTENDED2。
