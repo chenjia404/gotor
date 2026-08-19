@@ -16,6 +16,7 @@
 | 官方有我们没有 | 官方 C Tor / Arti 具备，gotor 无可用实现 |
 
 禁止事项对**每一项后续实现**都适用：禁止全零 key fallback、禁止 mock/本地桩当完成、禁止为过测试放松协议校验、禁止 CGO、禁止把「ORPort 通了」写成「已进共识」。
+公开 PR / commit **禁止** 写真实服务器名、公网 IP、中继指纹、联系人、内网仓库地址。真网观察用「实验中继」「权威已收描述符」「缺 Running」等不带识别信息的说法。
 
 ---
 
@@ -67,9 +68,9 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 
 近期：**G123**（TLS 会话恢复绕过证书校验）已用 `VerifyConnection` 修好，见 `pkg/connection/connection.go`（2026-08，`2612779`）。客户端 Link 身份校验仍以 CERTS 为准，不把 TLS 成功当成身份成功。
 
-### de5 现状（2026-08-19）
+### 实验中继现状（2026-08-19）
 
-公开中继 **de5**：描述符权威 **HTTP 200**，投票可见 **Valid / V2Dir**，**缺 Running**，**未进共识**。ORPort 通 ≠ 上线。
+实验中继：权威已收描述符，投票可见 **Valid / V2Dir**，**缺 Running**，**未进共识**。ORPort 通 ≠ 上线。
 
 ---
 
@@ -104,11 +105,11 @@ proto Link=3-5 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ## 给后续实现的清单（按优先级）
 
-做完一项：改本文件状态 + `IMPLEMENTATION_STATUS.md`，写真网路径 / 权威投票 / 共识指纹。一个 PR 只做一项。
+做完一项：改本文件状态 + `IMPLEMENTATION_STATUS.md`，写真网路径 / 权威投票 / 是否进共识（不要写真实主机、地址或指纹）。一个 PR 只做一项。
 
 ### 1. 中继进共识（Running / self-test）
 
-- [ ] **状态**：PARTIAL（描述符可上传；de5 有 Valid/V2Dir、无 Running）
+- [ ] **状态**：PARTIAL（描述符可上传；实验中继有 Valid/V2Dir、无 Running）
 - **现有代码**：`pkg/relay/descriptor.go`、`pkg/relay/publisher.go`、`pkg/relay/server.go`（`startPublisher`）、`pkg/relay/descriptor_verify.go`
 - **要做**：对照 C Tor `router.c` / `routerkeys.c` 的 reachability self-test（经电路连回自己的 ORPort）；修复 `proto` 只宣告已实现能力；确认权威投票出现 `Running` 且进入共识 `r` 行。
 - **禁止**：把权威 200 或 Valid 写成「已进共识」；伪造 Running；全零 identity / ntor key。

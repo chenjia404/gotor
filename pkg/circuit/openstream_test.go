@@ -9,7 +9,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/cell"
 )
 
-// TestWaitStreamConnectedDemux 复现 de5 日志里的 wrong stream：
+// TestWaitStreamConnectedDemux 复现错误分流：
 // 电路上先到其它流的 DATA，OpenStream 不得因此失败。
 func TestWaitStreamConnectedDemux(t *testing.T) {
 	c := NewCircuit(1)
