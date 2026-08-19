@@ -257,7 +257,7 @@
 
 ## 分类明细（已完成部分）
 
-### Directory / Consensus — PARTIAL
+### Directory / Consensus — WORKING
 
 - 默认拉 `consensus-microdesc`（当前 Tor Network 默认格式）。
 - `r` 行 identity 按 **无 padding base64** 解成 20 字节 `RSAIdentity`，并提供 40 字符大写 hex 给 CERTS。
@@ -266,8 +266,9 @@
 - 生产 `FetchConsensus` 在 metadata 之外强制 `VerifyConsensusSignatures`：`/tor/keys/fp/<id>`、`dir-signing-key`、`dir-key-certification`、`dir-key-crosscert`、majority（5/9）。
 - 权威证书落盘 `DataDirectory/cached-certs`；加载时重验签，过期拒绝。见 `docs/interop/authcert-cache.md`。
 - DirCache=2：有缓存时请求 limited ed consensus diff；apply / 验签失败回退整份。见 `docs/interop/consensus-diff.md`。
+- **真实 Diff（2026-08-19）**：CollecTor 上一小时灌入 → moria1 limited-ed → **10193** relays。
 - `r` / `valid-*` / `params` 只解析 signed body；未签名前缀/后缀不得注入 relay 或改写有效期。
-- 真实网络：`TestRealConsensusSignatures` 验证 **9/9** 权威签名，共识含约 10143 个 relay。
+- 真实网络：`TestRealConsensusSignatures` 验证 **9/9** 权威签名。
 - 详见 `docs/interop/consensus.md`。
 
 ### Microdescriptor — PARTIAL（解析 blocker 已修）
@@ -400,4 +401,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准：** DirCache=2 consensus diff / Desc=4 family-ids / authcert 重启真实验收（Phase 1.3–1.5）；其后 Padding=2（Phase 2）。
+**下一轮完成标准：** Desc=4 family-ids / authcert 重启真实验收（Phase 1.4–1.5）；其后 Padding=2（Phase 2）。
