@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rsa"
 	"crypto/sha1" // #nosec G505 - SHA-1 required by Tor spec for RSA fingerprints
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/binary"
 	"fmt"
@@ -13,6 +14,20 @@ import (
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 )
+
+// rsaEd25519CrossCertPrefix 是 type 7 交叉证书的签名前缀。
+//
+// 现代中继的主身份是 Ed25519（type 4/5/7 的 certified key、microdesc `id ed25519`）。
+// RSA-1024 已不是流量加密或电路握手密钥，只作为共识 `r` 行指纹 / ntor NODEID
+// 的遗留身份，并由 type 7 把它绑定到 Ed25519。
+//
+// cert-spec 写 FIELDS 为「除 SIGNATURE 外的全部字段」（含 SIGLEN），
+// 但 C Tor / 真实 CERTS 的 signed payload 是 PREFIX || KEY || EXP（36 字节），不含 SIGLEN。
+// 以能通过 mainnet 的 C Tor 行为为准。
+const rsaEd25519CrossCertPrefix = "Tor TLS RSA/Ed25519 cross-certificate"
+
+// rsaEd25519CrossCertSignedLen 是 KEY(32)+EXPIRATION(4)。
+const rsaEd25519CrossCertSignedLen = 36
 
 // ExtTypeSignedWithEd25519Key 是 cert-spec 的 signed-with-ed25519-key 扩展。
 // ExtLen=32，ExtData 为签名所用的 Ed25519 公钥。
@@ -215,6 +230,8 @@ func parseRSAEd25519CrossCert(data []byte) (*Ed25519Certificate, error) {
 		ExpiresAt:    time.Unix(int64(hours)*3600, 0).UTC(),
 		CertifiedKey: key,
 		Signature:    sig,
+		// KEY || EXPIRATION。C Tor 不把 SIGLEN 纳入哈希。
+		SignedBytes: append([]byte(nil), data[:rsaEd25519CrossCertSignedLen]...),
 	}, nil
 }
 
@@ -419,7 +436,7 @@ func (c *CERTSCell) ValidateExpiration() error {
 
 // VerifySignature 按 cert-spec 验证 Ed25519 证书签名。
 // 签名覆盖证书在 SIGNATURE 之前的全部字段，没有 prefix 字符串
-//（见 spec：「this signature is not personalized with a prefix string」）。
+// （见 spec：「this signature is not personalized with a prefix string」）。
 //
 // signingKey 必须是实际签名公钥。type 4 由长期 identity 签名，不是 self-signed。
 // 若存在 signed-with-ed25519-key 扩展，其公钥必须与 signingKey 一致。
@@ -486,12 +503,83 @@ func EncodeEd25519Certificate(cert *Ed25519Certificate) []byte {
 	return out
 }
 
-// ValidateSignatures verifies Ed25519 certificate signatures in the CERTS cell
-// This implements cryptographic signature verification per cert-spec.txt
+// verifyType7RSACrossCert 用 type 2 遗留 RSA 公钥校验 type 7，
+// 把现代 Ed25519 主身份绑到共识仍在使用的 RSA 指纹。
 //
-// For Type 4 (Ed25519 signing key), the certificate should be self-signed
-// or signed by the identity key found in another certificate.
+// 没有这条绑定，攻击者可保留真实 type 2（指纹匹配共识）同时替换 Ed25519 identity。
+func (c *CERTSCell) verifyType7RSACrossCert() error {
+	type7 := c.FindCertificate(CertTypeEd25519Identity)
+	if type7 == nil {
+		return nil
+	}
+	if type7.Ed25519Cert == nil {
+		return fmt.Errorf("type 7 RSA→Ed25519 cross-cert was present but not parsed")
+	}
+
+	type2 := c.FindCertificate(CertTypeRSAID)
+	if type2 == nil || type2.X509Cert == nil {
+		return fmt.Errorf("type 7 RSA→Ed25519 cross-cert requires type 2 RSA identity certificate")
+	}
+	rsaPub, ok := type2.X509Cert.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("type 2 certificate does not contain RSA public key")
+	}
+	if err := verifyRSAEd25519CrossCert(type7.Ed25519Cert, rsaPub); err != nil {
+		return fmt.Errorf("type 7 RSA→Ed25519 cross-cert verification failed: %w", err)
+	}
+	return nil
+}
+
+func verifyRSAEd25519CrossCert(cross *Ed25519Certificate, rsaPub *rsa.PublicKey) error {
+	if cross == nil || rsaPub == nil {
+		return fmt.Errorf("missing cross-cert or RSA identity key")
+	}
+	if len(cross.CertifiedKey) != 32 {
+		return fmt.Errorf("invalid Ed25519 identity length: %d", len(cross.CertifiedKey))
+	}
+	if len(cross.Signature) < 128 {
+		return fmt.Errorf("RSA signature too short: %d", len(cross.Signature))
+	}
+
+	fields := cross.SignedBytes
+	if len(fields) == 0 {
+		fields = reconstructRSAEd25519CrossCertFields(cross)
+	}
+	if len(fields) != rsaEd25519CrossCertSignedLen {
+		return fmt.Errorf("invalid type 7 signed fields length: %d", len(fields))
+	}
+
+	msg := make([]byte, 0, len(rsaEd25519CrossCertPrefix)+len(fields))
+	msg = append(msg, rsaEd25519CrossCertPrefix...)
+	msg = append(msg, fields...)
+	digest := sha256.Sum256(msg)
+	if err := rsa.VerifyPKCS1v15(rsaPub, 0, digest[:], cross.Signature); err != nil {
+		return err
+	}
+	return nil
+}
+
+func reconstructRSAEd25519CrossCertFields(cross *Ed25519Certificate) []byte {
+	if cross == nil || len(cross.CertifiedKey) != 32 {
+		return nil
+	}
+	fields := make([]byte, 0, rsaEd25519CrossCertSignedLen)
+	fields = append(fields, cross.CertifiedKey...)
+	exp := make([]byte, 4)
+	binary.BigEndian.PutUint32(exp, uint32(cross.ExpiresAt.Unix()/3600))
+	fields = append(fields, exp...)
+	return fields
+}
+
+// ValidateSignatures 校验 CERTS 证书链。
+//
+// 现代身份链：type 7 给出 Ed25519 主身份，type 4/5/6 由 Ed25519 签名。
+// 遗留绑定：type 7 本身必须由 type 2 RSA 做 PKCS#1 交叉签名，才能与共识指纹对齐。
 func (c *CERTSCell) ValidateSignatures() error {
+	if err := c.verifyType7RSACrossCert(); err != nil {
+		return err
+	}
+
 	for _, cert := range c.Certificates {
 		switch cert.CertType {
 		case CertTypeEd25519Signing, CertTypeEd25519TLSLink, CertTypeEd25519Auth:
