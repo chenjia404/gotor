@@ -58,6 +58,9 @@ const (
 	NtorHandshakeLen   = 84 // NODEID(20) || KEYID(32) || CLIENT_PK(32)
 	NtorResponseLen    = 64 // Y(32) || AUTH(32)
 	NtorKeyMaterialLen = 72 // Df(20) || Db(20) || Kf(16) || Kb(16)
+	// NtorCircNonceLen：C Tor onion_skin_*_handshake 额外展开 DIGEST_LEN，供 ESTABLISH_INTRO MAC。
+	NtorCircNonceLen = 20
+	NtorExpandedLen  = NtorKeyMaterialLen + NtorCircNonceLen // 92
 )
 
 func ntorHMAC(key string, msg []byte) []byte {
@@ -68,12 +71,25 @@ func ntorHMAC(key string, msg []byte) []byte {
 
 func ntorExpandKeyMaterial(secretInput []byte) ([]byte, error) {
 	// C Tor / Arti：IKM 是 secret_input，不是 KEY_SEED。
+	// 展开 92 字节：前 72 为电路密钥，后 20 为 rend_circ_nonce（ESTABLISH_INTRO KH）。
 	reader := hkdf.New(sha256.New, secretInput, []byte(ntorTKey), []byte(ntorMExpand))
-	out := make([]byte, NtorKeyMaterialLen)
+	out := make([]byte, NtorExpandedLen)
 	if _, err := io.ReadFull(reader, out); err != nil {
 		return nil, fmt.Errorf("ntor HKDF-Expand failed: %w", err)
 	}
 	return out, nil
+}
+
+// SplitNtorExpanded 将 92 字节展开结果拆为电路密钥与 circ_nonce。
+func SplitNtorExpanded(expanded []byte) (keyMaterial, circNonce []byte, err error) {
+	if len(expanded) < NtorExpandedLen {
+		return nil, nil, fmt.Errorf("ntor expanded material too short: %d", len(expanded))
+	}
+	km := make([]byte, NtorKeyMaterialLen)
+	copy(km, expanded[:NtorKeyMaterialLen])
+	cn := make([]byte, NtorCircNonceLen)
+	copy(cn, expanded[NtorKeyMaterialLen:NtorExpandedLen])
+	return km, cn, nil
 }
 
 func isAllZero(b []byte) bool {
@@ -153,17 +169,23 @@ func NtorClientHandshake(nodeID, ntorOnionKey []byte) (handshakeData, ephemeralP
 //
 // serverNodeID 必须是 20 字节 RSA fingerprint，与握手 NODEID 相同。
 func NtorProcessResponse(response, clientPrivate, serverNtorKey, serverNodeID []byte) ([]byte, error) {
+	km, _, err := NtorProcessResponseWithNonce(response, clientPrivate, serverNtorKey, serverNodeID)
+	return km, err
+}
+
+// NtorProcessResponseWithNonce 返回电路密钥与 rend_circ_nonce（ESTABLISH_INTRO MAC 密钥）。
+func NtorProcessResponseWithNonce(response, clientPrivate, serverNtorKey, serverNodeID []byte) (keyMaterial, circNonce []byte, err error) {
 	if len(response) != NtorResponseLen {
-		return nil, fmt.Errorf("invalid ntor response length: %d, expected %d", len(response), NtorResponseLen)
+		return nil, nil, fmt.Errorf("invalid ntor response length: %d, expected %d", len(response), NtorResponseLen)
 	}
 	if len(clientPrivate) != 32 {
-		return nil, fmt.Errorf("invalid client ephemeral private key length: %d", len(clientPrivate))
+		return nil, nil, fmt.Errorf("invalid client ephemeral private key length: %d", len(clientPrivate))
 	}
 	if len(serverNtorKey) != NtorOnionKeyLen {
-		return nil, fmt.Errorf("invalid ntor onion key length: %d", len(serverNtorKey))
+		return nil, nil, fmt.Errorf("invalid ntor onion key length: %d", len(serverNtorKey))
 	}
 	if len(serverNodeID) != NtorNodeIDLen {
-		return nil, fmt.Errorf("invalid ntor NODEID length: %d, expected %d", len(serverNodeID), NtorNodeIDLen)
+		return nil, nil, fmt.Errorf("invalid ntor NODEID length: %d, expected %d", len(serverNodeID), NtorNodeIDLen)
 	}
 
 	var serverY, auth, clientX, serverB [32]byte
@@ -173,14 +195,14 @@ func NtorProcessResponse(response, clientPrivate, serverNtorKey, serverNodeID []
 	copy(serverB[:], serverNtorKey)
 
 	if isAllZero(serverY[:]) {
-		return nil, fmt.Errorf("ntor server ephemeral public key is the identity point")
+		return nil, nil, fmt.Errorf("ntor server ephemeral public key is the identity point")
 	}
 
 	var sharedXY, sharedXB [32]byte
 	curve25519.ScalarMult(&sharedXY, &clientX, &serverY)
 	curve25519.ScalarMult(&sharedXB, &clientX, &serverB)
 	if isAllZero(sharedXY[:]) || isAllZero(sharedXB[:]) {
-		return nil, fmt.Errorf("ntor EXP() produced the identity point")
+		return nil, nil, fmt.Errorf("ntor EXP() produced the identity point")
 	}
 
 	var clientPub [32]byte
@@ -191,13 +213,16 @@ func NtorProcessResponse(response, clientPrivate, serverNtorKey, serverNodeID []
 	expectedAuth := ntorComputeAuth(verify, serverNodeID, serverNtorKey, serverY[:], clientPub[:])
 
 	if subtle.ConstantTimeCompare(auth[:], expectedAuth) != 1 {
-		return nil, fmt.Errorf("ntor AUTH verification failed: server authentication invalid")
+		return nil, nil, fmt.Errorf("ntor AUTH verification failed: server authentication invalid")
 	}
 
-	return ntorExpandKeyMaterial(secretInput)
+	expanded, err := ntorExpandKeyMaterial(secretInput)
+	if err != nil {
+		return nil, nil, err
+	}
+	return SplitNtorExpanded(expanded)
 }
 
-// ntorServerHandshakeCore 是服务端 ntor。onion service 的 hs-ntor 不走这里。
 func ntorServerHandshakeCore(clientHandshake, serverNtorPrivate, serverNodeID, ephemeralPrivate []byte) (response, keyMaterial []byte, err error) {
 	if len(clientHandshake) != NtorHandshakeLen {
 		return nil, nil, fmt.Errorf("invalid client handshake length: %d, expected %d", len(clientHandshake), NtorHandshakeLen)
@@ -256,6 +281,7 @@ func ntorServerHandshakeCore(clientHandshake, serverNtorPrivate, serverNodeID, e
 	if err != nil {
 		return nil, nil, err
 	}
+	keyMaterial = keyMaterial[:NtorKeyMaterialLen]
 
 	response = make([]byte, NtorResponseLen)
 	copy(response[0:32], serverEphemeral.Public[:])

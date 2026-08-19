@@ -18,9 +18,10 @@ func TestServiceWithCircuitBuilder(t *testing.T) {
 	}
 
 	config := &ServiceConfig{
-		PrivateKey:     privateKey,
-		NumIntroPoints: 1,
-		Ports:          map[int]string{80: "localhost:8080"},
+		PrivateKey:              privateKey,
+		NumIntroPoints:          1,
+		AllowPlaceholderIntros:  true,
+		Ports:                   map[int]string{80: "localhost:8080"},
 		// CircuitBuilder and PathSelector are nil - should fall back to placeholder
 	}
 
@@ -39,9 +40,9 @@ func TestServiceWithCircuitBuilder(t *testing.T) {
 	}
 
 	err = service.Start(ctx, hsdirs)
-	// We expect this to fail because no HSDirs are running, but intro points should be established
-	if err == nil {
-		t.Fatal("Expected error (no HSDirs running)")
+	// 占位模式下上传跳过，Start 应成功
+	if err != nil {
+		t.Fatalf("Start in placeholder mode: %v", err)
 	}
 
 	// Check that intro points were established with placeholder circuits
@@ -62,9 +63,10 @@ func TestEstablishIntroCircuitFallback(t *testing.T) {
 	}
 
 	config := &ServiceConfig{
-		PrivateKey:     privateKey,
-		NumIntroPoints: 2,
-		Ports:          map[int]string{80: "localhost:8080"},
+		PrivateKey:             privateKey,
+		NumIntroPoints:         2,
+		AllowPlaceholderIntros: true,
+		Ports:                  map[int]string{80: "localhost:8080"},
 		// No circuit builder - should use placeholders
 	}
 
@@ -95,8 +97,8 @@ func TestEstablishIntroCircuitFallback(t *testing.T) {
 		t.Error("Relay mismatch")
 	}
 
-	if len(intro.AuthKey) != 32 {
-		t.Errorf("Expected 32-byte auth key, got %d bytes", len(intro.AuthKey))
+	if len(intro.AuthPublic) != 32 {
+		t.Errorf("Expected 32-byte auth key, got %d bytes", len(intro.AuthPublic))
 	}
 
 	if len(intro.EncKey) != 32 {

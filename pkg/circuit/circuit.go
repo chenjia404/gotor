@@ -108,6 +108,9 @@ type Hop struct {
 	ForwardDigest  hash.Hash     // SHA-1 running digest for forward direction
 	BackwardDigest hash.Hash     // SHA-1 running digest for backward direction
 	CGO            *crypto.CGOPair
+
+	// RendCircNonce 是 C Tor rend_circ_nonce（DIGEST_LEN=20），ESTABLISH_INTRO HANDSHAKE_AUTH 的 MAC 密钥。
+	RendCircNonce []byte
 }
 
 // NewHop creates a new hop with the given parameters

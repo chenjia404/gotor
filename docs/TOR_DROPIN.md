@@ -42,6 +42,11 @@ gotor --version
 - `cached-certs`（既有）
 - HiddenServiceDir 下密钥与状态（既有 persistence）
 
-## 示例
+## 洋葱服务托管（PARTIAL）
 
-见 `examples/torrc.sample`。
+- torrc：`HiddenServiceDir` / `HiddenServicePort` 启动托管
+- ESTABLISH_INTRO：按 rend-spec（Ed25519 AUTH_KEY、HANDSHAKE_AUTH、签名）
+- 描述符上传：仅 BEGIN_DIR（禁止明文 DirPort）
+- 引言点：优先 Fast+Stable 中继
+
+真网发布/客户端接入完整验收仍在推进。
