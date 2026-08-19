@@ -13,9 +13,14 @@ import (
 type Config struct {
 	// Network settings
 	SocksPort       int    // SOCKS5 proxy port (default: 9050)
+	SocksListenAddr string // SOCKS 绑定地址（默认 127.0.0.1；兼容 SocksPort addr:port）
 	ControlPort     int    // Control protocol port (default: 9051)
-	ControlPassword string // Control protocol password (default: "" = no authentication)
-	DataDirectory   string // Directory for persistent state
+	ControlPassword string // 明文控制口令（非 C Tor 标准；优先于空哈希时使用）
+	// HashedControlPassword 为 C Tor 标准 `16:...` 哈希；与 CookieAuthentication 可并存
+	HashedControlPassword string
+	CookieAuthentication  bool   // 启用 control_auth_cookie
+	CookieAuthFile        string // 可选 cookie 路径；空则 DataDirectory/control_auth_cookie
+	DataDirectory         string // Directory for persistent state
 
 	// Circuit settings
 	CircuitBuildTimeout time.Duration // Max time to build a circuit (default: 60s)
@@ -30,6 +35,9 @@ type Config struct {
 	Bridges          []*BridgeInfo // Parsed bridge information (populated after LoadFromFile)
 	ExcludeNodes     []string      // Nodes to exclude from path selection
 	ExcludeExitNodes []string      // Exit nodes to exclude
+	ExitNodes        []string      // 仅允许的出口（C Tor ExitNodes）
+	EntryNodes       []string      // 仅允许的入口
+	StrictNodes      bool          // StrictNodes：名单无法满足时失败而非放宽
 
 	// Network behavior
 	ConnLimit      int           // Max concurrent connections (default: 1000)
@@ -45,6 +53,7 @@ type Config struct {
 
 	// Logging
 	LogLevel string // Log level: debug, info, warn, error (default: info)
+	LogFile  string // Log notice file PATH 时的文件路径；空表示 stdout
 
 	// Monitoring and observability (Phase 9.1)
 	MetricsPort   int  // HTTP metrics server port (default: 0 = disabled)
@@ -191,26 +200,34 @@ func DefaultConfig() *Config {
 	}
 
 	return &Config{
-		SocksPort:           socksPort,
-		ControlPort:         controlPort,
-		ControlPassword:     "", // No authentication by default
-		DataDirectory:       dataDir,
-		CircuitBuildTimeout: 60 * time.Second,
-		MaxCircuitDirtiness: 10 * time.Minute,
-		NewCircuitPeriod:    30 * time.Second,
-		NumEntryGuards:      3,
-		UseEntryGuards:      true,
-		UseBridges:          false,
-		BridgeAddresses:     []string{},
-		ExcludeNodes:        []string{},
-		ExcludeExitNodes:    []string{},
-		ConnLimit:           1000,
-		DormantTimeout:      24 * time.Hour,
-		OnionServices:       []OnionServiceConfig{},
-		ClientTransports:    []ClientTransportConfig{},
-		ServerTransports:    []ServerTransportConfig{},
-		TransportProxy:      "",
-		LogLevel:            "info",
+		SocksPort:             socksPort,
+		SocksListenAddr:       "127.0.0.1",
+		ControlPort:           controlPort,
+		ControlPassword:       "", // No authentication by default
+		HashedControlPassword: "",
+		CookieAuthentication:  false,
+		CookieAuthFile:        "",
+		DataDirectory:         dataDir,
+		CircuitBuildTimeout:   60 * time.Second,
+		MaxCircuitDirtiness:   10 * time.Minute,
+		NewCircuitPeriod:      30 * time.Second,
+		NumEntryGuards:        3,
+		UseEntryGuards:        true,
+		UseBridges:            false,
+		BridgeAddresses:       []string{},
+		ExcludeNodes:          []string{},
+		ExcludeExitNodes:      []string{},
+		ExitNodes:             []string{},
+		EntryNodes:            []string{},
+		StrictNodes:           false,
+		ConnLimit:             1000,
+		DormantTimeout:        24 * time.Hour,
+		OnionServices:         []OnionServiceConfig{},
+		ClientTransports:      []ClientTransportConfig{},
+		ServerTransports:      []ServerTransportConfig{},
+		TransportProxy:        "",
+		LogLevel:              "info",
+		LogFile:               "",
 		// Monitoring defaults (Phase 9.1)
 		MetricsPort:   0,     // Disabled by default
 		EnableMetrics: false, // Disabled by default
@@ -532,6 +549,8 @@ func (c *Config) Clone() *Config {
 
 	clone.ExcludeNodes = append([]string{}, c.ExcludeNodes...)
 	clone.ExcludeExitNodes = append([]string{}, c.ExcludeExitNodes...)
+	clone.ExitNodes = append([]string{}, c.ExitNodes...)
+	clone.EntryNodes = append([]string{}, c.EntryNodes...)
 	clone.OnionServices = make([]OnionServiceConfig, len(c.OnionServices))
 	copy(clone.OnionServices, c.OnionServices)
 	return &clone

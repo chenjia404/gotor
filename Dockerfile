@@ -19,11 +19,11 @@ ARG BUILD_TIME
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-w -s -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
     -a -installsuffix cgo \
-    -o tor-client \
-    ./cmd/tor-client
+    -o gotor \
+    ./cmd/gotor
 
 # Verify the binary
-RUN ls -lh tor-client && file tor-client || true
+RUN ls -lh gotor && file gotor || true
 
 # Stage 2: Create minimal runtime image
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -43,7 +43,7 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
 # Copy the binary from builder
-COPY --from=builder --chown=nonroot:nonroot /build/tor-client /usr/local/bin/tor-client
+COPY --from=builder --chown=nonroot:nonroot /build/gotor /usr/local/bin/gotor
 
 # Create data directory with proper permissions
 # distroless uses uid/gid 65532 for nonroot user
@@ -71,6 +71,6 @@ STOPSIGNAL SIGTERM
 
 # Default command: run with zero-configuration mode
 # Users can override with their own flags via docker run
-# For health checks, add: -metrics-port 9052
-ENTRYPOINT ["/usr/local/bin/tor-client"]
+# For health checks, add: SocksPort ... MetricsPort 9052 via torrc or CLI
+ENTRYPOINT ["/usr/local/bin/gotor"]
 CMD ["-data-dir", "/home/nonroot/.tor", "-socks-port", "9050", "-control-port", "9051"]

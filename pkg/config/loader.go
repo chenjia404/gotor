@@ -11,17 +11,33 @@ import (
 	"time"
 )
 
+// loadState 跟踪 HiddenService 块与 Include 深度。
+type loadState struct {
+	pendingHS *OnionServiceConfig
+	depth     int
+	baseDir   string
+}
+
+const maxIncludeDepth = 16
+
 // LoadFromFile loads configuration from a torrc-compatible file.
 // It parses the file line by line and updates the provided config.
 // Lines starting with # are treated as comments and ignored.
 // Empty lines are ignored.
 // Each configuration line follows the format: Key Value
+// 未知键静默忽略（与 C Tor 客户端兼容策略一致）。
 func LoadFromFile(path string, cfg *Config) error {
+	return loadFromFileDepth(path, cfg, &loadState{depth: 0})
+}
+
+func loadFromFileDepth(path string, cfg *Config, st *loadState) error {
 	if cfg == nil {
 		return fmt.Errorf("config cannot be nil")
 	}
+	if st.depth > maxIncludeDepth {
+		return fmt.Errorf("include depth exceeded (%d)", maxIncludeDepth)
+	}
 
-	// Validate path to prevent directory traversal attacks
 	if err := validatePath(path); err != nil {
 		return fmt.Errorf("path validation failed: %w", err)
 	}
@@ -30,11 +46,12 @@ func LoadFromFile(path string, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to open config file: %w", err)
 	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			return
-		}
-	}()
+	defer func() { _ = file.Close() }()
+
+	abs, _ := filepath.Abs(path)
+	prevBase := st.baseDir
+	st.baseDir = filepath.Dir(abs)
+	defer func() { st.baseDir = prevBase }()
 
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
@@ -42,59 +59,66 @@ func LoadFromFile(path string, cfg *Config) error {
 	for scanner.Scan() {
 		lineNum++
 		line := strings.TrimSpace(scanner.Text())
-
-		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-
-		// Parse key-value pair
 		parts := strings.Fields(line)
 		if len(parts) < 1 {
 			continue
 		}
-
 		key := parts[0]
 		value := ""
 		if len(parts) > 1 {
 			value = strings.Join(parts[1:], " ")
 		}
-
-		// Process configuration option
-		if err := processConfigOption(cfg, key, value); err != nil {
+		if err := processConfigOption(cfg, key, value, st); err != nil {
 			return fmt.Errorf("line %d: %w", lineNum, err)
 		}
 	}
-
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("error reading config file: %w", err)
 	}
 
-	// Parse all bridge addresses into BridgeInfo structures
-	if err := parseBridges(cfg); err != nil {
-		return fmt.Errorf("failed to parse bridges: %w", err)
-	}
+	flushPendingHS(cfg, st)
 
-	// Validate the loaded configuration
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("invalid configuration: %w", err)
+	if st.depth == 0 {
+		if err := parseBridges(cfg); err != nil {
+			return fmt.Errorf("failed to parse bridges: %w", err)
+		}
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("invalid configuration: %w", err)
+		}
 	}
-
 	return nil
 }
 
-// processConfigOption processes a single configuration option
-func processConfigOption(cfg *Config, key, value string) error {
+func flushPendingHS(cfg *Config, st *loadState) {
+	if st == nil || st.pendingHS == nil {
+		return
+	}
+	if st.pendingHS.ServiceDir != "" {
+		cfg.OnionServices = append(cfg.OnionServices, *st.pendingHS)
+	}
+	st.pendingHS = nil
+}
+
+// processConfigOption processes a single configuration option.
+// st 可为 nil（命令行覆盖时）。
+func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 	switch key {
 	case "SocksPort":
-		port, err := strconv.Atoi(value)
-		if err != nil {
-			return fmt.Errorf("invalid SocksPort value: %s", value)
-		}
-		cfg.SocksPort = port
+		return parseSocksPort(cfg, value)
+
+	case "SocksListenAddress":
+		// 弃用别名：host:port 或 port
+		return parseSocksListenAddress(cfg, value)
 
 	case "ControlPort":
-		port, err := strconv.Atoi(value)
+		fields := strings.Fields(value)
+		if len(fields) == 0 {
+			return fmt.Errorf("empty ControlPort")
+		}
+		port, err := strconv.Atoi(fields[0])
 		if err != nil {
 			return fmt.Errorf("invalid ControlPort value: %s", value)
 		}
@@ -102,6 +126,19 @@ func processConfigOption(cfg *Config, key, value string) error {
 
 	case "DataDirectory":
 		cfg.DataDirectory = value
+
+	case "CookieAuthentication":
+		cfg.CookieAuthentication = parseBool(value)
+
+	case "CookieAuthFile":
+		cfg.CookieAuthFile = value
+
+	case "HashedControlPassword":
+		cfg.HashedControlPassword = value
+
+	case "ControlPassword":
+		// 非标准扩展：明文口令
+		cfg.ControlPassword = value
 
 	case "CircuitBuildTimeout":
 		timeout, err := parseDuration(value)
@@ -141,10 +178,19 @@ func processConfigOption(cfg *Config, key, value string) error {
 		cfg.BridgeAddresses = append(cfg.BridgeAddresses, value)
 
 	case "ExcludeNodes":
-		cfg.ExcludeNodes = append(cfg.ExcludeNodes, value)
+		cfg.ExcludeNodes = append(cfg.ExcludeNodes, splitNodeList(value)...)
 
 	case "ExcludeExitNodes":
-		cfg.ExcludeExitNodes = append(cfg.ExcludeExitNodes, value)
+		cfg.ExcludeExitNodes = append(cfg.ExcludeExitNodes, splitNodeList(value)...)
+
+	case "ExitNodes":
+		cfg.ExitNodes = append(cfg.ExitNodes, splitNodeList(value)...)
+
+	case "EntryNodes":
+		cfg.EntryNodes = append(cfg.EntryNodes, splitNodeList(value)...)
+
+	case "StrictNodes":
+		cfg.StrictNodes = parseBool(value)
 
 	case "ConnLimit":
 		limit, err := strconv.Atoi(value)
@@ -163,10 +209,10 @@ func processConfigOption(cfg *Config, key, value string) error {
 	case "LogLevel":
 		cfg.LogLevel = strings.ToLower(value)
 
-	// Pluggable Transport configuration (Phase 11.1.3)
+	case "Log":
+		parseLogDirective(cfg, value)
+
 	case "ClientTransportPlugin":
-		// Format: ClientTransportPlugin transport exec path [options]
-		// Example: ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy
 		transport, err := parseClientTransportPlugin(value)
 		if err != nil {
 			return fmt.Errorf("invalid ClientTransportPlugin: %w", err)
@@ -174,8 +220,6 @@ func processConfigOption(cfg *Config, key, value string) error {
 		cfg.ClientTransports = append(cfg.ClientTransports, transport)
 
 	case "ServerTransportPlugin":
-		// Format: ServerTransportPlugin transport exec path
-		// Example: ServerTransportPlugin obfs4 exec /usr/bin/obfs4proxy
 		transport, err := parseServerTransportPlugin(value)
 		if err != nil {
 			return fmt.Errorf("invalid ServerTransportPlugin: %w", err)
@@ -183,30 +227,210 @@ func processConfigOption(cfg *Config, key, value string) error {
 		cfg.ServerTransports = append(cfg.ServerTransports, transport)
 
 	case "ServerTransportListenAddr":
-		// Format: ServerTransportListenAddr transport address:port
-		// Example: ServerTransportListenAddr obfs4 0.0.0.0:9443
 		if err := parseServerTransportListenAddr(cfg, value); err != nil {
 			return fmt.Errorf("invalid ServerTransportListenAddr: %w", err)
 		}
 
 	case "ServerTransportOptions":
-		// Format: ServerTransportOptions transport key=value key=value...
-		// Example: ServerTransportOptions obfs4 iat-mode=1
 		if err := parseServerTransportOptions(cfg, value); err != nil {
 			return fmt.Errorf("invalid ServerTransportOptions: %w", err)
 		}
 
 	case "TransportProxy":
-		// Format: TransportProxy socks5 127.0.0.1:9050
-		// Only SOCKS5 is supported per pt-spec.txt
 		cfg.TransportProxy = value
 
-	// Ignore unknown options for compatibility with standard torrc files
+	case "HiddenServiceDir":
+		if st == nil {
+			st = &loadState{}
+		}
+		flushPendingHS(cfg, st)
+		st.pendingHS = &OnionServiceConfig{ServiceDir: value}
+
+	case "HiddenServicePort":
+		if st == nil || st.pendingHS == nil {
+			return fmt.Errorf("HiddenServicePort without preceding HiddenServiceDir")
+		}
+		vp, target, err := parseHiddenServicePort(value)
+		if err != nil {
+			return err
+		}
+		// 多 Port：追加为独立服务条目共享 ServiceDir
+		if st.pendingHS.VirtualPort != 0 {
+			cfg.OnionServices = append(cfg.OnionServices, *st.pendingHS)
+			dir := st.pendingHS.ServiceDir
+			st.pendingHS = &OnionServiceConfig{ServiceDir: dir}
+		}
+		st.pendingHS.VirtualPort = vp
+		st.pendingHS.TargetAddr = target
+
+	case "HiddenServiceVersion":
+		if value != "" && value != "3" {
+			return fmt.Errorf("only HiddenServiceVersion 3 is supported, got %s", value)
+		}
+
+	case "HiddenServiceMaxStreams":
+		if st == nil || st.pendingHS == nil {
+			return fmt.Errorf("HiddenServiceMaxStreams without HiddenServiceDir")
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid HiddenServiceMaxStreams: %s", value)
+		}
+		st.pendingHS.MaxStreams = n
+
+	case "%include", "Include":
+		if st == nil {
+			st = &loadState{}
+		}
+		incPath := value
+		if !filepath.IsAbs(incPath) && st.baseDir != "" {
+			incPath = filepath.Join(st.baseDir, incPath)
+		}
+		child := &loadState{depth: st.depth + 1, baseDir: st.baseDir, pendingHS: st.pendingHS}
+		if err := loadFromFileDepth(incPath, cfg, child); err != nil {
+			return fmt.Errorf("include %s: %w", value, err)
+		}
+		st.pendingHS = child.pendingHS
+
 	default:
-		// Silently ignore unknown options for forward compatibility
+		// 未知键静默忽略
 	}
 
 	return nil
+}
+
+func splitNodeList(value string) []string {
+	value = strings.ReplaceAll(value, ",", " ")
+	parts := strings.Fields(value)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// parseSocksPort 支持：9050 | 127.0.0.1:9050 | 9050 IsolateDestinations ...
+func parseSocksPort(cfg *Config, value string) error {
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return fmt.Errorf("empty SocksPort")
+	}
+	addrPort := fields[0]
+	if strings.Contains(addrPort, ":") {
+		host, portStr, err := splitHostPortLoose(addrPort)
+		if err != nil {
+			return fmt.Errorf("invalid SocksPort: %w", err)
+		}
+		cfg.SocksListenAddr = host
+		p, err := strconv.Atoi(portStr)
+		if err != nil {
+			return fmt.Errorf("invalid SocksPort port: %s", portStr)
+		}
+		cfg.SocksPort = p
+	} else {
+		p, err := strconv.Atoi(addrPort)
+		if err != nil {
+			return fmt.Errorf("invalid SocksPort value: %s", addrPort)
+		}
+		cfg.SocksPort = p
+	}
+	for _, f := range fields[1:] {
+		switch strings.ToLower(f) {
+		case "isolatedestinations":
+			cfg.IsolateDestinations = true
+		case "isolatesocksauth":
+			cfg.IsolateSOCKSAuth = true
+		case "isolateclientport":
+			cfg.IsolateClientPort = true
+		case "isolateclientprotocol":
+			cfg.IsolateClientProtocol = true
+		default:
+			// 未知 flag 静默忽略
+		}
+	}
+	return nil
+}
+
+func parseSocksListenAddress(cfg *Config, value string) error {
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return fmt.Errorf("empty SocksListenAddress")
+	}
+	return parseSocksPort(cfg, fields[0])
+}
+
+func splitHostPortLoose(s string) (host, port string, err error) {
+	// 支持 [ipv6]:port 与 host:port
+	if strings.HasPrefix(s, "[") {
+		end := strings.Index(s, "]:")
+		if end < 0 {
+			return "", "", fmt.Errorf("bad IPv6 listen %s", s)
+		}
+		return s[1:end], s[end+2:], nil
+	}
+	i := strings.LastIndex(s, ":")
+	if i < 0 {
+		return "", "", fmt.Errorf("missing port in %s", s)
+	}
+	return s[:i], s[i+1:], nil
+}
+
+func parseLogDirective(cfg *Config, value string) {
+	// Log [min][-max] stderr|stdout|file PATH|syslog
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return
+	}
+	level := strings.ToLower(fields[0])
+	if idx := strings.Index(level, "-"); idx > 0 {
+		level = level[:idx]
+	}
+	switch level {
+	case "debug", "info", "notice", "warn", "warning", "err", "error":
+		if level == "notice" {
+			cfg.LogLevel = "info"
+		} else if level == "warning" {
+			cfg.LogLevel = "warn"
+		} else if level == "err" {
+			cfg.LogLevel = "error"
+		} else {
+			cfg.LogLevel = level
+		}
+	}
+	for i := 1; i < len(fields); i++ {
+		switch strings.ToLower(fields[i]) {
+		case "file":
+			if i+1 < len(fields) {
+				cfg.LogFile = fields[i+1]
+				i++
+			}
+		case "stdout", "stderr":
+			cfg.LogFile = ""
+		}
+	}
+}
+
+func parseHiddenServicePort(value string) (virtualPort int, target string, err error) {
+	fields := strings.Fields(value)
+	if len(fields) < 1 {
+		return 0, "", fmt.Errorf("empty HiddenServicePort")
+	}
+	vp, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return 0, "", fmt.Errorf("invalid HiddenServicePort virtual port: %s", fields[0])
+	}
+	target = "127.0.0.1:" + fields[0]
+	if len(fields) >= 2 {
+		t := fields[1]
+		if !strings.Contains(t, ":") {
+			t = "127.0.0.1:" + t
+		}
+		target = t
+	}
+	return vp, target, nil
 }
 
 // parseDuration parses a duration string with support for common time units.

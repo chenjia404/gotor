@@ -1,32 +1,21 @@
-# go-tor Configuration File
-# This is a torrc-compatible configuration file for go-tor
+# gotor torrc 示例（客户端 + 洋葱服务）
 
-# Network Settings
 SocksPort 9050
 ControlPort 9051
-DataDirectory /var/lib/tor
+DataDirectory /var/lib/gotor
 
-# Circuit Settings
-CircuitBuildTimeout 60s
-MaxCircuitDirtiness 10m
-NewCircuitPeriod 30s
-NumEntryGuards 3
+# Control 认证（任选其一或组合）
+# CookieAuthentication 1
+# HashedControlPassword 16:...   # 由: gotor --hash-password 'secret'
 
-# Path Selection
-UseEntryGuards 1
-UseBridges 0
+Log notice stdout
 
-# Example bridge configuration (commented out)
-# Bridge 192.168.1.1:9001
-# Bridge obfs4 192.168.1.2:9001 fingerprint
+# 路径约束（可选）
+# ExitNodes {us}
+# StrictNodes 0
 
-# Node exclusion (optional)
-# ExcludeNodes node1,node2
-# ExcludeExitNodes badexitnode
+# 洋葱服务托管（可选）
+# HiddenServiceDir /var/lib/gotor/hs
+# HiddenServicePort 80 127.0.0.1:8080
 
-# Network Behavior
-ConnLimit 1000
-DormantTimeout 24h
-
-# Logging
-LogLevel info
+# 未知选项会被静默忽略（与 C Tor 客户端兼容策略一致）

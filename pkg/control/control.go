@@ -6,13 +6,18 @@ package control
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/opd-ai/go-tor/pkg/config"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
@@ -22,7 +27,11 @@ type Server struct {
 	listener     net.Listener
 	logger       *logger.Logger
 	clientGetter ClientInfoGetter
-	password     string // Control password (empty = no auth required)
+	password     string // 明文口令（非标准扩展）
+	hashedPass   string // HashedControlPassword（16:...）
+	cookieAuth   bool
+	cookieFile   string
+	cookieBytes  []byte
 
 	// Connection management
 	conns   map[net.Conn]*connection
@@ -43,6 +52,14 @@ type Server struct {
 	// SIGNAL hooks（可选）
 	onNewnym   func()
 	onShutdown func()
+}
+
+// AuthOptions 控制口认证选项（C Tor 兼容）。
+type AuthOptions struct {
+	Password              string // 明文（扩展）
+	HashedControlPassword string // 16:...
+	CookieAuthentication  bool
+	CookieAuthFile        string
 }
 
 // authRateLimiter tracks authentication attempts per IP
@@ -96,13 +113,23 @@ func NewServer(address string, clientGetter ClientInfoGetter, log *logger.Logger
 
 // NewServerWithPassword creates a new control protocol server with authentication
 func NewServerWithPassword(address string, clientGetter ClientInfoGetter, password string, log *logger.Logger) *Server {
-	ctx, cancel := context.WithCancel(context.Background())
+	return NewServerWithAuth(address, clientGetter, AuthOptions{Password: password}, log)
+}
 
+// NewServerWithAuth 创建带 Cookie / HashedControlPassword 的控制口。
+func NewServerWithAuth(address string, clientGetter ClientInfoGetter, auth AuthOptions, log *logger.Logger) *Server {
+	if log == nil {
+		log = logger.NewDefault()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
 		address:      address,
 		logger:       log.Component("control"),
 		clientGetter: clientGetter,
-		password:     password,
+		password:     auth.Password,
+		hashedPass:   auth.HashedControlPassword,
+		cookieAuth:   auth.CookieAuthentication,
+		cookieFile:   auth.CookieAuthFile,
 		conns:        make(map[net.Conn]*connection),
 		dispatcher:   NewEventDispatcher(),
 		authAttempts: make(map[string]*authRateLimiter),
@@ -118,6 +145,12 @@ func (s *Server) GetEventDispatcher() *EventDispatcher {
 
 // Start starts the control protocol server
 func (s *Server) Start() error {
+	if s.cookieAuth {
+		if err := s.ensureCookieFile(); err != nil {
+			return fmt.Errorf("control cookie: %w", err)
+		}
+	}
+
 	listener, err := net.Listen("tcp", s.address)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", s.address, err)
@@ -130,6 +163,34 @@ func (s *Server) Start() error {
 	s.wg.Add(1)
 	go s.acceptLoop()
 
+	return nil
+}
+
+func (s *Server) ensureCookieFile() error {
+	path := s.cookieFile
+	if path == "" && s.clientGetter != nil {
+		if stats := s.clientGetter.GetStats(); stats != nil {
+			if dd := stats.GetDataDir(); dd != "" {
+				path = filepath.Join(dd, "control_auth_cookie")
+			}
+		}
+	}
+	if path == "" {
+		return fmt.Errorf("CookieAuthentication enabled but no CookieAuthFile/DataDirectory")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	cookie := make([]byte, 32)
+	if _, err := rand.Read(cookie); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, cookie, 0o600); err != nil {
+		return err
+	}
+	s.cookieBytes = cookie
+	s.cookieFile = path
+	s.logger.Info("wrote control_auth_cookie", "path", path)
 	return nil
 }
 
@@ -363,8 +424,8 @@ func (s *Server) handleMapAddress(conn *connection, args []string) {
 
 // handleAuthenticate handles AUTHENTICATE command
 func (s *Server) handleAuthenticate(conn *connection, args []string) {
-	// If no password is configured, accept any authentication
-	if s.password == "" {
+	needAuth := s.password != "" || s.hashedPass != "" || s.cookieAuth
+	if !needAuth {
 		conn.mu.Lock()
 		conn.authenticated = true
 		conn.mu.Unlock()
@@ -373,45 +434,53 @@ func (s *Server) handleAuthenticate(conn *connection, args []string) {
 		return
 	}
 
-	// Password authentication required
 	if len(args) == 0 {
 		conn.writeReply(515, "Authentication failed: password required")
 		s.logger.Warn("Authentication failed: no password provided", "remote", conn.conn.RemoteAddr())
 		return
 	}
 
-	// Get password from command (may be quoted)
-	password := strings.Join(args, " ")
-	password = strings.Trim(password, `"`)
-
-	// Extract IP address (without port) for rate limiting
 	remoteIP := conn.conn.RemoteAddr().String()
 	if host, _, err := net.SplitHostPort(remoteIP); err == nil {
 		remoteIP = host
 	}
-
-	// Check rate limiting before attempting authentication
 	if !s.checkAuthRateLimit(remoteIP) {
 		conn.writeReply(515, "Authentication failed: too many attempts, try again later")
 		s.logger.Warn("Authentication rate limited", "remote", remoteIP)
 		return
 	}
 
-	// Validate password using constant-time comparison to prevent timing attacks
-	// Convert strings to byte slices for constant-time comparison
-	passwordMatch := subtle.ConstantTimeCompare([]byte(password), []byte(s.password)) == 1
+	token := strings.Join(args, " ")
+	token = strings.Trim(token, `"`)
 
-	if !passwordMatch {
+	ok := false
+	if s.cookieAuth && len(s.cookieBytes) > 0 && token != "" {
+		// Cookie：十六进制或原始字节（极少）
+		if decoded, err := hex.DecodeString(token); err == nil {
+			if subtle.ConstantTimeCompare(decoded, s.cookieBytes) == 1 {
+				ok = true
+			}
+		}
+	}
+	if !ok && s.hashedPass != "" && token != "" {
+		if config.VerifyHashedControlPassword(token, s.hashedPass) {
+			ok = true
+		}
+	}
+	if !ok && s.password != "" && token != "" {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.password)) == 1 {
+			ok = true
+		}
+	}
+
+	if !ok {
 		s.recordFailedAuth(remoteIP)
 		conn.writeReply(515, "Authentication failed: incorrect password")
 		s.logger.Warn("Authentication failed: incorrect password", "remote", remoteIP)
 		return
 	}
 
-	// Reset rate limiter on successful authentication
 	s.resetAuthRateLimit(remoteIP)
-
-	// Authentication successful
 	conn.mu.Lock()
 	conn.authenticated = true
 	conn.mu.Unlock()
@@ -421,18 +490,35 @@ func (s *Server) handleAuthenticate(conn *connection, args []string) {
 
 // handleProtocolInfo handles PROTOCOLINFO command
 func (s *Server) handleProtocolInfo(conn *connection, args []string) {
-	// No authentication required for PROTOCOLINFO per control-spec.txt
+	methods := []string{}
+	if s.cookieAuth {
+		methods = append(methods, "COOKIE", "SAFECOOKIE")
+	}
+	if s.hashedPass != "" {
+		methods = append(methods, "HASHEDPASSWORD")
+	}
+	if s.password != "" && s.hashedPass == "" {
+		methods = append(methods, "HASHEDPASSWORD") // 明文扩展仍宣告此方法名以兼容控制器
+	}
 	authMethods := "NULL"
-	if s.password != "" {
-		authMethods = "HASHEDPASSWORD"
+	if len(methods) > 0 {
+		authMethods = strings.Join(methods, ",")
+	} else if s.password == "" && s.hashedPass == "" && !s.cookieAuth {
+		authMethods = "NULL"
 	}
 
-	conn.writeDataReply([]string{
+	lines := []string{
 		"250-PROTOCOLINFO 1",
 		fmt.Sprintf("250-AUTH METHODS=%s", authMethods),
-		"250-VERSION Tor=\"go-tor-0.1.0\"",
+	}
+	if s.cookieAuth && s.cookieFile != "" {
+		lines = append(lines, fmt.Sprintf("250-AUTH COOKIEFILE=\"%s\"", s.cookieFile))
+	}
+	lines = append(lines,
+		"250-VERSION Tor=\"gotor-0.1.0\"",
 		"250 OK",
-	})
+	)
+	conn.writeDataReply(lines)
 }
 
 // handleGetInfo handles GETINFO command

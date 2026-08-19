@@ -1,7 +1,7 @@
 .PHONY: all build test clean install fmt vet lint coverage help
 
 # Build variables
-BINARY_NAME=tor-client
+BINARY_NAME=gotor
 BINARY_PATH=bin/$(BINARY_NAME)
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
@@ -19,11 +19,17 @@ GOFMT=$(GOCMD) fmt
 # Targets
 all: clean fmt vet test build ## Clean, format, vet, test, and build
 
-build: ## Build the binary
+build: ## Build the gotor binary
 	@echo "Building $(BINARY_NAME) version $(VERSION)..."
 	@mkdir -p bin
-	$(GOBUILD) $(LDFLAGS) -o $(BINARY_PATH) ./cmd/tor-client
+	$(GOBUILD) $(LDFLAGS) -o $(BINARY_PATH) ./cmd/gotor
 	@echo "Build complete: $(BINARY_PATH)"
+
+build-tor-client: ## Build legacy tor-client binary (compat)
+	@echo "Building tor-client (legacy)..."
+	@mkdir -p bin
+	$(GOBUILD) $(LDFLAGS) -o bin/tor-client ./cmd/tor-client
+	@echo "Build complete: bin/tor-client"
 
 build-benchmark: ## Build the benchmark tool
 	@echo "Building benchmark tool..."
