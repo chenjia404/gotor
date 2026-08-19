@@ -159,7 +159,42 @@ func (a *CircuitAdapter) SendRelayCell(ctx context.Context, circuitID uint32, co
 	return circ.SendRelayCell(rc)
 }
 
-// ReceiveRelayCell 等待指定电路上的下一则 relay cell 载荷。
+// ReceiveRelayCellCommand 等待指定命令的 relay cell，返回其 Data。
+func (a *CircuitAdapter) ReceiveRelayCellCommand(ctx context.Context, circuitID uint32, wantCmd byte, timeout time.Duration) ([]byte, error) {
+	circ := a.lookup(circuitID)
+	if circ == nil {
+		return nil, fmt.Errorf("circuit %d not found", circuitID)
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	for {
+		rc, err := circ.ReceiveRelayCell(ctx)
+		if err != nil {
+			return nil, err
+		}
+		a.logger.Debug("relay cell",
+			"circuit_id", circuitID,
+			"cmd", rc.Command,
+			"len", len(rc.Data),
+			"want", wantCmd)
+		if rc.Command == wantCmd {
+			return rc.Data, nil
+		}
+		// 跳过 padding / SENDME 等
+		if rc.Command == cell.RelayDrop || rc.Command == cell.RelaySendme ||
+			rc.Command == cell.RelayPaddingNegotiate || rc.Command == cell.RelayPaddingNegotiated {
+			continue
+		}
+		// 其他命令也记录后继续等（避免误吞 RENDEZVOUS2）
+		a.logger.Debug("skipping unexpected relay cmd while waiting",
+			"got", rc.Command, "want", wantCmd, "len", len(rc.Data))
+	}
+}
+
+// ReceiveRelayCell 等待指定电路上的下一则 relay cell 载荷（任意命令）。
 func (a *CircuitAdapter) ReceiveRelayCell(ctx context.Context, circuitID uint32, timeout time.Duration) ([]byte, error) {
 	circ := a.lookup(circuitID)
 	if circ == nil {
@@ -174,9 +209,6 @@ func (a *CircuitAdapter) ReceiveRelayCell(ctx context.Context, circuitID uint32,
 	if err != nil {
 		return nil, err
 	}
-	// 返回 command||data 或仅 data？现有 WaitForRendezvous2 期望握手数据。
-	// 将 command 放首位便于过滤，但旧接口只返回 data。
-	_ = rc.Command
 	return rc.Data, nil
 }
 

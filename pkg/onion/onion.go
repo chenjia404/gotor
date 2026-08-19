@@ -327,6 +327,12 @@ type CellSender interface {
 	ReceiveRelayCell(ctx context.Context, circuitID uint32, timeout time.Duration) ([]byte, error)
 }
 
+// CellSenderWithCommand 可选：按命令过滤接收。
+type CellSenderWithCommand interface {
+	CellSender
+	ReceiveRelayCellCommand(ctx context.Context, circuitID uint32, wantCmd byte, timeout time.Duration) ([]byte, error)
+}
+
 // RendezvousState stores the cryptographic state for a rendezvous in progress.
 // hs-ntor：客户端持有 x、B（intro EncKey 公钥）、AUTH_KEY、subcred。
 type RendezvousState struct {
@@ -2418,34 +2424,33 @@ func (rp *RendezvousProtocol) ParseRendezvous2Cell(data []byte) ([]byte, error) 
 func (rp *RendezvousProtocol) WaitForRendezvous2(ctx context.Context, circuitID uint32, cellSender CellSender) ([]byte, error) {
 	rp.logger.Info("Waiting for RENDEZVOUS2 cell", "circuit_id", circuitID)
 
-	// If we have a cell sender, use it to receive the cell
-	if cellSender != nil {
-		// Wait for RENDEZVOUS2 cell with 30 second timeout (onion services can be slow)
-		const relayCommandRendezvous2 = 0x25
-
-		waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-
-		handshakeData, err := cellSender.ReceiveRelayCell(waitCtx, circuitID, 30*time.Second)
-		if err != nil {
-			rp.logger.Error("Failed to receive RENDEZVOUS2 cell", "error", err)
-			return nil, fmt.Errorf("failed to receive RENDEZVOUS2: %w", err)
-		}
-
-		// Parse the RENDEZVOUS2 cell
-		parsedData, err := rp.ParseRendezvous2Cell(handshakeData)
-		if err != nil {
-			rp.logger.Error("Failed to parse RENDEZVOUS2 cell", "error", err)
-			return nil, fmt.Errorf("failed to parse RENDEZVOUS2: %w", err)
-		}
-
-		rp.logger.Info("Received RENDEZVOUS2 cell", "handshake_data_len", len(parsedData))
-		return parsedData, nil
+	if cellSender == nil {
+		return nil, fmt.Errorf("cell sender is required to receive RENDEZVOUS2 cell")
 	}
 
-	// AUDIT-003: No mock fallbacks in production code
-	// A cell sender is required to receive the RENDEZVOUS2 cell
-	return nil, fmt.Errorf("cell sender is required to receive RENDEZVOUS2 cell")
+	waitCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	var handshakeData []byte
+	var err error
+	if sc, ok := cellSender.(CellSenderWithCommand); ok {
+		handshakeData, err = sc.ReceiveRelayCellCommand(waitCtx, circuitID, cell.RelayRendezvous2, 60*time.Second)
+	} else {
+		handshakeData, err = cellSender.ReceiveRelayCell(waitCtx, circuitID, 60*time.Second)
+	}
+	if err != nil {
+		rp.logger.Error("Failed to receive RENDEZVOUS2 cell", "error", err)
+		return nil, fmt.Errorf("failed to receive RENDEZVOUS2: %w", err)
+	}
+
+	parsedData, err := rp.ParseRendezvous2Cell(handshakeData)
+	if err != nil {
+		rp.logger.Error("Failed to parse RENDEZVOUS2 cell", "error", err)
+		return nil, fmt.Errorf("failed to parse RENDEZVOUS2: %w", err)
+	}
+
+	rp.logger.Info("Received RENDEZVOUS2 cell", "handshake_data_len", len(parsedData))
+	return parsedData, nil
 }
 
 // rendezvousCandidates 从全网 Fast 节点构造会合候选（带 Relay 指针）。
@@ -2584,21 +2589,33 @@ func (c *Client) CompleteRendezvous(ctx context.Context, rendezvousCircuitID uin
 		return fmt.Errorf("invalid RENDEZVOUS2 length: %d, want >= %d", len(handshakeData), crypto.HsNtorResponseLen)
 	}
 
-	// HANDSHAKE_INFO = Y || AUTH_INPUT_MAC（64 字节）；前面可能还有 cookie，取末 64 或整段
-	resp := handshakeData
-	if len(handshakeData) > crypto.HsNtorResponseLen {
-		resp = handshakeData[len(handshakeData)-crypto.HsNtorResponseLen:]
+	tryRend := func(r []byte) ([]byte, error) {
+		return crypto.HsNtorClientRend(
+			state.EphemeralPrivate[:],
+			state.IntroEncKeyB[:],
+			state.IntroAuthKey[:],
+			r,
+		)
 	}
-
-	seed, err := crypto.HsNtorClientRend(
-		state.EphemeralPrivate[:],
-		state.IntroEncKeyB[:],
-		state.IntroAuthKey[:],
-		resp,
-	)
-	if err != nil {
+	// HANDSHAKE_INFO = Y||AUTH（64）；兼容多余前/后缀
+	candidates := [][]byte{handshakeData[:crypto.HsNtorResponseLen]}
+	if len(handshakeData) > crypto.HsNtorResponseLen {
+		candidates = append(candidates, handshakeData[len(handshakeData)-crypto.HsNtorResponseLen:])
+	}
+	if len(handshakeData) == crypto.HsNtorResponseLen {
+		candidates = [][]byte{handshakeData}
+	}
+	var seed []byte
+	var rendErr error
+	for _, resp := range candidates {
+		seed, rendErr = tryRend(resp)
+		if rendErr == nil {
+			break
+		}
+	}
+	if rendErr != nil {
 		c.RemoveRendezvousState(rendezvousCircuitID)
-		return fmt.Errorf("hs-ntor client rend: %w", err)
+		return fmt.Errorf("hs-ntor client rend (len=%d): %w", len(handshakeData), rendErr)
 	}
 
 	keyMaterial, err := crypto.HsNtorExpandCircuitKeys(seed)
