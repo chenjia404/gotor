@@ -39,4 +39,4 @@ body 仍为空，接收方忽略。窗口 500，每 50 cell +50。
 
 ## 真实网络
 
-`TestRealFlowControlSoak`：SOCKS5 重复拉取 `www.torproject.org`，合计 ≥256KB，电路未 DESTROY。
+`TestRealFlowControlSoak`：SOCKS5 重复拉取 `www.torproject.org`，合计 **1059120** 字节，电路未 DESTROY（FlowCtrl=2 Vegas + SENDME v1）。

@@ -45,7 +45,7 @@
 | EXTEND2 / EXTENDED2 | WORKING | 真实 3-hop 三跳均为 ntor-v3 + FlowCtrl=2；SOCKS5 `IsTor=true`。IPv6 EXTEND2（Relay=3）未做 |
 | Circuit crypto / digest | WORKING | 真实 RELAY_DROP / EXTEND2 / BEGIN / DATA 已证明 **AES-CTR + SHA-1** 与 Guard 一致。CGO（Relay=6）未做 |
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
-| SENDME / flow control | PARTIAL | FlowCtrl=1 电路级 SENDME v1 已通过；FlowCtrl=2 已实现 TOR_VEGAS 状态机与共识参数，**缺 ≥1MB 真实 soak 证明** |
+| SENDME / flow control | WORKING | FlowCtrl=2 TOR_VEGAS 已实现；真实 soak **1059120** 字节，电路未 DESTROY。10–100MB / 多流仍见 P0.2 |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family ID（Desc=4）未用 |
@@ -69,29 +69,23 @@
 
 #### 1. FlowCtrl=2 Vegas（完整拥塞控制）
 
-- **状态**：PARTIAL。状态机已按 proposal 324 / C Tor 实现；`sendme_inc` 仍只来自握手。
+- **状态**：WORKING（1MB 真实验收已过）。状态机按 proposal 324 / C Tor；`sendme_inc` 只来自握手。
 - **已做**：
   - RTT（SENDME 对应 DATA 的发出时刻）、N-EWMA、clock stall/jump
   - BDP = `cwnd * min_rtt / ewma_rtt`，`queue_use = cwnd - BDP`
   - RFC3742 Limited Slow Start；CA 的 delta/beta/alpha；`inflight`；`cwnd_full` 启发式
   - 共识 `params` 经 `LastConsensusParams` 注入（Exit 阈值 `cc_vegas_*_exit`）
   - 单测：`pkg/circuit/vegas_test.go`、`ccparams_test.go`
-- **未做 / 未证明**：
-  - orconn 阻塞只留了字段，未接到 TLS 写缓冲
-  - 真实 soak ≥1MB（`TestRealFlowControlSoak` 已把目标改为 1MB，尚未跑过）
+  - 真实 soak：`TestRealFlowControlSoak` **1059120** 字节，Guard `rafsnicesrelay` → Middle `janina1` → Exit `NTH66R5`，三跳 `sendme_inc=31`，电路未 DESTROY
+- **剩余**：orconn 写缓冲阻塞只留字段；下载为主的 soak 主要证明 SENDME 发射与电路存活，上传大窗调节见 P0.2
 - **Spec**：https://spec.torproject.org/proposals/324-rtt-congestion-control.html ；tor-spec flow-control
 - **C Tor**：`src/core/or/congestion_control_common.c`、`congestion_control_vegas.c`
 - **现有代码**：`pkg/circuit/vegas.go`、`pkg/circuit/ccparams.go`、`pkg/circuit/sendme.go`
-- **验收**：
-  - 单测覆盖 Vegas 状态机（对照 C Tor / proposal 伪代码）— **已做**
-  - 真实 soak ≥1MB（目标 10–100MB）电路不 DESTROY — **未做**
-  - 不得为过测试关掉 SENDME v1 digest 校验
-- **禁止**：把「已协商 sendme_inc」或「只有单测」写成 Vegas WORKING。
 
 #### 2. 更大流量 soak + SENDME 回归
 
-- **状态**：PARTIAL。已有 282432 字节 soak（`TestRealFlowControlSoak`）。
-- **未做**：1MB / 10MB / 100MB；并发多流；window=0 边界的真实网络证明。
+- **状态**：PARTIAL。已有 **1059120** 字节 soak（`TestRealFlowControlSoak`）。
+- **未做**：10MB / 100MB；并发多流；window=0 边界的真实网络证明。
 - **现有代码**：`integration/e2e_real_tor_test.go`
 - **验收**：电路存活、SENDME v1 digest FIFO 匹配、无重复 SENDME。
 
@@ -252,7 +246,7 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 
 - HTYPE=3，三跳 ntor-v3 + `sendme_inc=31`
 - `IsTor=true`，ExitIP=`185.244.192.184`（Quetzalcoatl）
-- soak 282432 字节未拆路
+- soak **1059120** 字节未拆路（FlowCtrl=2 Vegas）
 
 ### Circuit crypto / Relay cell — WORKING（AES-CTR-SHA1 主路径）
 
@@ -266,7 +260,8 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 - 电路级 SENDME v1：DIGEST=触发 cell 的完整 20 字节滚动 SHA-1；FIFO 匹配失败拆路。
 - 协商 CC 后启用 TOR_VEGAS：间隔 `sendme_inc`，初始 cwnd=`cc_cwnd_init`（默认 124，不是 186）。
 - 流级 SENDME 仍为空（spec）。
-- **缺口**：≥1MB 真实 soak；orconn 阻塞启发式。见 P0。
+- **真实网络（2026-08-19）**：soak **1059120** 字节，`rafsnicesrelay` → `janina1` → `NTH66R5`，未拆路。
+- **剩余**：10–100MB soak；orconn 阻塞启发式。见 P0.2。
 
 ### SOCKS5 / DNS — WORKING
 
@@ -332,4 +327,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准（尚未达到）：** FlowCtrl=2 Vegas 真实 soak ≥1MB（再目标 10–100MB）。再往后：Relay=5 协商、CGO、Conflux。
+**下一轮完成标准（尚未达到）：** 更大流量 soak（10–100MB）或 Relay=5 `subproto_request`。再往后：CGO、Conflux。

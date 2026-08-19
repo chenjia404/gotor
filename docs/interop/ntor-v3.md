@@ -48,5 +48,5 @@ Relay 宣告 `Relay=4` 才接受 ntor-v3。`FlowCtrl=2` 才协商拥塞控制。
   - `TestRealNtorV3` / `TestRealGuardCreate2`：HTYPE=3，协商 `FlowCtrl=2` `sendme_inc=31`
   - `TestRealThreeHopCircuit`：三跳均为 ntor-v3 + CC，电路 READY
   - `TestRealCheckTorProject`：BiggerBetter → forest38 → Quetzalcoatl，`IsTor=true`，ExitIP=`185.244.192.184`
-  - `TestRealFlowControlSoak`：282432 字节，电路未 DESTROY
+  - `TestRealFlowControlSoak`：1059120 字节，电路未 DESTROY（FlowCtrl=2 Vegas）
   - `TestRealRelayResolve`：exit DFRI149，`www.torproject.org` → `116.202.120.166` + IPv6

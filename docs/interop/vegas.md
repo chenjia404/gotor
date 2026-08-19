@@ -47,8 +47,16 @@ ntor-v3 `CC_FIELD_REQUEST` / `CC_FIELD_RESPONSE` 只交换 `sendme_inc`（mainne
 - `pkg/directory.Client.LastConsensusParams()`：验签成功后缓存 `params`
 - `pkg/client` 建路前 `builder.SetCCParams(...)`
 
+## 真实网络（2026-08-19）
+
+`TestRealFlowControlSoak`：SOCKS5 重复拉取 `www.torproject.org`，合计 **1059120** 字节。
+
+- Guard `rafsnicesrelay` → Middle `janina1` → Exit `NTH66R5`
+- 三跳均为 ntor-v3 + `FlowCtrl=2` `sendme_inc=31`
+- 电路未 DESTROY，SENDME v1 digest 仍强制校验
+
 ## 禁止
 
-- 把「已协商 sendme_inc」写成 Vegas 已完成
+- 把「已协商 sendme_inc」写成 Vegas 已完成（必须有状态机 + 真实验收）
 - 为过测试关掉 SENDME v1 digest
-- 未协商成功时宣称 FlowCtrl=2 WORKING
+- 未协商成功时偷偷回退固定窗口还宣称 FlowCtrl=2 WORKING
