@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/opd-ai/go-tor/pkg/circuit"
 	"github.com/opd-ai/go-tor/pkg/config"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
@@ -201,4 +202,14 @@ func (c *SimpleClient) WaitUntilReady(timeout time.Duration) error {
 // Stats returns current client statistics.
 func (c *SimpleClient) Stats() Stats {
 	return c.client.GetStats()
+}
+
+// GetCircuit 从电路池取一条可用电路，供验收观察 Conflux 绑定。
+func (c *SimpleClient) GetCircuit(ctx context.Context) (*circuit.Circuit, error) {
+	return c.client.GetCircuit(ctx)
+}
+
+// ReturnCircuit 把 GetCircuit 取出的电路还回池。
+func (c *SimpleClient) ReturnCircuit(circ *circuit.Circuit) {
+	c.client.ReturnCircuit(circ)
 }
