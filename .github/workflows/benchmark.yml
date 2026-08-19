@@ -21,12 +21,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
       with:
         fetch-depth: 0  # Full history for comparison
 
     - name: Set up Go
-      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5  # v5.5.0
+      uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00  # v6.0.0
       with:
         go-version: '1.26.x'
         cache: true
@@ -74,7 +74,7 @@ jobs:
         echo "total_benchmarks=$TOTAL" >> $GITHUB_OUTPUT
 
     - name: Upload benchmark results
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       with:
         name: benchmark-results
         path: |
@@ -84,7 +84,7 @@ jobs:
 
     - name: Store benchmark result for tracking
       if: github.ref == 'refs/heads/main'
-      uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: benchmark-results.txt
         key: benchmark-${{ github.sha }}
@@ -108,10 +108,10 @@ jobs:
     needs: benchmark
     steps:
     - name: Checkout code
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
     - name: Set up Go
-      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5  # v5.5.0
+      uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00  # v6.0.0
       with:
         go-version: '1.26.x'
         cache: true
@@ -151,7 +151,7 @@ jobs:
         echo "\`\`\`" >> critical-benchmarks.md
 
     - name: Upload critical path benchmarks
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       with:
         name: critical-benchmarks
         path: critical-benchmarks.md
@@ -166,10 +166,10 @@ jobs:
     needs: benchmark
     steps:
     - name: Checkout code
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
     - name: Set up Go
-      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5  # v5.5.0
+      uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00  # v6.0.0
       with:
         go-version: '1.26.x'
         cache: true
@@ -214,7 +214,7 @@ jobs:
         fi
 
     - name: Upload memory profile
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       with:
         name: memory-profile
         path: memory-profile.md
