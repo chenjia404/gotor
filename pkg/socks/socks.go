@@ -14,6 +14,7 @@ import (
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/circuit"
+	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/metrics"
 	"github.com/opd-ai/go-tor/pkg/onion"
@@ -250,6 +251,36 @@ func (s *Server) SetCircpadConfig(cfg circuit.CircpadConfig) {
 	s.circpadCfgSet = true
 	s.mu.Unlock()
 	s.wireOnionCircpad()
+}
+
+// SetOnionNetwork 配置洋葱服务客户端：HSDir、SRV、BEGIN_DIR、电路适配器。
+func (s *Server) SetOnionNetwork(
+	relays []*directory.Relay,
+	builder *circuit.Builder,
+	mgr *circuit.Manager,
+	dirClient *directory.Client,
+) {
+	if s == nil || s.onionClient == nil {
+		return
+	}
+	hsdirs := onion.HSDirectoriesFromRelays(relays)
+	s.onionClient.UpdateHSDirs(hsdirs)
+	s.onionClient.SetNetworkRelays(relays)
+	if dirClient != nil {
+		cur, prev := dirClient.SharedRandomValues()
+		s.onionClient.SetSharedRandom(cur, prev)
+	}
+	if builder != nil {
+		begindir := onion.NewBegindirFetcher(builder, s.logger)
+		begindir.SetRelays(relays)
+		s.onionClient.SetBegindir(begindir)
+		adapter := onion.NewCircuitAdapter(builder, mgr, relays, s.logger)
+		s.onionClient.SetCircuitBuilder(adapter)
+		s.onionClient.SetCellSender(adapter)
+	}
+	s.logger.Info("Onion network configured",
+		"hsdirs", len(hsdirs),
+		"relays", len(relays))
 }
 
 // buildIsolationPolicy creates an isolation policy from SOCKS server config.

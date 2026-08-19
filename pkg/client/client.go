@@ -181,6 +181,13 @@ func (c *Client) Start(ctx context.Context) error {
 	c.refreshCircpadConfig()
 	c.logger.Info("Path selector initialized")
 
+	// 配置 SOCKS 侧洋葱客户端（HSDir / BEGIN_DIR / 电路适配器）
+	if relays := c.pathSelector.GetRelays(); len(relays) > 0 {
+		onionBuilder := circuit.NewBuilder(c.circuitMgr, c.logger)
+		onionBuilder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
+		c.socksServer.SetOnionNetwork(relays, onionBuilder, c.circuitMgr, c.directory)
+	}
+
 	// Publish NS and NEWDESC events for the new consensus
 	if relays := c.pathSelector.GetRelays(); len(relays) > 0 {
 		c.publishNewDescEvents(relays)

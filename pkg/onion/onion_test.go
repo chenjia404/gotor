@@ -19,6 +19,31 @@ import (
 )
 
 // TestParseV3Address tests parsing of v3 onion addresses
+
+func testRPFields() (onionKey []byte, specs []LinkSpecifier) {
+	onionKey = make([]byte, 32)
+	onionKey[0] = 9
+	specs = []LinkSpecifier{{Type: LSTypeIPv4, Data: []byte{10, 0, 0, 1, 0x23, 0x29}}}
+	return onionKey, specs
+}
+
+func withRP(req *IntroduceRequest) *IntroduceRequest {
+	if req == nil {
+		return nil
+	}
+	k, s := testRPFields()
+	if len(req.RendezvousOnionKey) == 0 {
+		req.RendezvousOnionKey = k
+	}
+	if len(req.RendezvousLinkSpecs) == 0 {
+		req.RendezvousLinkSpecs = s
+	}
+	if len(req.Subcredential) == 0 && req.IntroPoint != nil && len(req.IntroPoint.EncKey) == 32 {
+		req.Subcredential = make([]byte, 32)
+	}
+	return req
+}
+
 func TestParseV3Address(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1235,10 +1260,12 @@ func TestBuildIntroduce1Cell(t *testing.T) {
 					AuthKey: make([]byte, 32),
 					EncKey:  bPub,
 				},
-				RendezvousCookie: rendezvousCookie,
-				RendezvousPoint:  "test-rendezvous-point",
-				OnionKey:         make([]byte, 32),
-				Subcredential:    subcred,
+				RendezvousCookie:    rendezvousCookie,
+				RendezvousPoint:     "test-rendezvous-point",
+				OnionKey:            make([]byte, 32),
+				Subcredential:       subcred,
+				RendezvousOnionKey:  func() []byte { k, _ := testRPFields(); return k }(),
+				RendezvousLinkSpecs: func() []LinkSpecifier { _, s := testRPFields(); return s }(),
 			},
 			wantErr:   false,
 			checkSize: true,
@@ -1277,9 +1304,11 @@ func TestBuildIntroduce1Cell(t *testing.T) {
 					AuthKey: make([]byte, 32),
 					EncKey:  bPub,
 				},
-				RendezvousCookie: rendezvousCookie,
-				RendezvousPoint:  "test-rendezvous-point",
-				Subcredential:    subcred,
+				RendezvousCookie:    rendezvousCookie,
+				RendezvousPoint:     "test-rendezvous-point",
+				Subcredential:       subcred,
+				RendezvousOnionKey:  func() []byte { k, _ := testRPFields(); return k }(),
+				RendezvousLinkSpecs: func() []LinkSpecifier { _, s := testRPFields(); return s }(),
 			},
 			wantErr: false,
 		},
@@ -1477,17 +1506,16 @@ func TestConnectToOnionService(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Test connection - should fail because no circuit builder is configured
-	// AUDIT-003: Mock fallbacks removed, requires real circuit builder
+	// 无 networkRelays / circuit builder 时应失败
 	_, err := client.ConnectToOnionService(ctx, addr)
 	if err == nil {
-		t.Error("Expected error without circuit builder")
+		t.Error("Expected error without circuit builder / network relays")
 		return
 	}
-
-	// Verify error message indicates circuit builder is required
-	if !strings.Contains(err.Error(), "circuit builder is required") {
-		t.Errorf("Expected 'circuit builder is required' error, got: %v", err)
+	if !strings.Contains(err.Error(), "circuit builder") &&
+		!strings.Contains(err.Error(), "rendezvous") &&
+		!strings.Contains(err.Error(), "no relays") {
+		t.Errorf("Expected circuit/rendezvous related error, got: %v", err)
 	}
 }
 
@@ -1517,10 +1545,12 @@ func TestIntroduce1CellFormat(t *testing.T) {
 			AuthKey: make([]byte, 32),
 			EncKey:  bPub,
 		},
-		RendezvousCookie: rendezvousCookie,
-		RendezvousPoint:  "test-rp",
-		OnionKey:         make([]byte, 32),
-		Subcredential:    subcred,
+		RendezvousCookie:    rendezvousCookie,
+		RendezvousPoint:     "test-rp",
+		OnionKey:            make([]byte, 32),
+		Subcredential:       subcred,
+		RendezvousOnionKey:  func() []byte { k, _ := testRPFields(); return k }(),
+		RendezvousLinkSpecs: func() []LinkSpecifier { _, s := testRPFields(); return s }(),
 	}
 
 	data, err := intro.BuildIntroduce1Cell(req)
@@ -2313,10 +2343,12 @@ func TestBuildEncryptedDataWithEncryption(t *testing.T) {
 			EncKey:  introPointPublic[:],
 			AuthKey: make([]byte, 32),
 		},
-		RendezvousCookie: rendezvousCookie,
-		RendezvousPoint:  "test-rendezvous",
-		OnionKey:         onionKey,
-		Subcredential:    make([]byte, 32),
+		RendezvousCookie:    rendezvousCookie,
+		RendezvousPoint:     "test-rendezvous",
+		OnionKey:            onionKey,
+		Subcredential:       make([]byte, 32),
+		RendezvousOnionKey:  func() []byte { k, _ := testRPFields(); return k }(),
+		RendezvousLinkSpecs: func() []LinkSpecifier { _, s := testRPFields(); return s }(),
 	}
 
 	// Build encrypted data
@@ -2514,10 +2546,12 @@ func TestEncryptionIntegration(t *testing.T) {
 			EncKey:  introPointPublic[:],
 			AuthKey: authKey,
 		},
-		RendezvousCookie: rendezvousCookie,
-		RendezvousPoint:  "test-rendezvous-point",
-		OnionKey:         onionKey,
-		Subcredential:    subcred,
+		RendezvousCookie:    rendezvousCookie,
+		RendezvousPoint:     "test-rendezvous-point",
+		OnionKey:            onionKey,
+		Subcredential:       subcred,
+		RendezvousOnionKey:  func() []byte { k, _ := testRPFields(); return k }(),
+		RendezvousLinkSpecs: func() []LinkSpecifier { _, s := testRPFields(); return s }(),
 	}
 
 	// Build INTRODUCE1 cell

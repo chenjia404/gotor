@@ -17,6 +17,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	mrand "math/rand"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -343,6 +345,7 @@ type Client struct {
 	logger          *logger.Logger
 	hsdir           *HSDir
 	consensus       []*HSDirectory              // Available HSDirs from consensus
+	networkRelays   []*directory.Relay          // 全网共识（引言/会合匹配用）
 	circuitBuilder  CircuitBuilder              // Circuit builder for creating circuits
 	cellSender      CellSender                  // Cell sender for relay communication
 	rendezvousState map[uint32]*RendezvousState // AUDIT-006: Track ephemeral keys per circuit
@@ -397,6 +400,16 @@ func (c *Client) SetSharedRandom(current, previous []byte) {
 func (c *Client) UpdateHSDirs(relays []*HSDirectory) {
 	c.consensus = relays
 	c.logger.Info("Updated HSDir list", "count", len(relays))
+}
+
+// SetNetworkRelays 注入共识 relay（供会合点选择与引言点匹配）。
+func (c *Client) SetNetworkRelays(relays []*directory.Relay) {
+	c.networkRelays = relays
+}
+
+// NetworkRelays 返回已注入的共识节点。
+func (c *Client) NetworkRelays() []*directory.Relay {
+	return c.networkRelays
 }
 
 // StoreRendezvousState stores the ephemeral key state for a rendezvous (AUDIT-006)
@@ -1763,6 +1776,8 @@ type IntroduceRequest struct {
 	RendezvousCookie    []byte             // Rendezvous cookie (20 bytes)
 	RendezvousPoint     string             // Rendezvous point fingerprint
 	RendezvousCircuitID uint32             // Circuit ID for storing handshake state
+	RendezvousOnionKey  []byte             // RP ntor onion key (32 bytes)
+	RendezvousLinkSpecs []LinkSpecifier    // RP link specs for service EXTEND
 	OnionKey            []byte             // Legacy field; hs-ntor 用 EphemeralPublic
 	EphemeralPrivate    [32]byte           // Client's ephemeral private key x
 	EphemeralPublic     [32]byte           // Client's ephemeral public key X
@@ -1848,6 +1863,9 @@ func (ip *IntroductionProtocol) BuildIntroduce1Cell(req *IntroduceRequest) ([]by
 }
 
 // buildEncryptedData 构造 INTRODUCE1 的 ENCRYPTED = X || C || M（hs-ntor）。
+// 明文（rend-spec PROCESS_INTRO2）：
+//
+//	COOKIE | N_EXT=0 | ONION_KEY_TYPE=1 | LEN | KEY | NSPEC | LSPECs
 func (ip *IntroductionProtocol) buildEncryptedData(req *IntroduceRequest) ([]byte, error) {
 	if req.IntroPoint == nil {
 		return nil, fmt.Errorf("introduction point is required")
@@ -1861,6 +1879,12 @@ func (ip *IntroductionProtocol) buildEncryptedData(req *IntroduceRequest) ([]byt
 	if len(req.Subcredential) != 32 {
 		return nil, fmt.Errorf("subcredential must be 32 bytes")
 	}
+	if len(req.RendezvousOnionKey) != 32 {
+		return nil, fmt.Errorf("rendezvous onion key must be 32 bytes")
+	}
+	if len(req.RendezvousLinkSpecs) == 0 {
+		return nil, fmt.Errorf("rendezvous link specifiers required")
+	}
 
 	xPriv, err := crypto.GenerateCurve25519PrivateKey()
 	if err != nil {
@@ -1868,20 +1892,29 @@ func (ip *IntroductionProtocol) buildEncryptedData(req *IntroduceRequest) ([]byt
 	}
 	copy(req.EphemeralPrivate[:], xPriv)
 
-	// 明文：COOKIE || NSPEC=0 || ONION_KEY_TYPE/LEN/KEY || N_EXT=0
 	var plaintext bytes.Buffer
 	plaintext.Write(req.RendezvousCookie)
-	plaintext.WriteByte(0) // NSPEC
-	plaintext.WriteByte(0x00)
-	plaintext.Write([]byte{0x00, 0x20})
-	onionKey := req.OnionKey
-	if len(onionKey) != 32 {
-		onionKey = make([]byte, 32) // 占位；握手密钥在外层 X
+	plaintext.WriteByte(0) // N_EXTENSIONS
+	plaintext.WriteByte(0x01) // ONION_KEY_TYPE = NTOR
+	plaintext.Write([]byte{0x00, 0x20}) // ONION_KEY_LEN = 32
+	plaintext.Write(req.RendezvousOnionKey)
+	if len(req.RendezvousLinkSpecs) > 255 {
+		return nil, fmt.Errorf("too many link specifiers")
 	}
-	plaintext.Write(onionKey)
-	plaintext.WriteByte(0)
+	plaintext.WriteByte(byte(len(req.RendezvousLinkSpecs)))
+	for _, ls := range req.RendezvousLinkSpecs {
+		if len(ls.Data) > 255 {
+			return nil, fmt.Errorf("link specifier too long")
+		}
+		plaintext.WriteByte(ls.Type)
+		plaintext.WriteByte(byte(len(ls.Data)))
+		plaintext.Write(ls.Data)
+	}
+	// 填充到约 246 字节（与当前 Tor 行为接近）
+	for plaintext.Len() < 246 {
+		plaintext.WriteByte(0)
+	}
 
-	// Header H（与 BuildIntroduce1Cell 前缀一致）
 	var header bytes.Buffer
 	header.Write(make([]byte, 20))
 	header.WriteByte(0x02)
@@ -1900,7 +1933,8 @@ func (ip *IntroductionProtocol) buildEncryptedData(req *IntroduceRequest) ([]byt
 
 	ip.logger.Debug("INTRODUCE1 encrypted (hs-ntor)",
 		"plaintext_len", plaintext.Len(),
-		"encrypted_len", len(encrypted))
+		"encrypted_len", len(encrypted),
+		"rp_lspecs", len(req.RendezvousLinkSpecs))
 	return encrypted, nil
 }
 
@@ -2070,8 +2104,9 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 		return 0, fmt.Errorf("failed to generate rendezvous cookie: %w", err)
 	}
 
-	// Step 3: Establish rendezvous point
-	rendezvousCircuitID, rendezvousPoint, err := c.EstablishRendezvousPoint(ctx, rendezvousCookie, c.consensus)
+	// Step 3: Establish rendezvous point（从全网 Fast 节点选，而非仅 HSDir）
+	rendCandidates := c.rendezvousCandidates()
+	rendezvousCircuitID, rendezvousPoint, err := c.EstablishRendezvousPoint(ctx, rendezvousCookie, rendCandidates)
 	if err != nil {
 		return 0, fmt.Errorf("failed to establish rendezvous point: %w", err)
 	}
@@ -2102,12 +2137,19 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 	blinded := ComputeBlindedPubkey(ed25519.PublicKey(addr.Pubkey), timePeriod)
 	subcred := ComputeHSSubcredential(addr.Pubkey, blinded)
 
+	rpOnionKey, rpLinkSpecs, err := linkSpecsForRelay(rendezvousPoint)
+	if err != nil {
+		return 0, fmt.Errorf("rendezvous link specs: %w", err)
+	}
+
 	req := &IntroduceRequest{
 		IntroPoint:          introPoint,
 		RendezvousCookie:    rendezvousCookie,
 		RendezvousPoint:     rendezvousPoint.Fingerprint,
 		RendezvousCircuitID: rendezvousCircuitID,
 		Subcredential:       subcred,
+		RendezvousOnionKey:  rpOnionKey,
+		RendezvousLinkSpecs: rpLinkSpecs,
 	}
 
 	introduce1Data, err := intro.BuildIntroduce1Cell(req)
@@ -2180,16 +2222,37 @@ func (rp *RendezvousProtocol) SelectRendezvousPoint(relays []*HSDirectory) (*HSD
 		return nil, fmt.Errorf("no relays available for rendezvous point selection")
 	}
 
-	// For Phase 7.3.4, select the first available relay
-	// In a full implementation, this would:
-	// 1. Filter relays that support being rendezvous points
-	// 2. Exclude relays that are already in our circuit
-	// 3. Randomly select from remaining relays
-	// 4. Consider relay stability and performance metrics
-	selected := relays[0]
+	candidates := make([]*HSDirectory, 0, len(relays))
+	for _, r := range relays {
+		if r == nil || r.ORPort <= 0 || r.Address == "" {
+			continue
+		}
+		if r.Relay != nil {
+			if !r.Relay.IsRunning() || !r.Relay.IsValid() || !r.Relay.HasExtendKeys() {
+				continue
+			}
+			// 会合点通常选 Fast；有 Stable 更佳
+			if !r.Relay.HasFlag("Fast") {
+				continue
+			}
+		}
+		candidates = append(candidates, r)
+	}
+	if len(candidates) == 0 {
+		// 回退：任意有 ORPort 的条目
+		for _, r := range relays {
+			if r != nil && r.ORPort > 0 && r.Address != "" {
+				candidates = append(candidates, r)
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no suitable rendezvous candidates")
+	}
+	selected := candidates[mrand.Intn(len(candidates))]
 
 	rp.logger.Debug("Selected rendezvous point",
-		"relays_available", len(relays),
+		"candidates", len(candidates),
 		"selected_fingerprint", selected.Fingerprint)
 
 	return selected, nil
@@ -2383,6 +2446,77 @@ func (rp *RendezvousProtocol) WaitForRendezvous2(ctx context.Context, circuitID 
 	// AUDIT-003: No mock fallbacks in production code
 	// A cell sender is required to receive the RENDEZVOUS2 cell
 	return nil, fmt.Errorf("cell sender is required to receive RENDEZVOUS2 cell")
+}
+
+// rendezvousCandidates 从全网 Fast 节点构造会合候选（带 Relay 指针）。
+func (c *Client) rendezvousCandidates() []*HSDirectory {
+	out := make([]*HSDirectory, 0, 64)
+	seen := make(map[string]struct{})
+	for _, r := range c.networkRelays {
+		if r == nil || !r.IsRunning() || !r.IsValid() || !r.HasExtendKeys() {
+			continue
+		}
+		if !r.HasFlag("Fast") {
+			continue
+		}
+		fp := r.GetFingerprintHex()
+		if fp == "" {
+			fp = r.Fingerprint
+		}
+		if _, ok := seen[fp]; ok {
+			continue
+		}
+		seen[fp] = struct{}{}
+		out = append(out, &HSDirectory{
+			Fingerprint: fp,
+			Address:     r.Address,
+			ORPort:      r.ORPort,
+			Relay:       r,
+		})
+	}
+	return out
+}
+
+// linkSpecsForRelay 为会合点构造 INTRODUCE 明文所需的 ntor 密钥与 link-specifiers。
+func linkSpecsForRelay(h *HSDirectory) ([]byte, []LinkSpecifier, error) {
+	if h == nil || h.Relay == nil {
+		return nil, nil, fmt.Errorf("rendezvous relay missing")
+	}
+	r := h.Relay
+	if !r.HasNtorKeys() {
+		return nil, nil, fmt.Errorf("rendezvous relay missing ntor key")
+	}
+	specs := make([]LinkSpecifier, 0, 4)
+	if ip := net.ParseIP(r.Address); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			payload := make([]byte, 6)
+			copy(payload, v4)
+			binary.BigEndian.PutUint16(payload[4:], uint16(r.ORPort))
+			specs = append(specs, LinkSpecifier{Type: LSTypeIPv4, Data: payload})
+		}
+	}
+	if r.IPv6 != "" {
+		if ip6 := net.ParseIP(r.IPv6); ip6 != nil {
+			payload := make([]byte, 18)
+			copy(payload, ip6.To16())
+			port := r.IPv6Port
+			if port == 0 {
+				port = r.ORPort
+			}
+			binary.BigEndian.PutUint16(payload[16:], uint16(port))
+			specs = append(specs, LinkSpecifier{Type: LSTypeIPv6, Data: payload})
+		}
+	}
+	if len(r.RSAIdentity) == 20 {
+		specs = append(specs, LinkSpecifier{Type: LSTypeLegacyID, Data: append([]byte(nil), r.RSAIdentity...)})
+	}
+	if len(r.IdentityKey) == 32 {
+		specs = append(specs, LinkSpecifier{Type: LSTypeEd25519ID, Data: append([]byte(nil), r.IdentityKey...)})
+	}
+	if len(specs) == 0 {
+		return nil, nil, fmt.Errorf("no link specifiers for rendezvous")
+	}
+	return append([]byte(nil), r.NtorOnionKey...), specs, nil
 }
 
 // EstablishRendezvousPoint orchestrates establishing a rendezvous point
