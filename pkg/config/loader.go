@@ -254,6 +254,29 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 	case "ExitRelay":
 		cfg.ExitRelay = parseBool(value)
 
+	case "IPv6Exit":
+		cfg.IPv6Exit = parseBool(value)
+
+	case "ReduceExitPolicy":
+		cfg.ReduceExitPolicy = parseBool(value)
+
+	case "ExitPolicy":
+		cfg.ExitPolicyLines = append(cfg.ExitPolicyLines, value)
+
+	case "ExitPolicyRejectPrivate":
+		// 简化：开启时前置常见私网拒绝（与 C Tor 默认接近的子集）
+		if parseBool(value) {
+			cfg.ExitPolicyLines = append([]string{
+				"reject 0.0.0.0/8:*",
+				"reject 127.0.0.0/8:*",
+				"reject 10.0.0.0/8:*",
+				"reject 172.16.0.0/12:*",
+				"reject 192.168.0.0/16:*",
+				"reject 169.254.0.0/16:*",
+				"reject *:25",
+			}, cfg.ExitPolicyLines...)
+		}
+
 	case "PublishServerDescriptor":
 		// CSV；含 0/false/none 视为关闭
 		v := strings.ToLower(strings.TrimSpace(value))

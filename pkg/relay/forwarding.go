@@ -72,16 +72,14 @@ func (h *ForwardingHandler) RegisterExtendedCircuit(clientCircID, nextHopCircID 
 // - RELAY_EARLY cells are limited to 8 per circuit direction
 // - After 8 RELAY_EARLY cells, convert to RELAY cells
 // - Track counts to prevent circuit extension attacks
-func (h *ForwardingHandler) ForwardRelayCell(ctx context.Context, fromClient bool, circuitID uint32, c *cell.Cell) error {
+func (h *ForwardingHandler) ForwardRelayCell(ctx context.Context, fromClient bool, circuitID uint32, c *cell.Cell, clientConn net.Conn) error {
 	// Check if this is an extended circuit
 	h.extendedMu.RLock()
 	ext, isExtended := h.extended[circuitID]
 	h.extendedMu.RUnlock()
 
 	if !isExtended {
-		// Circuit not extended, this is the end of the circuit
-		// Handle locally (stream operations, etc.)
-		return h.handleLocalRelayCell(ctx, circuitID, c)
+		return h.handleLocalRelayCell(ctx, circuitID, c, clientConn)
 	}
 
 	// Forward to next hop
@@ -146,13 +144,19 @@ func (h *ForwardingHandler) forwardToClient(ext *ExtendedCircuit, c *cell.Cell) 
 }
 
 // handleLocalRelayCell handles relay cells for circuits that end at this relay
-func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID uint32, c *cell.Cell) error {
-	// Decode relay cell
-	relayCell, err := cell.DecodeRelayCell(c.Payload)
+func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID uint32, c *cell.Cell, clientConn net.Conn) error {
+	circ, ok := h.circuits.GetCircuit(circuitID)
+	if !ok || circ == nil || circ.crypto == nil {
+		return fmt.Errorf("circuit %d crypto unavailable", circuitID)
+	}
+	plain, err := circ.crypto.decryptInbound(c.Payload)
 	if err != nil {
-		h.logger.Warn("Failed to decode relay cell",
-			"circuit_id", circuitID,
-			"error", err)
+		// 未识别的 RELAY 载荷：丢弃（对照 C Tor drop unrecognized）
+		h.logger.Debug("drop unrecognized relay cell", "circuit_id", circuitID, "error", err)
+		return nil
+	}
+	relayCell, err := cell.DecodeRelayCell(plain)
+	if err != nil {
 		return fmt.Errorf("invalid relay cell: %w", err)
 	}
 
@@ -161,62 +165,67 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 		"command", cell.RelayCmdString(relayCell.Command),
 		"stream_id", relayCell.StreamID)
 
-	// Check for exit attempts and enforce exit policy
 	switch relayCell.Command {
-	case cell.RelayBegin, cell.RelayBeginDir:
-		// Exit policy: reject all exit traffic
-		return h.rejectExitAttempt(circuitID, relayCell.StreamID)
+	case cell.RelayBegin:
+		if h.circuits.exits == nil {
+			return h.rejectExitAttempt(circ, clientConn, relayCell.StreamID)
+		}
+		return h.circuits.exits.HandleBegin(ctx, circ, clientConn, relayCell.StreamID, relayCell.Data)
 
-	case cell.RelayExtend2:
-		// This should be handled by extension handler
-		h.logger.Debug("RELAY_EXTEND2 on local circuit - should be handled separately")
+	case cell.RelayBeginDir:
+		return h.rejectExitAttempt(circ, clientConn, relayCell.StreamID)
+
+	case cell.RelayData:
+		if h.circuits.exits != nil {
+			return h.circuits.exits.HandleData(circuitID, relayCell.StreamID, relayCell.Data)
+		}
 		return nil
 
-	case cell.RelayData, cell.RelayEnd, cell.RelaySendme:
-		// Stream operations not supported in non-exit relay
-		h.logger.Debug("Stream operation on non-exit relay - ignoring",
-			"command", cell.RelayCmdString(relayCell.Command))
+	case cell.RelayEnd:
+		if h.circuits.exits != nil {
+			h.circuits.exits.HandleEnd(circuitID, relayCell.StreamID)
+		}
+		return nil
+
+	case cell.RelayExtend2:
+		h.logger.Debug("RELAY_EXTEND2 on local circuit - extension path separate")
 		return nil
 
 	case cell.RelayTruncate:
-		// Handle circuit truncation
 		return h.handleTruncate(circuitID)
 
 	default:
-		h.logger.Debug("Unhandled relay command",
-			"circuit_id", circuitID,
-			"command", cell.RelayCmdString(relayCell.Command))
 		return nil
 	}
 }
 
 // rejectExitAttempt sends RELAY_END with EXITPOLICY reason
-func (h *ForwardingHandler) rejectExitAttempt(circuitID uint32, streamID uint16) error {
+func (h *ForwardingHandler) rejectExitAttempt(circ *ServerCircuit, clientConn net.Conn, streamID uint16) error {
 	h.logger.Info("Rejecting exit attempt (exit policy)",
-		"circuit_id", circuitID,
+		"circuit_id", circ.CircuitID,
 		"stream_id", streamID)
-
-	// Create RELAY_END cell with EXITPOLICY reason
-	endData := []byte{cell.EndReasonExitPolicy}
-	relayCell, err := cell.NewRelayCell(streamID, cell.RelayEnd, endData)
-	if err != nil {
-		return fmt.Errorf("failed to create RELAY_END: %w", err)
+	if circ.crypto == nil || clientConn == nil {
+		return nil
 	}
-
-	payload, err := relayCell.Encode()
+	rc, err := cell.NewRelayCell(streamID, cell.RelayEnd, []byte{cell.EndReasonExitPolicy})
 	if err != nil {
-		return fmt.Errorf("failed to encode RELAY_END: %w", err)
+		return err
 	}
-
-	// This would need to be sent back on the circuit
-	// For now, log the action
-	h.logger.Debug("Created RELAY_END cell",
-		"circuit_id", circuitID,
-		"stream_id", streamID,
-		"reason", "EXITPOLICY",
-		"payload_len", len(payload))
-
-	return nil
+	plain, err := rc.Encode()
+	if err != nil {
+		return err
+	}
+	if len(plain) < 509 {
+		pad := make([]byte, 509)
+		copy(pad, plain)
+		plain = pad
+	}
+	enc, err := circ.crypto.encryptOutbound(plain[:509])
+	if err != nil {
+		return err
+	}
+	out := &cell.Cell{CircID: circ.CircuitID, Command: cell.CmdRelay, Payload: enc}
+	return out.Encode(clientConn)
 }
 
 // handleTruncate handles RELAY_TRUNCATE cells per tor-spec.txt §5.5

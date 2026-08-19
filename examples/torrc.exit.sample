@@ -1,0 +1,19 @@
+# gotor 出口节点示例
+
+Nickname gotorExit
+ORPort 9001
+ExitRelay 1
+ReduceExitPolicy 1
+IPv6Exit 0
+ExitPolicyRejectPrivate 1
+ExitPolicy accept *:80
+ExitPolicy accept *:443
+ExitPolicy reject *:*
+
+SocksPort 9050
+ControlPort 9051
+DataDirectory /var/lib/gotor
+CookieAuthentication 1
+PublishServerDescriptor 0
+AssumeReachable 1
+Log notice stdout

@@ -28,7 +28,7 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 		log = logger.NewDefault()
 	}
 	if cfg.ExitRelay {
-		log.Warn("ExitRelay 1 暂不支持完整出口；本进程仅作为非出口中继运行")
+		log.Info("ExitRelay 1：启用出口（按 ExitPolicy / ReduceExitPolicy）")
 	}
 
 	keysDir := filepath.Join(cfg.DataDirectory, "keys")
@@ -44,12 +44,15 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 		}
 	}
 
+	policy := NewExitPolicyFromConfig(cfg.ExitRelay, cfg.ExitPolicyLines, cfg.ReduceExitPolicy, cfg.IPv6Exit, log)
+
 	addr := cfg.ORListenAddr
 	if addr == "" {
 		addr = "0.0.0.0"
 	}
 	listen := net.JoinHostPort(addr, fmt.Sprintf("%d", cfg.ORPort))
 	orCfg := DefaultORListenerConfig(listen, keys)
+	orCfg.ExitPolicy = policy
 	if cfg.ConnLimit > 0 {
 		orCfg.MaxConnections = cfg.ConnLimit
 	}
@@ -62,6 +65,7 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 	s.logger.Info("relay configured",
 		"nickname", cfg.Nickname,
 		"or_listen", listen,
+		"exit", cfg.ExitRelay,
 		"fingerprint", keys.Fingerprint(),
 		"ed25519", keys.Ed25519Fingerprint(),
 		"publish", cfg.PublishServerDescriptor)

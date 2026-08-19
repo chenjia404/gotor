@@ -5,7 +5,6 @@ package relay
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"net"
 	"sync"
@@ -18,13 +17,12 @@ import (
 
 // ServerCircuit represents a server-side circuit
 type ServerCircuit struct {
-	CircuitID      uint32
-	Created        time.Time
-	LastActivity   time.Time
-	KeyMaterial    []byte // 72 bytes from ntor handshake
-	ForwardDigest  []byte // Forward digest state
-	BackwardDigest []byte // Backward digest state
-	mu             sync.RWMutex
+	CircuitID    uint32
+	Created      time.Time
+	LastActivity time.Time
+	KeyMaterial  []byte
+	crypto       *circuitCrypto
+	mu           sync.RWMutex
 }
 
 // CircuitHandler manages server-side circuits for a relay
@@ -35,20 +33,31 @@ type CircuitHandler struct {
 	logger    *logger.Logger
 	ctx       context.Context
 	forwarder *ForwardingHandler
+	policy    *ExitPolicy
+	exits     *ExitStreamManager
 }
 
 // NewCircuitHandler creates a new circuit handler
 func NewCircuitHandler(keys *RelayKeys, log *logger.Logger) *CircuitHandler {
+	return NewCircuitHandlerWithPolicy(keys, NewExitPolicy(log), log)
+}
+
+// NewCircuitHandlerWithPolicy 带出口策略。
+func NewCircuitHandlerWithPolicy(keys *RelayKeys, policy *ExitPolicy, log *logger.Logger) *CircuitHandler {
 	if log == nil {
 		log = logger.NewDefault()
+	}
+	if policy == nil {
+		policy = NewExitPolicy(log)
 	}
 	h := &CircuitHandler{
 		keys:     keys,
 		circuits: make(map[uint32]*ServerCircuit),
 		logger:   log.Component("circuit-handler"),
 		ctx:      context.Background(),
+		policy:   policy,
+		exits:    NewExitStreamManager(policy, log),
 	}
-	// Create forwarding handler
 	h.forwarder = NewForwardingHandler(h, log)
 	return h
 }
@@ -150,13 +159,17 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 	}
 
 	// Create circuit state
+	cc, cerr := newCircuitCrypto(keyMaterial)
+	if cerr != nil {
+		h.logger.Error("circuit crypto init failed", "error", cerr)
+		return h.sendDestroyCell(conn, c.CircID, cell.DestroyReasonInternal)
+	}
 	circuit := &ServerCircuit{
-		CircuitID:      c.CircID,
-		Created:        time.Now(),
-		LastActivity:   time.Now(),
-		KeyMaterial:    keyMaterial,
-		ForwardDigest:  make([]byte, sha256.Size),
-		BackwardDigest: make([]byte, sha256.Size),
+		CircuitID:    c.CircID,
+		Created:      time.Now(),
+		LastActivity: time.Now(),
+		KeyMaterial:  keyMaterial,
+		crypto:       cc,
 	}
 
 	// Store circuit
@@ -222,7 +235,7 @@ func (h *CircuitHandler) handleRelay(conn net.Conn, c *cell.Cell) error {
 
 	// Forward relay cell using ForwardingHandler
 	// fromClient=true indicates this cell is from the client
-	if err := h.forwarder.ForwardRelayCell(h.ctx, true, c.CircID, c); err != nil {
+	if err := h.forwarder.ForwardRelayCell(h.ctx, true, c.CircID, c, conn); err != nil {
 		h.logger.Error("Failed to forward RELAY cell",
 			"circuit_id", c.CircID,
 			"error", err)

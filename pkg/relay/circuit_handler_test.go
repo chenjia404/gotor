@@ -312,19 +312,28 @@ func TestCircuitHandler_HandleRelay(t *testing.T) {
 	handler := NewCircuitHandler(keys, log)
 
 	// Create a circuit
+	km := make([]byte, 72)
+	for i := range km {
+		km[i] = byte(i + 1)
+	}
+	cc, cerr := newCircuitCrypto(km)
+	if cerr != nil {
+		t.Fatal(cerr)
+	}
 	handler.mu.Lock()
 	handler.circuits[2] = &ServerCircuit{
 		CircuitID:    2,
 		Created:      time.Now(),
 		LastActivity: time.Now().Add(-1 * time.Minute),
+		crypto:       cc,
 	}
 	handler.mu.Unlock()
 
-	// Send RELAY cell
+	// 空载荷无法通过 digest 识别：期望解密失败
 	relayCell := &cell.Cell{
 		CircID:  2,
 		Command: cell.CmdRelay,
-		Payload: make([]byte, 509), // Standard relay cell payload
+		Payload: make([]byte, 509),
 	}
 
 	conn := newMockConn()
@@ -387,10 +396,13 @@ func TestCircuitHandler_HandleRelayEarly(t *testing.T) {
 
 	// Create a circuit
 	handler.mu.Lock()
+	km5 := make([]byte, 72)
+	cc5, _ := newCircuitCrypto(km5)
 	handler.circuits[5] = &ServerCircuit{
 		CircuitID:    5,
 		Created:      time.Now(),
 		LastActivity: time.Now(),
+		crypto:       cc5,
 	}
 	handler.mu.Unlock()
 
