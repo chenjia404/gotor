@@ -36,7 +36,7 @@
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| Directory / Consensus | PARTIAL | 生产验签已在真实网络通过（9/9 权威）。证书已落盘 `cached-certs`，缺官方长期 fixture；consensus diff（DirCache=2）已实现，待真实验收 |
+| Directory / Consensus | WORKING | 生产验签真实网络 9/9。证书落盘 `cached-certs`；DirCache=2 consensus diff 真实验收（CollecTor 上一小时 → 权威 limited-ed → 10193 relays） |
 | Microdescriptor fetch/parse | PARTIAL | 解析与 digest 已按 spec 修正，真实网络可填充密钥；缺长期 fixture 回归 |
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
@@ -182,17 +182,21 @@
 
 #### 9. Consensus diff（DirCache=2）
 
-- **状态**：PARTIAL（limited ed apply + FetchConsensus 接线；未跑真实网络）。
+- **状态**：WORKING（2026-08-19 真实验收）。
 - **已做**：
   - `network-status-diff-version 1` + `hash FromDigest ToDigest`（SHA3-256）
   - FromDigest = 旧文档 signed part；ToDigest = 应用后整份新共识
   - 只接受 `d`/`c`/`a`；有签名时第一条必须是首个 `directory-signature` 行的 `n,$d`
   - 有缓存时发 `X-Or-Diff-From-Consensus`；apply / 验签失败则同一权威去掉 header 重拉整份
+  - **去掉 CollecTor `@type` 前缀**（否则 Diff 行号整体 +1，真实 `N,$d` 失败）
+  - `LastFetchUsedDiff` / `LoadVerifiedConsensusDocument` / `TryConsensusDiffFromAuthority` 供验收
   - 未验签结果不入缓存；单测 + httptest（不访问公网）
+- **真实网络（2026-08-19 `TestRealConsensusDiff`）**：
+  - 灌入 CollecTor `2026-08-19-10-00-00-consensus-microdesc`（10156 relays）
+  - 权威 `moria1` 返回 limited-ed diff 并 apply + 验签 → **10193** relays；`LastFetchUsedDiff=true`
+  - 二次 `FetchConsensus` 回退整份成功
 - **Spec**：https://spec.torproject.org/dir-spec/directory-cache-operation.html ；limited-ed-diff-format
 - **现有代码**：`pkg/directory/consdiff.go`；`pkg/directory/directory.go`；文档 `docs/interop/consensus-diff.md`
-- **验收**：有缓存时拉 diff 并能验签；失败回退整份。真实 DirCache=2 通过后标 WORKING。
-- **禁止**：为过测试放宽 ToDigest / 验签；C 库 / CGO。
 
 #### 10. 权威证书落盘 + 官方长期 fixture
 

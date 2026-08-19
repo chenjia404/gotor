@@ -154,6 +154,7 @@ type Client struct {
 	lastParams        map[string]int // 最近一次验签成功的共识 params（给 FlowCtrl=2）
 	lastConsensusRaw  string         // 验签成功的整份共识（给 DirCache=2 diff）
 	lastSignedSHA3Hex string         // 上述文档 signed part 的 SHA3-256 hex
+	lastFetchUsedDiff bool           // 最近一次成功 ingest 是否来自 limited-ed diff
 }
 
 // AuthorityCertCache caches authority signing certificates for consensus verification
@@ -236,10 +237,15 @@ func (c *Client) fetchFromAuthority(ctx context.Context, authorityURL string) ([
 	if fromHex != "" {
 		raw, err := c.httpGetConsensus(ctx, authorityURL, fromHex)
 		if err == nil {
+			usedDiff := isConsensusDiffDocument(raw)
 			doc, aerr := c.resolveConsensusPayload(raw)
 			if aerr == nil {
 				relays, ierr := c.ingestConsensusDocument(ctx, doc)
 				if ierr == nil {
+					c.setLastFetchUsedDiff(usedDiff)
+					if usedDiff {
+						c.logger.Info("Consensus updated via DirCache=2 diff", "authority", authorityURL)
+					}
 					return relays, nil
 				}
 				c.logger.Warn("applied or received consensus rejected; falling back to full document", "error", ierr)
@@ -258,7 +264,69 @@ func (c *Client) fetchFromAuthority(ctx context.Context, authorityURL string) ([
 	if isConsensusDiffDocument(raw) {
 		return nil, fmt.Errorf("authority returned consensus diff on full-document request")
 	}
-	return c.ingestConsensusDocument(ctx, raw)
+	relays, err := c.ingestConsensusDocument(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	c.setLastFetchUsedDiff(false)
+	return relays, nil
+}
+
+func (c *Client) setLastFetchUsedDiff(v bool) {
+	c.mu.Lock()
+	c.lastFetchUsedDiff = v
+	c.mu.Unlock()
+}
+
+// LastFetchUsedDiff 报告最近一次成功 FetchConsensus / TryConsensusDiff 是否应用了 limited-ed diff。
+func (c *Client) LastFetchUsedDiff() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastFetchUsedDiff
+}
+
+// LoadVerifiedConsensusDocument 验签并缓存一份已下载的共识文档（给 DirCache=2 真实验收：
+// 先灌入上一小时文档，再向权威请求 limited-ed diff）。
+func (c *Client) LoadVerifiedConsensusDocument(ctx context.Context, doc string) ([]*Relay, error) {
+	if isConsensusDiffDocument(doc) {
+		return nil, fmt.Errorf("LoadVerifiedConsensusDocument expects a full consensus, not a diff")
+	}
+	relays, err := c.ingestConsensusDocument(ctx, doc)
+	if err != nil {
+		return nil, err
+	}
+	c.setLastFetchUsedDiff(false)
+	return relays, nil
+}
+
+// CachedSignedSHA3Hex 返回已缓存共识 signed part 的 SHA3-256 hex（小写）；无缓存则空串。
+func (c *Client) CachedSignedSHA3Hex() string {
+	return c.cachedSignedSHA3()
+}
+
+// TryConsensusDiffFromAuthority 向指定权威发带 X-Or-Diff-From-Consensus 的请求。
+// 用于真实验收：区分「收到 diff」「304/错误回退」「整份文档」。
+// 返回 gotDiff 表示响应体是 network-status-diff；成功验签时 relays 非空。
+func (c *Client) TryConsensusDiffFromAuthority(ctx context.Context, authorityURL string) (gotDiff bool, relays []*Relay, err error) {
+	fromHex := c.cachedSignedSHA3()
+	if fromHex == "" {
+		return false, nil, fmt.Errorf("no cached consensus digest")
+	}
+	raw, err := c.httpGetConsensus(ctx, authorityURL, fromHex)
+	if err != nil {
+		return false, nil, err
+	}
+	gotDiff = isConsensusDiffDocument(raw)
+	doc, err := c.resolveConsensusPayload(raw)
+	if err != nil {
+		return gotDiff, nil, err
+	}
+	relays, err = c.ingestConsensusDocument(ctx, doc)
+	if err != nil {
+		return gotDiff, nil, err
+	}
+	c.setLastFetchUsedDiff(gotDiff)
+	return gotDiff, relays, nil
 }
 
 func (c *Client) cachedSignedSHA3() string {
@@ -357,6 +425,7 @@ func (c *Client) httpGetConsensus(ctx context.Context, authorityURL, fromSHA3 st
 }
 
 func (c *Client) ingestConsensusDocument(ctx context.Context, doc string) ([]*Relay, error) {
+	doc = stripConsensusPreamble(doc)
 	signedBody, err := extractConsensusSignedBody(doc)
 	if err != nil {
 		return nil, fmt.Errorf("consensus signed-body: %w", err)

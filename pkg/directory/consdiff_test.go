@@ -35,6 +35,27 @@ func TestApplyConsensusDiffDeleteChangeAdd(t *testing.T) {
 	}
 }
 
+func TestStripConsensusPreambleForDiffLineNumbers(t *testing.T) {
+	body := "network-status-version 3\nbody\ndirectory-signature sha256 AA BB\n-----BEGIN SIGNATURE-----\nx\n-----END SIGNATURE-----\n"
+	prefixed := "@type network-status-microdesc-consensus-3 1.0\n" + body
+	if stripConsensusPreamble(prefixed) != body {
+		t.Fatalf("strip preamble failed: %q", stripConsensusPreamble(prefixed))
+	}
+	// Diff 行号相对无 @type 的文档：首个 signature 为第 3 行。
+	want := "network-status-version 3\nbody2\ndirectory-signature sha256 CC DD\n-----BEGIN SIGNATURE-----\ny\n-----END SIGNATURE-----\n"
+	diff, err := makeConsensusDiff(body, want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := applyConsensusDiff(prefixed, diff)
+	if err != nil {
+		t.Fatalf("apply with @type prefix: %v", err)
+	}
+	if got != normalizeConsensusText(want) {
+		t.Fatalf("结果不符:\n%s", got)
+	}
+}
+
 func TestApplyConsensusDiffRangeDeleteAndChange(t *testing.T) {
 	oldDoc := "L1\nL2\nL3\nL4\nL5\n"
 	want := "L1\nX\nY\nL5\n"

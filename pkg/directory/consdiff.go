@@ -26,7 +26,7 @@ const (
 //   - ToDigest   = 应用后整份新共识（含签名）的 SHA3-256
 //   - 只接受 d / c / a；有 directory-signature 时第一条必须是「首个签名行,$d」
 func applyConsensusDiff(oldDoc, diffDoc string) (string, error) {
-	oldDoc = strings.TrimPrefix(oldDoc, "\ufeff")
+	oldDoc = stripConsensusPreamble(strings.TrimPrefix(oldDoc, "\ufeff"))
 	from, to, commands, err := parseConsensusDiff(diffDoc)
 	if err != nil {
 		return "", err
@@ -344,6 +344,18 @@ func normalizeConsensusText(s string) string {
 		s += "\n"
 	}
 	return s
+}
+
+// stripConsensusPreamble 去掉 CollecTor `@type ...` 等位于 network-status-version 之前的前缀。
+// limited-ed 行号相对「以 network-status-version 开头」的权威原文；保留前缀会使首个
+// directory-signature 行号整体 +1，导致真实 Diff 的 `N,$d` 校验失败。
+func stripConsensusPreamble(doc string) string {
+	doc = strings.TrimPrefix(doc, "\ufeff")
+	idx := strings.Index(doc, "network-status-version")
+	if idx <= 0 {
+		return doc
+	}
+	return doc[idx:]
 }
 
 func sha3_256Hex(b []byte) string {

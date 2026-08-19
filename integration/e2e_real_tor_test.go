@@ -79,6 +79,121 @@ func TestRealConsensusSignatures(t *testing.T) {
 	t.Logf("consensus signatures verified, relays=%d", len(relays))
 }
 
+// TestRealConsensusDiff 验收 DirCache=2：灌入上一小时共识后，向权威请求 limited-ed diff，
+// apply + 验签必须成功；若权威只回 304/整份，则二次 FetchConsensus 回退路径仍须成功。
+func TestRealConsensusDiff(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	dirClient := directory.NewClient(logger.NewDefault())
+
+	// 先拉当前共识，确定 valid-after，再取上一小时文档作为 Diff 起点。
+	relaysNow, err := dirClient.FetchConsensus(ctx)
+	if err != nil {
+		t.Fatalf("current FetchConsensus: %v", err)
+	}
+	if len(relaysNow) < 1000 {
+		t.Fatalf("current consensus relays=%d", len(relaysNow))
+	}
+	nowDigest := dirClient.CachedSignedSHA3Hex()
+	t.Logf("current relays=%d digest=%s…", len(relaysNow), nowDigest[:16])
+
+	prevDoc, prevLabel, err := fetchPreviousMicrodescConsensus(ctx)
+	if err != nil {
+		t.Fatalf("fetch previous consensus: %v", err)
+	}
+	t.Logf("seed previous consensus %s (%d bytes)", prevLabel, len(prevDoc))
+
+	seedClient := directory.NewClient(logger.NewDefault())
+	relaysPrev, err := seedClient.LoadVerifiedConsensusDocument(ctx, prevDoc)
+	if err != nil {
+		t.Fatalf("LoadVerifiedConsensusDocument: %v", err)
+	}
+	prevDigest := seedClient.CachedSignedSHA3Hex()
+	if prevDigest == nowDigest {
+		t.Fatal("previous consensus digest unexpectedly equals current")
+	}
+	t.Logf("seeded relays=%d FromDigest=%s…", len(relaysPrev), prevDigest[:16])
+
+	var sawDiff bool
+	var lastErr error
+	for _, auth := range directory.DefaultAuthorities {
+		gotDiff, r2, err := seedClient.TryConsensusDiffFromAuthority(ctx, auth)
+		if err != nil {
+			lastErr = err
+			t.Logf("diff probe %s: %v", auth, err)
+			continue
+		}
+		if !gotDiff {
+			t.Logf("authority %s returned full document (not diff)", auth)
+			continue
+		}
+		if len(r2) < 1000 {
+			t.Fatalf("applied diff from %s has too few relays: %d", auth, len(r2))
+		}
+		if !seedClient.LastFetchUsedDiff() {
+			t.Fatal("LastFetchUsedDiff=false after successful diff apply")
+		}
+		sawDiff = true
+		t.Logf("DirCache=2 diff OK authority=%s relays=%d", auth, len(r2))
+		break
+	}
+	if !sawDiff {
+		t.Fatalf("no authority returned a usable consensus diff from %s (last err: %v)", prevLabel, lastErr)
+	}
+
+	// 回退路径：缓存已是最新时，带 header 请求通常 304 → FetchConsensus 须能整份拉回。
+	relays2, err := dirClient.FetchConsensus(ctx)
+	if err != nil {
+		t.Fatalf("second FetchConsensus (fallback path): %v", err)
+	}
+	if len(relays2) < 1000 {
+		t.Fatalf("second consensus relays=%d", len(relays2))
+	}
+	t.Logf("fallback FetchConsensus OK relays=%d usedDiff=%v", len(relays2), dirClient.LastFetchUsedDiff())
+}
+
+// fetchPreviousMicrodescConsensus 从 CollecTor 取比当前整点更早一小时的 microdesc 共识。
+func fetchPreviousMicrodescConsensus(ctx context.Context) (doc, label string, err error) {
+	now := time.Now().UTC().Truncate(time.Hour)
+	client := &http.Client{Timeout: 90 * time.Second}
+	var last error
+	for i := 1; i <= 6; i++ {
+		ts := now.Add(-time.Duration(i) * time.Hour)
+		label = ts.Format("2006-01-02-15-04-05") + "-consensus-microdesc"
+		url := "https://collector.torproject.org/recent/relay-descriptors/microdescs/consensus-microdesc/" + label
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if reqErr != nil {
+			return "", "", reqErr
+		}
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			last = doErr
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			last = readErr
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			last = fmt.Errorf("%s: HTTP %d", label, resp.StatusCode)
+			continue
+		}
+		if !strings.Contains(string(body), "network-status-version 3") {
+			last = fmt.Errorf("%s: not a consensus", label)
+			continue
+		}
+		return string(body), label, nil
+	}
+	if last == nil {
+		last = fmt.Errorf("no previous consensus found")
+	}
+	return "", "", last
+}
+
 func TestRealGuardCreate2(t *testing.T) {
 	requireRealTor(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
