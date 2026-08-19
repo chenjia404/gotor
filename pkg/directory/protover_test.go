@@ -1,6 +1,10 @@
 package directory
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/opd-ai/go-tor/pkg/crypto"
+)
 
 func TestParseProtoLine(t *testing.T) {
 	p := ParseProtoLine("pr Cons=2 Desc=2 DirCache=2 HSDir=2 HSIntro=5 HSRend=2 Link=5 LinkAuth=3 Microdesc=2 Relay=4 Padding=2 FlowCtrl=1-2 Conflux=2")
@@ -42,8 +46,26 @@ func TestRelayUseNtorV3(t *testing.T) {
 	if !r.UseNtorV3() || !r.RequestCongestionControl() {
 		t.Fatal("Relay=4 FlowCtrl=2 should request ntor-v3 + CC")
 	}
+	if r.SupportsSubprotoRequest() {
+		t.Fatal("Relay=4 must not advertise type-3 subproto_request")
+	}
+	r.Protocols = ParseProtoLine("Relay=5-6 FlowCtrl=1-2")
+	if !r.SupportsSubprotoRequest() || !r.Supports("Relay", 6) {
+		t.Fatal("Relay=5-6 should support subproto_request + CGO advertisement")
+	}
 	r.IdentityKey = nil
 	if r.UseNtorV3() {
 		t.Fatal("missing Ed25519 must not use ntor-v3")
+	}
+}
+
+func TestSelectSubprotoRequestViaRelay(t *testing.T) {
+	r := &Relay{Protocols: ParseProtoLine("Relay=4-6 FlowCtrl=1-2")}
+	if !r.SupportsSubprotoRequest() {
+		t.Fatal("Relay=4-6 includes 5")
+	}
+	caps, err := crypto.SelectSubprotoRequest(r)
+	if err != nil || len(caps) != 0 {
+		t.Fatalf("CGO 未实现时不得对 Relay=6 发出 type 3: %v %#v", err, caps)
 	}
 }
