@@ -1478,14 +1478,37 @@ func (c *Circuit) ReadFromStream(ctx context.Context, streamID uint16) ([]byte, 
 	}
 }
 
+// RelayDataMax 返回本电路目的跳上一条 RELAY_DATA 能装的最大字节。
+// CGO/v1 带 stream_id 时是 488，不是 v0 的 498。
+func (c *Circuit) RelayDataMax() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	dest := len(c.Hops) - 1
+	if dest >= 0 && c.Hops[dest].usesCGO() {
+		return cell.RelayCellMaxDataV1(cell.RelayData)
+	}
+	return cell.PayloadLen - cell.RelayCellHeaderLen
+}
+
 // WriteToStream writes data to a specific stream
 // This is used by the SOCKS proxy to send data to the exit node
 func (c *Circuit) WriteToStream(streamID uint16, data []byte) error {
-	dataCell, err := cell.NewRelayCell(streamID, cell.RelayData, data)
-	if err != nil {
-		return fmt.Errorf("failed to create RELAY_DATA cell: %w", err)
+	max := c.RelayDataMax()
+	for len(data) > 0 {
+		n := len(data)
+		if n > max {
+			n = max
+		}
+		dataCell, err := cell.NewRelayCell(streamID, cell.RelayData, data[:n])
+		if err != nil {
+			return fmt.Errorf("failed to create RELAY_DATA cell: %w", err)
+		}
+		if err := c.SendRelayCell(dataCell); err != nil {
+			return err
+		}
+		data = data[n:]
 	}
-	return c.SendRelayCell(dataCell)
+	return nil
 }
 
 // EndStream sends a RELAY_END cell for a stream

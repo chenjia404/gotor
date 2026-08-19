@@ -47,6 +47,25 @@ func TestEncodeDecodeRelayCellV1NoStream(t *testing.T) {
 	}
 }
 
+func TestRelayCellMaxDataV1(t *testing.T) {
+	if got := RelayCellMaxDataV1(RelayData); got != 488 {
+		t.Fatalf("DATA max %d, want 488 (509-21)", got)
+	}
+	if got := RelayCellMaxDataV1(RelayExtend2); got != 490 {
+		t.Fatalf("EXTEND2 max %d, want 490 (509-19)", got)
+	}
+	payload, err := EncodeRelayCellV1(&RelayCell{Command: RelayData, StreamID: 1, Data: make([]byte, 488)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) != PayloadLen {
+		t.Fatalf("len %d", len(payload))
+	}
+	if _, err := EncodeRelayCellV1(&RelayCell{Command: RelayData, StreamID: 1, Data: make([]byte, 489)}); err == nil {
+		t.Fatal("489-byte DATA must not fit v1")
+	}
+}
+
 func TestEncodeRelayCellV1RejectsBadStreamID(t *testing.T) {
 	if _, err := EncodeRelayCellV1(&RelayCell{Command: RelayData, StreamID: 0}); err == nil {
 		t.Fatal("DATA requires stream_id")

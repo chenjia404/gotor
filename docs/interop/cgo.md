@@ -40,6 +40,8 @@ proposal 359 文中的 KH(20) **没有**出现在 C Tor 的 CGO key material 里
 其后 data，再 4 字节 0 + 随机
 ```
 
+带 stream_id 的命令最大 data 是 **488**（509-21），不是 v0 的 498。TLS ClientHello 经常超过 488，必须按 v1 上限分片。
+
 ## SENDME
 
 识别 hop 后的 16 字节 tag T，放进**电路级** SENDME v1，`DATA_LEN=16`。

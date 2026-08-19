@@ -49,6 +49,21 @@ func TestCGONoAESCTRFallbackOnKeyLen(t *testing.T) {
 	}
 }
 
+func TestCGORelayDataMaxIs488(t *testing.T) {
+	keys := bytes.Repeat([]byte{0x3c}, crypto.CGOKeyMaterialLen)
+	pair, err := crypto.NewCGOPairFromKeyMaterial(keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewCircuit(3)
+	if err := c.AddHop(&Hop{CGO: pair}); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.RelayDataMax(); got != 488 {
+		t.Fatalf("CGO DATA max %d, want 488", got)
+	}
+}
+
 func TestEncodeV1RejectsStreamSendme(t *testing.T) {
 	if _, err := cell.EncodeRelayCellV1(&cell.RelayCell{Command: cell.RelaySendme, StreamID: 7}); err == nil {
 		t.Fatal("v1 SENDME 不得带 stream_id（C Tor relay_cmd_expects_streamid_in_v1）")

@@ -24,7 +24,20 @@ const (
 	v1StreamIDOffset      = 19
 	v1PayloadNoStreamID   = 19
 	v1PayloadWithStreamID = 21
+
+	// RelayHeaderSizeV1* 对照 C Tor RELAY_HEADER_SIZE_V1_*。
+	RelayHeaderSizeV1NoStreamID   = 19
+	RelayHeaderSizeV1WithStreamID = 21
 )
+
+// RelayCellMaxDataV1 是 v1 一条消息的最大 data 长度（C Tor relay_cell_max_payload_size）。
+// DATA 带 stream_id：509-21=488，不是 v0 的 498。
+func RelayCellMaxDataV1(cmd byte) int {
+	if RelayCmdExpectsStreamID(cmd) {
+		return PayloadLen - RelayHeaderSizeV1WithStreamID
+	}
+	return PayloadLen - RelayHeaderSizeV1NoStreamID
+}
 
 // RelayCmdExpectsStreamID 是 v1 里必须带非 0 StreamID 的命令。
 func RelayCmdExpectsStreamID(cmd byte) bool {
