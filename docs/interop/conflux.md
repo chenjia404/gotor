@@ -47,6 +47,10 @@ SWITCH：`SeqNum [4]` 相对序号 = 全局已发绝对序号 − 目标腿上�
 - 日志或磁盘写出 LINK nonce。
 - 用 C 库 / CGO。
 
-## 真实网络
+## 真实网络（2026-08-19）
 
-尚未跑通。验收：日志有 LINK/LINKED/LINKED_ACK；两腿不同 Guard/Middle、同一 Exit；SOCKS `IsTor=true`。
+`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration -run TestRealConflux`
+
+- LINK：`TorNode07dot4` → `pecord` → `r0cket08i3` 与 `cryzrelay01` → `Orrion` → `r0cket08i3`
+- LINKED RTT 384ms / 430ms，随后发出 LINKED_ACK
+- SOCKS5 `https://check.torproject.org/api/ip`：`IsTor=true`，ExitIP=`192.42.116.116`

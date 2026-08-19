@@ -52,7 +52,7 @@
 | Exit policy | PARTIAL | 已解析 `p` 行并按端口过滤；完整策略与 IPv6 `p6` 未做 |
 | Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
-| Conflux=1 | UNVERIFIED | LINK/LINKED/LINKED_ACK/SWITCH + LowRTT 已实现；缺真实双电路 LINK 验收 |
+| Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
 | Circuit padding (Padding=2) | PARTIAL | 有定时器骨架，无 HS setup machine（proposal 302） |
 | Onion Service v3 | BROKEN / MISSING | **明确不做**，直到 client 主链路剩余缺口完成 |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
@@ -129,12 +129,15 @@
 
 #### 5. Conflux=1（proposal 329）
 
-- **状态**：UNVERIFIED。纯 Go：`pkg/cell/conflux.go`、`pkg/circuit/conflux.go`、`pkg/path/conflux.go`。
+- **状态**：WORKING。纯 Go：`pkg/cell/conflux.go`、`pkg/circuit/conflux.go`、`pkg/path/conflux.go`。
 - **Spec**：https://spec.torproject.org/proposals/329-traffic-splitting.html
 - **要点**：命令 19–22；LINK/LINKED 50 字节大端；UX=3 + LowRTT；OOO 上限 256。
 - **选择**：两条腿 Guard/Middle/Exit 均宣告 `Conflux=1` **或** `Conflux=2`（mainnet 常见只写 2；flag 不蕴含），且都已协商 FlowCtrl=2。同一 Exit，不同 Guard/Middle（身份键）。
 - **禁止**：未完成 LINK 把单电路标成 Conflux；日志写出 nonce；未协商 FlowCtrl=2 却 LINK。
-- **验收**：`TestRealConflux` — 两腿 LINK + SOCKS `IsTor=true`。尚未跑通。
+- **真实网络（2026-08-19 `TestRealConflux`）**：
+  - LINK：`TorNode07dot4` → `pecord` → `r0cket08i3` 与 `cryzrelay01` → `Orrion` → `r0cket08i3`（同 Exit，不同 Guard/Middle）
+  - LINKED RTT 384ms / 430ms，随后 LINKED_ACK
+  - SOCKS5 `https://check.torproject.org/api/ip`：`IsTor=true`，ExitIP=`192.42.116.116`
 
 #### 6. EXTEND2 IPv6（Relay=3）
 
@@ -339,4 +342,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准（尚未达到）：** Conflux=1 真实双电路 LINK + `IsTor=true`（把本项改成 WORKING）。再往后：更大 soak、EXTEND2 IPv6。
+**下一轮完成标准（尚未达到）：** 更大 soak、EXTEND2 IPv6。Conflux=1 已在真实网络 LINK + `IsTor=true`。
