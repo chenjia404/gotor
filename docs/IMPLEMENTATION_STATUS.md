@@ -36,7 +36,7 @@
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| Directory / Consensus | WORKING | 生产验签真实网络 9/9。证书落盘 `cached-certs`；DirCache=2 consensus diff 真实验收（CollecTor 上一小时 → 权威 limited-ed → 10193 relays） |
+| Directory / Consensus | WORKING | 生产验签 9/9；`cached-certs` 重启 0 次 `/tor/keys/fp`；DirCache=2 diff 真实验收 |
 | Microdescriptor fetch/parse | PARTIAL | 解析与 digest 已按 spec 修正，真实网络可填充密钥；缺长期 fixture 回归 |
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
@@ -200,18 +200,18 @@
 
 #### 10. 权威证书落盘 + 官方长期 fixture
 
-- **状态**：PARTIAL（`cached-certs` 落盘 + 加载重验签；官方长期 fixture 仍缺）。
+- **状态**：WORKING（落盘/重启真实验收已过；官方长期 fixture 仍缺——实网证书会过期，不得入库）。
 - **已做**：
   - 启动时读 `DataDirectory/cached-certs`（C Tor 拼接文本格式）
   - 加载时强制 KnownAuthorities + certification/crosscert + 未过期
   - 验签成功的证书原子写入（临时文件 + rename，`0600`）
   - 损坏/超大文件不阻断启动；过期与未知权威跳过
-  - 可用性以 `dir-key-expires` 为准
-  - 离线单测：落盘重载不访问 HTTP；过期必须失败
-- **未做**：从 C Tor/Arti 导出的不可变实网证书（实网证书会过期，不得当长期 fixture）
+  - `AuthorityCertHTTPFetches` 计数供验收
+- **真实网络（2026-08-19 `TestRealAuthCertDiskCache`）**：
+  - 冷启动：certs=9，`/tor/keys/fp` HTTP=9，`cached-certs`=20442 字节
+  - 二次启动：磁盘加载 9 份；二次 FetchConsensus 的 key HTTP=**0**
 - **现有代码**：`pkg/directory/certcache_disk.go`；文档 `docs/interop/authcert-cache.md`
-- **验收**：离线 fixture 验签；证书过期必须失败。真实重启后少拉 `/tor/keys/fp` 再标 WORKING。
-- **禁止**：为过测试放宽过期检查；把过期/未知权威证书当成功缓存；C 库 / CGO。
+
 
 ### P3 — 向量、选路、文档债务（不阻塞主链路，但不得宣称「已有官方向量」）
 
@@ -402,4 +402,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准：** authcert 重启真实验收（Phase 1.5）；其后 Padding=2（Phase 2）。
+**下一轮完成标准：** Phase 2 Padding=2 HS setup machine（proposal 302）。

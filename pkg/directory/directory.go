@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/logger"
@@ -163,6 +164,7 @@ type AuthorityCertCache struct {
 	certs    map[string]*AuthorityCert // Key: identity fingerprint (v3ident)
 	diskPath string                    // DataDirectory/cached-certs；空则不落盘
 	logger   *logger.Logger
+	keyFetches atomic.Uint64           // 实际发起的 /tor/keys/fp HTTP 次数（验收用）
 }
 
 // AuthorityCert 是一份权威密钥证书（dir-key-certificate-version 3）。
@@ -1142,6 +1144,7 @@ func (c *AuthorityCertCache) fetchAuthorityCert(ctx context.Context, identity, s
 			continue
 		}
 
+		c.keyFetches.Add(1)
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			lastErr = err

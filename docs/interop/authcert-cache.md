@@ -1,7 +1,7 @@
 # 权威证书磁盘缓存（`cached-certs`）
 
 **日期**：2026-08-19  
-**状态**：PARTIAL（落盘 + 离线验签单测；未宣称官方长期 fixture）
+**状态**：WORKING（2026-08-19 真实验收；官方长期 fixture 仍不入库）
 
 对照：
 
@@ -46,4 +46,9 @@
 - 落盘后换进程加载，验签通过，且不再访问 HTTP
 - `dir-key-expires` 在过去 → `validateAuthorityCert` 失败，磁盘加载跳过
 
-真实验收：重启客户端后第一次共识验签不需要再拉 `/tor/keys/fp/*`（证书未过期时）。
+真实验收：
+
+`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration -run TestRealAuthCertDiskCache`
+
+**结果（2026-08-19）**：PASS。冷启动 key HTTP=9、`cached-certs`=20442 字节；二次启动磁盘加载 9 份证书后 FetchConsensus 的 `/tor/keys/fp` HTTP=**0**。
+

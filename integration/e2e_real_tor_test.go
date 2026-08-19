@@ -1215,3 +1215,66 @@ func uniqueRelays(in []*directory.Relay) []*directory.Relay {
 	}
 	return out
 }
+
+// TestRealAuthCertDiskCache 验收权威证书落盘：第一次拉共识写入 cached-certs，
+// 第二次启动从磁盘加载后验签共识时不应再请求 /tor/keys/fp。
+func TestRealAuthCertDiskCache(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	dataDir := t.TempDir()
+	first := directory.NewClient(logger.NewDefault())
+	if err := first.EnableCertDiskCache(dataDir); err != nil {
+		t.Fatalf("EnableCertDiskCache: %v", err)
+	}
+	relays, err := first.FetchConsensus(ctx)
+	if err != nil {
+		t.Fatalf("first FetchConsensus: %v", err)
+	}
+	if len(relays) < 1000 {
+		t.Fatalf("relays=%d", len(relays))
+	}
+	fetches1 := first.AuthorityCertHTTPFetches()
+	certs1 := first.CachedAuthorityCertCount()
+	if certs1 < 5 {
+		t.Fatalf("cached certs after first fetch: %d want >= 5", certs1)
+	}
+	if fetches1 < 5 {
+		t.Fatalf("HTTP key fetches on cold start: %d want >= 5", fetches1)
+	}
+	cachedPath := dataDir + "/cached-certs"
+	info, err := os.Stat(cachedPath)
+	if err != nil {
+		t.Fatalf("cached-certs missing: %v", err)
+	}
+	if info.Size() < 500 {
+		t.Fatalf("cached-certs too small: %d", info.Size())
+	}
+	t.Logf("first fetch certs=%d key_http=%d cached-certs=%d bytes", certs1, fetches1, info.Size())
+
+	second := directory.NewClient(logger.NewDefault())
+	if err := second.EnableCertDiskCache(dataDir); err != nil {
+		t.Fatalf("second EnableCertDiskCache: %v", err)
+	}
+	loaded := second.CachedAuthorityCertCount()
+	if loaded < 5 {
+		t.Fatalf("second start loaded certs=%d want >= 5 from disk", loaded)
+	}
+	if second.AuthorityCertHTTPFetches() != 0 {
+		t.Fatalf("EnableCertDiskCache must not HTTP-fetch; got %d", second.AuthorityCertHTTPFetches())
+	}
+
+	relays2, err := second.FetchConsensus(ctx)
+	if err != nil {
+		t.Fatalf("second FetchConsensus: %v", err)
+	}
+	if len(relays2) < 1000 {
+		t.Fatalf("second relays=%d", len(relays2))
+	}
+	fetches2 := second.AuthorityCertHTTPFetches()
+	if fetches2 != 0 {
+		t.Fatalf("second FetchConsensus issued %d /tor/keys/fp requests; want 0 (disk cache hit)", fetches2)
+	}
+	t.Logf("authcert disk OK loaded=%d second_key_http=%d relays=%d", loaded, fetches2, len(relays2))
+}
