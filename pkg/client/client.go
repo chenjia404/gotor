@@ -54,6 +54,7 @@ type Client struct {
 	guardManager  *path.GuardManager
 	metrics       *metrics.Metrics
 	dirLock       *datadir.Lock
+	dirLockMu     sync.Mutex
 	httpTunnel    *httptunnel.Server
 	dnsServer     *dnsport.Server
 	pidFile       string
@@ -239,7 +240,9 @@ func (c *Client) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.dirLockMu.Lock()
 	c.dirLock = lock
+	c.dirLockMu.Unlock()
 	started := false
 	defer func() {
 		if !started {
@@ -414,13 +417,16 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 func (c *Client) releaseDirLock() {
-	if c.dirLock == nil {
+	c.dirLockMu.Lock()
+	lock := c.dirLock
+	c.dirLock = nil
+	c.dirLockMu.Unlock()
+	if lock == nil {
 		return
 	}
-	if err := c.dirLock.Unlock(); err != nil {
+	if err := lock.Unlock(); err != nil {
 		c.logger.Warn("Failed to release DataDirectory lock", "error", err)
 	}
-	c.dirLock = nil
 }
 
 // handleNewnym 实现 SIGNAL NEWNYM：轮换预建/遗留电路，迫使后续流新建。

@@ -80,12 +80,14 @@ func TryLock(dataDir string) (*Lock, error) {
 	return &Lock{fl: fl, path: path}, nil
 }
 
-// Unlock 释放锁。
+// Unlock 释放锁。可重复调用。
 func (l *Lock) Unlock() error {
 	if l == nil || l.fl == nil {
 		return nil
 	}
-	return l.fl.Unlock()
+	err := l.fl.Unlock()
+	l.fl = nil
+	return err
 }
 
 // Path 返回 lock 文件路径。
