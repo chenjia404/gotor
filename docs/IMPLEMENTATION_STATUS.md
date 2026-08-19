@@ -54,7 +54,7 @@
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
 | Circuit padding (Padding=2) | PARTIAL | 协商+状态表+`CircpadController`+`SendRelayCellToHop`；共识 `circpad_*` 已注入 client；onion 自动触发待 Phase 4 |
-| Onion Service v3 | BROKEN / MISSING | **明确不做**，直到 client 主链路剩余缺口完成 |
+| Onion Service v3 | PARTIAL | **hs-ntor WORKING**（Appendix G.1）；RENDEZVOUS1 已改用 hs-ntor。HSDir/INTRODUCE 端到端与真实验收仍缺 |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
 | Control Protocol | PARTIAL | 框架存在，非本轮验收 |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
@@ -411,4 +411,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准：** Phase 2 Padding=2 HS setup machine（proposal 302）。
+**下一轮完成标准：** Phase 4 续 — INTRODUCE1/2 用 hs-ntor IntroKeys 解密；客户端访问 `.onion` 端到端；其后 Phase 3 官方向量/文档。
