@@ -34,6 +34,24 @@ func requireRealTor(t *testing.T) {
 	}
 }
 
+// TestRealConsensusSignatures 验收生产 FetchConsensus 强制校验权威签名。
+// HTTP 仍可能 InsecureSkipVerify，但假共识无法凑齐 KnownAuthorities 的 PKCS#1 签名。
+func TestRealConsensusSignatures(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	dirClient := directory.NewClient(logger.NewDefault())
+	relays, err := dirClient.FetchConsensus(ctx)
+	if err != nil {
+		t.Fatalf("FetchConsensus (with signature verification): %v", err)
+	}
+	if len(relays) < 1000 {
+		t.Fatalf("verified consensus has too few relays: %d", len(relays))
+	}
+	t.Logf("consensus signatures verified, relays=%d", len(relays))
+}
+
 func TestRealGuardCreate2(t *testing.T) {
 	requireRealTor(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

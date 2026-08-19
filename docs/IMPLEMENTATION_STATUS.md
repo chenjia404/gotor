@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/sendme-auth-0ece`  
+**分支**：`cursor/consensus-sig-0ece`  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -22,7 +22,7 @@
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| Directory / Consensus | PARTIAL | 能拉真实 `consensus-microdesc`；签名/权威证书校验需继续对照 dir-spec |
+| Directory / Consensus | PARTIAL | 生产验签已在真实网络通过（9/9 权威，10143 relays）。长期 fixture 与证书落盘仍弱 |
 | Microdescriptor fetch/parse | PARTIAL | 解析与 digest 已按 spec 修正，真实网络可填充密钥；缺长期 fixture 回归 |
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
@@ -51,7 +51,10 @@
 - `r` 行 identity 按 **无 padding base64** 解成 20 字节 `RSAIdentity`，并提供 40 字符大写 hex 给 CERTS。
 - `valid-after` / `fresh-until` / `valid-until`、flags、bandwidth、`m` digest 有解析。
 - Authority 列表已更新到当前公开 IP。
-- **缺口**：共识签名与 authority 证书的强制校验、真实 fixture 的 parse→validate 闭环仍弱。`docs/MICRODESCRIPTOR_FETCHING.md` 仍写错 `a sha256=` 行（实际是 `m` 行）。
+- 生产 `FetchConsensus` 在 metadata 之外强制 `VerifyConsensusSignatures`：`/tor/keys/fp/<id>`、`dir-signing-key`、`dir-key-certification`、`dir-key-crosscert`、majority（5/9）。
+- 真实网络：`TestRealConsensusSignatures` 验证 **9/9** 权威签名，共识含 10143 个 relay。
+- 详见 `docs/interop/consensus.md`。
+- **缺口**：证书未落盘；缺官方长期 fixture。`docs/MICRODESCRIPTOR_FETCHING.md` 仍写错 `a sha256=` 行（实际是 `m` 行）。
 
 ### Microdescriptor — PARTIAL（本轮已修解析 blocker）
 
@@ -170,6 +173,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 | 13 | 预建电路假就绪 | `buildInitialCircuits` sleep 1s 后宣称已建好；pool 要等 30s ticker 才动手 | Start 与 WaitUntilReady 分离；pool 立即 prebuild |
 | 14 | HTTPS 选到只放行 80 的 exit | `SelectPath(80)` 且只看 Exit flag | 预建用 443；解析 `p` 行摘要 |
 | 15 | 大流量 DESTROY / hang | 电路级 SENDME 发空 v0，现代 exit 拒收 | flow-control SENDME v1；C Tor sendme.c；Arti SendmeValidator |
+| 16 | 共识只数签名个数 | `VerifyConsensusSignatures` 从未被 `FetchConsensus` 调用；证书取第一把 RSA（identity） | dir-spec consensus-formats / authority-key-certificates；C Tor signed boundaries |
 
 ---
 
@@ -179,8 +183,9 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 |------|------|----------------------|
 | `pkg/crypto` ntor 单测 / 正确性 | HMAC + 20-byte NODEID | 运行 |
 | `pkg/directory` microdesc 单测 | 同行 identity、raw digest | 运行 |
+| `pkg/directory` 共识验签单测 | 自生成 RSA 证书 + 迷你共识；篡改必失败 | 运行 |
 | `integration/link_test.go` | 真实 TLS+handshake | 需 `-tags=integration` + `TOR_INTEGRATION_TEST=1` |
-| `integration/e2e_real_tor_test.go` | CREATE2 / 3-hop / IsTor / SENDME soak | 同上 |
+| `integration/e2e_real_tor_test.go` | 共识验签 / CREATE2 / 3-hop / IsTor / SENDME soak | 同上 |
 | `scripts/test-real-tor.sh` | 启动 client + socks5h curl | 手动 |
 
 `testdata/ctor-vectors/crypto/ntor_handshake.json` 与 `testdata/arti-vectors/...` 已按**正确算法重生**，目前不是从 C Tor/Arti 仓库原样导出。不得据此宣称已有官方 cross-impl 向量。

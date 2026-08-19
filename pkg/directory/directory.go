@@ -4,6 +4,7 @@ package directory
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"compress/zlib"
 	"context"
@@ -11,8 +12,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -153,12 +153,18 @@ type AuthorityCertCache struct {
 	logger *logger.Logger
 }
 
-// AuthorityCert represents a cached directory authority signing certificate
+// AuthorityCert 是一份权威密钥证书（dir-key-certificate-version 3）。
+//
+// Identity / IdentityKey 对应 V3Ident（SHA1(PKCS1(identity))）。
+// SigningKey 对应共识 directory-signature 的 signing-key-digest。
 type AuthorityCert struct {
-	Identity   string         // SHA-1 fingerprint of authority's identity key
-	SigningKey *rsa.PublicKey // RSA public key for signature verification
-	ExpiresAt  time.Time      // Certificate expiration time
-	FetchedAt  time.Time      // When this cert was fetched
+	Identity    string         // SHA-1 fingerprint of authority's identity key (v3ident)
+	IdentityKey *rsa.PublicKey // 长期 identity 公钥
+	SigningKey  *rsa.PublicKey // 中期 signing 公钥
+	ExpiresAt   time.Time      // Certificate expiration time
+	FetchedAt   time.Time      // When this cert was fetched
+	Published   time.Time      // dir-key-published
+	raw         string         // 原始证书文档，用于 certification / crosscert
 }
 
 // NewClient creates a new directory client
@@ -262,24 +268,33 @@ func (c *Client) fetchFromAuthority(ctx context.Context, authorityURL string) ([
 		reader = zlibReader
 	}
 
-	// Parse the consensus document with metadata (SPEC-003)
-	relays, metadata, err := c.parseConsensusWithMetadata(reader)
+	// 必须保留原文：签名覆盖 network-status-version … directory-signature<space>
+	raw, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read consensus: %w", err)
+	}
+
+	relays, metadata, err := c.parseConsensusWithMetadata(bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse consensus: %w", err)
 	}
 
-	// SPEC-003: Validate consensus metadata
-	// Per tor-spec.txt §5, consensus validation is critical for security.
-	// Invalid timestamps, insufficient authority signatures, or other validation failures
-	// indicate a potential attack and must result in rejection of the consensus.
 	if err := ValidateConsensusMetadata(metadata); err != nil {
 		c.logger.Error("Consensus metadata validation failed", "error", err)
-		// Return error - invalid consensus must be rejected
-		// This prevents use of expired, insufficient, or tampered consensus documents
 		return nil, fmt.Errorf("consensus validation failed: %w", err)
 	}
 
-	c.logger.Info("Consensus metadata validated",
+	signedBody, err := extractConsensusSignedBody(string(raw))
+	if err != nil {
+		return nil, fmt.Errorf("consensus signed-body: %w", err)
+	}
+	c.prefetchAuthorityCerts(ctx, metadata)
+	if err := c.VerifyConsensusSignatures(ctx, signedBody, metadata); err != nil {
+		c.logger.Error("Consensus signature verification failed", "error", err)
+		return nil, fmt.Errorf("consensus signature verification failed: %w", err)
+	}
+
+	c.logger.Info("Consensus metadata and signatures validated",
 		"signatures", metadata.SignatureCount,
 		"valid_after", metadata.ValidAfter,
 		"valid_until", metadata.ValidUntil)
@@ -741,10 +756,8 @@ type ConsensusMetadata struct {
 	Params               map[string]int        // Network-wide consensus parameters (dir-spec.txt §3.4.1)
 }
 
-// ValidateConsensusMetadata performs enhanced validation on consensus metadata (SPEC-003)
-// Validates timing, signature count, and authority quorum requirements per dir-spec.txt §3.4
-// Current implementation validates signature presence and count.
-// Future enhancement: cryptographic signature verification with authority public keys.
+// ValidateConsensusMetadata 校验时间窗与签名个数。密码学验签在
+// Client.VerifyConsensusSignatures，并由 FetchConsensus 强制调用。
 func ValidateConsensusMetadata(meta *ConsensusMetadata) error {
 	now := time.Now()
 
@@ -901,50 +914,58 @@ func getAuthorityName(v3ident string) string {
 	return "unknown"
 }
 
-// Get retrieves a cached certificate or fetches it from authorities (SPEC-003)
+// Get 按 identity 取权威证书；生产验签应走 getMatching 以绑定 signing-key-digest。
 func (c *AuthorityCertCache) Get(ctx context.Context, identity string, httpClient *http.Client, authorities []string) (*AuthorityCert, error) {
-	identity = strings.ToUpper(identity)
+	return c.getMatching(ctx, identity, "", httpClient, authorities)
+}
 
-	// Check cache first
+func (c *AuthorityCertCache) getMatching(ctx context.Context, identity, signingDigest string, httpClient *http.Client, authorities []string) (*AuthorityCert, error) {
+	identity = strings.ToUpper(identity)
+	signingDigest = strings.ToUpper(signingDigest)
+
 	c.mu.RLock()
 	cert, ok := c.certs[identity]
 	c.mu.RUnlock()
-
-	// Return cached cert if valid
-	if ok && time.Since(cert.FetchedAt) < certCacheTTL && time.Now().Before(cert.ExpiresAt) {
+	if ok && cacheFresh(cert) && signingKeyMatches(cert, signingDigest) {
 		return cert, nil
 	}
 
-	// Fetch new certificate
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Double-check after acquiring write lock
-	if cert, ok := c.certs[identity]; ok && time.Since(cert.FetchedAt) < certCacheTTL && time.Now().Before(cert.ExpiresAt) {
-		return cert, nil
-	}
-
-	// Fetch from authorities
-	newCert, err := c.fetchAuthorityCert(ctx, identity, httpClient, authorities)
+	// HTTP 不能占写锁，否则并行预取会被串行化
+	newCert, err := c.fetchAuthorityCert(ctx, identity, signingDigest, httpClient, authorities)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch authority certificate: %w", err)
 	}
 
+	c.mu.Lock()
+	if existing, ok := c.certs[identity]; ok && cacheFresh(existing) && signingKeyMatches(existing, signingDigest) {
+		c.mu.Unlock()
+		return existing, nil
+	}
 	c.certs[identity] = newCert
+	c.mu.Unlock()
 	c.logger.Info("Cached authority certificate", "identity", identity, "expires", newCert.ExpiresAt)
-
 	return newCert, nil
 }
 
-// fetchAuthorityCert fetches an authority signing certificate from directory authorities
-func (c *AuthorityCertCache) fetchAuthorityCert(ctx context.Context, identity string, httpClient *http.Client, authorities []string) (*AuthorityCert, error) {
-	// Try each authority until one succeeds
+func cacheFresh(cert *AuthorityCert) bool {
+	if cert == nil {
+		return false
+	}
+	return time.Since(cert.FetchedAt) < certCacheTTL && time.Now().Before(cert.ExpiresAt)
+}
+
+// fetchAuthorityCert 从 /tor/keys/fp/<IDENTITY> 拉取证书，并校验 certification / crosscert。
+func (c *AuthorityCertCache) fetchAuthorityCert(ctx context.Context, identity, signingDigest string, httpClient *http.Client, authorities []string) (*AuthorityCert, error) {
+	if len(authorities) == 0 {
+		return nil, fmt.Errorf("no directory authorities configured")
+	}
+
 	var lastErr error
 	for _, authority := range authorities {
-		// Build certificate URL: /tor/keys/authority
 		baseURL := strings.TrimSuffix(authority, "/tor/status-vote/current/consensus-microdesc")
 		baseURL = strings.TrimSuffix(baseURL, "/tor/status-vote/current/consensus")
-		certURL := baseURL + "/tor/keys/authority"
+		baseURL = strings.TrimRight(baseURL, "/")
+		certURL := baseURL + "/tor/keys/fp/" + strings.ToUpper(identity)
 
 		req, err := http.NewRequestWithContext(ctx, "GET", certURL, nil)
 		if err != nil {
@@ -971,8 +992,7 @@ func (c *AuthorityCertCache) fetchAuthorityCert(ctx context.Context, identity st
 			continue
 		}
 
-		// Parse the certificate
-		cert, err := c.parseAuthorityCert(body, identity)
+		cert, err := c.parseAuthorityCertMatching(body, identity, signingDigest)
 		if err != nil {
 			lastErr = err
 			continue
@@ -984,155 +1004,74 @@ func (c *AuthorityCertCache) fetchAuthorityCert(ctx context.Context, identity st
 	return nil, fmt.Errorf("failed to fetch from any authority: %w", lastErr)
 }
 
-// parseAuthorityCert parses an authority certificate document
-// Format per dir-spec.txt §3.1: directory authorities publish signing certificates
-// containing their RSA public key for signature verification
 func (c *AuthorityCertCache) parseAuthorityCert(data []byte, expectedIdentity string) (*AuthorityCert, error) {
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
-
-	var identity string
-	var signingKeyPEM strings.Builder
-	var expiresAt time.Time
-	inSigningKey := false
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Parse fingerprint line
-		if strings.HasPrefix(line, "fingerprint ") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				// Remove spaces from fingerprint
-				identity = strings.ReplaceAll(strings.Join(parts[1:], ""), " ", "")
-				identity = strings.ToUpper(identity)
-			}
-		}
-
-		// Parse dir-key-expires
-		if strings.HasPrefix(line, "dir-key-expires ") {
-			timeStr := strings.TrimPrefix(line, "dir-key-expires ")
-			if t, err := time.Parse("2006-01-02 15:04:05", timeStr); err == nil {
-				expiresAt = t
-			}
-		}
-
-		// Parse signing key
-		if strings.HasPrefix(line, "-----BEGIN RSA PUBLIC KEY-----") {
-			inSigningKey = true
-			signingKeyPEM.WriteString(line + "\n")
-			continue
-		}
-
-		if inSigningKey {
-			signingKeyPEM.WriteString(line + "\n")
-			if strings.HasPrefix(line, "-----END RSA PUBLIC KEY-----") {
-				inSigningKey = false
-			}
-		}
-	}
-
-	// Verify we got the expected identity
-	if identity != expectedIdentity {
-		return nil, fmt.Errorf("certificate identity mismatch: got %s, want %s", identity, expectedIdentity)
-	}
-
-	// Parse RSA public key
-	block, _ := pem.Decode([]byte(signingKeyPEM.String()))
-	if block == nil {
-		return nil, fmt.Errorf("failed to decode PEM block")
-	}
-
-	// Try parsing as PKCS1 RSA public key (standard for Tor)
-	pubKey, err := x509.ParsePKCS1PublicKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse RSA public key: %w", err)
-	}
-
-	return &AuthorityCert{
-		Identity:   identity,
-		SigningKey: pubKey,
-		ExpiresAt:  expiresAt,
-		FetchedAt:  time.Now(),
-	}, nil
+	return c.parseAuthorityCertMatching(data, expectedIdentity, "")
 }
 
-// VerifyConsensusSignatures verifies cryptographic signatures on a consensus document (SPEC-003)
-// This implements RSA-PKCS1v15 signature verification per dir-spec.txt §3.4
-// The function verifies that at least minSignatureThreshold valid signatures are present
+func (c *AuthorityCertCache) parseAuthorityCertMatching(data []byte, expectedIdentity, signingDigest string) (*AuthorityCert, error) {
+	cert, err := parseAndSelectAuthorityCert(data, expectedIdentity, signingDigest)
+	if err != nil {
+		return nil, err
+	}
+	cert.FetchedAt = time.Now()
+	return cert, nil
+}
+
+// VerifyConsensusSignatures 用硬编码 KnownAuthorities 的 identity 证书校验共识签名。
 //
-// Parameters:
-//   - ctx: Context for certificate fetching
-//   - consensusBody: The signed portion of the consensus (from "network-status-version" to "directory-signature" lines, exclusive)
-//   - meta: Consensus metadata containing parsed signatures
-//
-// # Returns error if verification fails or if insufficient valid signatures are found
-//
-// IMPLEMENTATION STATUS (SPEC-003):
-//   - ✅ Signature structure validation complete
-//   - ✅ Known authority verification complete
-//   - ✅ Quorum enforcement complete (5 of 9 authorities required)
-//   - ✅ RSA cryptographic verification complete
-//   - ✅ Authority certificate fetching and caching complete
-//
-// Reference: dir-spec.txt §3.4 "Voting and consensus signature requirements"
+// consensusBody 必须是 extractConsensusSignedBody 的结果（到 directory-signature 后的空格）。
+// 每条签名还要求：
+//  1. identity ∈ KnownAuthorities
+//  2. SHA1(PKCS1(identity key)) == v3ident
+//  3. dir-key-certification / dir-key-crosscert 通过
+//  4. SHA1(PKCS1(signing key)) == directory-signature 的 signing-key-digest
+//  5. PKCS#1（不含 algorithmIdentifier）对 signed body 的 sha256/sha1 验签通过
 func (c *Client) VerifyConsensusSignatures(ctx context.Context, consensusBody []byte, meta *ConsensusMetadata) error {
 	if len(consensusBody) == 0 {
 		return fmt.Errorf("empty consensus body")
 	}
 
-	if len(meta.Signatures) == 0 {
+	if meta == nil || len(meta.Signatures) == 0 {
 		return fmt.Errorf("no signatures to verify")
 	}
 
-	// Track verified signatures and known authorities
-	validSignatures := 0
-	knownAuthorities := make(map[string]bool)
+	validIdentities := make(map[string]struct{})
 
-	// Verify each signature
 	for _, sig := range meta.Signatures {
-		// Parse signature block to extract base64 data
-		sigData := extractSignatureData(sig.Signature)
-		if sigData == "" {
-			c.logger.Debug("Failed to extract signature data", "identity", sig.Identity)
+		identity := strings.ToUpper(sig.Identity)
+		if !isKnownAuthority(identity) {
+			c.logger.Debug("Unknown authority", "identity", identity)
 			continue
 		}
 
-		// Decode base64 signature
-		sigBytes, err := base64.StdEncoding.DecodeString(sigData)
+		sigBytes, err := decodeSignatureBlock(sig.Signature)
 		if err != nil {
-			c.logger.Debug("Failed to decode signature", "identity", sig.Identity, "error", err)
+			c.logger.Debug("Failed to decode signature", "identity", identity, "error", err)
 			continue
 		}
-
-		// Verify signature has minimum required length (RSA-1024 = 128 bytes minimum)
 		if len(sigBytes) < 128 {
-			c.logger.Debug("Signature too short", "identity", sig.Identity, "length", len(sigBytes))
+			c.logger.Debug("Signature too short", "identity", identity, "length", len(sigBytes))
 			continue
 		}
 
-		// Check if this is from a known directory authority
-		if !isKnownAuthority(sig.Identity) {
-			c.logger.Debug("Unknown authority", "identity", sig.Identity)
-			continue
-		}
-
-		// Track unique authorities
-		knownAuthorities[sig.Identity] = true
-
-		// Fetch authority certificate (from cache or network)
-		cert, err := c.certCache.Get(ctx, sig.Identity, c.httpClient, c.authorities)
+		cert, err := c.certCache.getMatching(ctx, identity, sig.SigningKeyDigest, c.httpClient, c.authorities)
 		if err != nil {
-			c.logger.Warn("Failed to get authority certificate", "identity", sig.Identity, "error", err)
+			c.logger.Warn("Failed to get authority certificate", "identity", identity, "error", err)
 			continue
 		}
 
-		// Compute hash of consensus body based on signature algorithm
+		signingDigest := strings.ToUpper(hex.EncodeToString(rsaSHA1Digest(cert.SigningKey)))
+		if sig.SigningKeyDigest != "" && signingDigest != strings.ToUpper(sig.SigningKeyDigest) {
+			c.logger.Debug("Signing key digest mismatch", "identity", identity, "got", signingDigest, "want", sig.SigningKeyDigest)
+			continue
+		}
+
 		var hash []byte
 		switch strings.ToLower(sig.Algorithm) {
 		case "sha256":
 			h := sha256.Sum256(consensusBody)
 			hash = h[:]
-		case "sha1", "": // Default to SHA-1 for backwards compatibility
+		case "sha1", "":
 			h := sha1.Sum(consensusBody)
 			hash = h[:]
 		default:
@@ -1140,30 +1079,81 @@ func (c *Client) VerifyConsensusSignatures(ctx context.Context, consensusBody []
 			continue
 		}
 
-		// Verify RSA signature using PKCS1v15
-		err = rsa.VerifyPKCS1v15(cert.SigningKey, 0, hash, sigBytes)
-		if err != nil {
-			c.logger.Debug("RSA signature verification failed", "identity", sig.Identity, "error", err)
+		if err := rsa.VerifyPKCS1v15(cert.SigningKey, 0, hash, sigBytes); err != nil {
+			c.logger.Debug("RSA signature verification failed", "identity", identity, "error", err)
 			continue
 		}
 
-		// Signature is valid!
-		c.logger.Debug("Valid signature verified", "identity", sig.Identity, "authority", getAuthorityName(sig.Identity))
-		validSignatures++
+		c.logger.Debug("Valid signature verified", "identity", identity, "authority", getAuthorityName(identity))
+		validIdentities[identity] = struct{}{}
 	}
 
-	// Verify we have enough known authorities signing
-	if len(knownAuthorities) < minDirectoryAuthorities {
-		return fmt.Errorf("insufficient known authorities: %d < %d", len(knownAuthorities), minDirectoryAuthorities)
+	if len(validIdentities) < minDirectoryAuthorities {
+		return fmt.Errorf("insufficient known authorities: %d < %d", len(validIdentities), minDirectoryAuthorities)
+	}
+	if len(validIdentities) < minSignatureThreshold {
+		return fmt.Errorf("insufficient valid signatures: %d < %d (verified %d total)", len(validIdentities), minSignatureThreshold, len(meta.Signatures))
 	}
 
-	// Verify we have enough valid signatures
-	if validSignatures < minSignatureThreshold {
-		return fmt.Errorf("insufficient valid signatures: %d < %d (verified %d total)", validSignatures, minSignatureThreshold, len(meta.Signatures))
-	}
-
-	c.logger.Info("Consensus signatures verified", "valid", validSignatures, "authorities", len(knownAuthorities))
+	c.logger.Info("Consensus signatures verified", "valid", len(validIdentities), "authorities", len(validIdentities))
 	return nil
+}
+
+// prefetchAuthorityCerts 并行拉取签名里出现的已知权威证书，避免验签阶段串行 HTTP。
+func (c *Client) prefetchAuthorityCerts(ctx context.Context, meta *ConsensusMetadata) {
+	if meta == nil {
+		return
+	}
+	type job struct {
+		identity, digest string
+	}
+	seen := make(map[string]struct{})
+	var jobs []job
+	for _, sig := range meta.Signatures {
+		identity := strings.ToUpper(sig.Identity)
+		if !isKnownAuthority(identity) {
+			continue
+		}
+		if _, ok := seen[identity]; ok {
+			continue
+		}
+		seen[identity] = struct{}{}
+		jobs = append(jobs, job{identity: identity, digest: sig.SigningKeyDigest})
+	}
+
+	var wg sync.WaitGroup
+	for _, j := range jobs {
+		wg.Add(1)
+		go func(j job) {
+			defer wg.Done()
+			_, _ = c.certCache.getMatching(ctx, j.identity, j.digest, c.httpClient, c.authorities)
+		}(j)
+	}
+	wg.Wait()
+}
+
+func decodeSignatureBlock(sigBlock string) ([]byte, error) {
+	if block, _ := pem.Decode([]byte(sigBlock)); block != nil && len(block.Bytes) > 0 {
+		return block.Bytes, nil
+	}
+	sigData := extractSignatureData(sigBlock)
+	if sigData == "" {
+		sigData = strings.Map(func(r rune) rune {
+			if r == '\n' || r == '\r' || r == ' ' || r == '\t' {
+				return -1
+			}
+			return r
+		}, sigBlock)
+	}
+	if sigData == "" {
+		return nil, fmt.Errorf("missing signature PEM")
+	}
+	wrapped := "-----BEGIN SIGNATURE-----\n" + sigData + "\n-----END SIGNATURE-----\n"
+	block, _ := pem.Decode([]byte(wrapped))
+	if block == nil || len(block.Bytes) == 0 {
+		return nil, fmt.Errorf("invalid signature encoding")
+	}
+	return block.Bytes, nil
 }
 
 // extractSignatureData extracts base64 signature data from PEM-style signature block
