@@ -2,6 +2,7 @@ package directory
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 )
@@ -11,6 +12,9 @@ import (
 func TestFetchConsensusMethod33Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
+	}
+	if os.Getenv("TOR_INTEGRATION_TEST") != "1" {
+		t.Skip("set TOR_INTEGRATION_TEST=1 to fetch consensus from the public network")
 	}
 
 	client := NewClient(nil)

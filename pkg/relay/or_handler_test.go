@@ -270,11 +270,11 @@ func TestReceiveVersionsInvalidCell(t *testing.T) {
 	keys := generateTestRelayKeys(t)
 	handler := NewLinkProtocolHandler(keys, nil)
 
-	// Build NETINFO cell instead of VERSIONS
+	// 协商前按 2 字节 CircID 读；必须 EncodeLink(..., 2)，否则测到的是解码宽度错误而非命令错误
 	netinfoCell := cell.NewCell(0, cell.CmdNetinfo)
 	netinfoCell.Payload = make([]byte, 20)
 	var buf bytes.Buffer
-	err := netinfoCell.Encode(&buf)
+	err := netinfoCell.EncodeLink(&buf, 2)
 	if err != nil {
 		t.Fatalf("Failed to encode NETINFO cell: %v", err)
 	}
@@ -572,5 +572,29 @@ func TestHandleConnectionSwitchesCircIDAfterVersions(t *testing.T) {
 	conn.mu.Unlock()
 	if len(written) < 3 || written[0] != 0x00 || written[1] != 0x00 || written[2] != byte(cell.CmdVersions) {
 		t.Fatalf("server VERSIONS prefix = %x, want 00 00 07", written)
+	}
+
+	// VERSIONS 2 字节帧之后，CERTS / NETINFO 必须是协商后的 4 字节 CircID
+	r := bytes.NewReader(written)
+	versionsOut, err := cell.DecodeCellLink(r, 2)
+	if err != nil {
+		t.Fatalf("decode server VERSIONS: %v", err)
+	}
+	if versionsOut.Command != cell.CmdVersions {
+		t.Fatalf("first written cell = %s, want VERSIONS", versionsOut.Command)
+	}
+	certsOut, err := cell.DecodeCellLink(r, 4)
+	if err != nil {
+		t.Fatalf("decode server CERTS with 4-byte CircID: %v", err)
+	}
+	if certsOut.Command != cell.CmdCerts {
+		t.Fatalf("second written cell = %s, want CERTS", certsOut.Command)
+	}
+	netinfoOut, err := cell.DecodeCellLink(r, 4)
+	if err != nil {
+		t.Fatalf("decode server NETINFO with 4-byte CircID: %v", err)
+	}
+	if netinfoOut.Command != cell.CmdNetinfo {
+		t.Fatalf("third written cell = %s, want NETINFO", netinfoOut.Command)
 	}
 }
