@@ -1,178 +1,139 @@
-// Package onion - INTRODUCE2 Cell Parsing
-// This file implements INTRODUCE2 cell parsing for onion service hosting
-// Following rend-spec-v3.txt §3.2-3.3
+// Package onion - INTRODUCE2 Cell Parsing（hs-ntor）
+// Following rend-spec-v3 NTOR-WITH-EXTRA-DATA
 package onion
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"io"
-
-	"golang.org/x/crypto/hkdf"
 
 	"github.com/opd-ai/go-tor/pkg/crypto"
 )
 
-// Introduce2Cell represents a parsed INTRODUCE2 cell from a client
-type Introduce2Cell struct {
-	// Encrypted data from client
-	EncryptedData []byte
-
-	// Decrypted contents
-	AuthKey          []byte // Client's authentication key (32 bytes)
-	EncKey           []byte // Client's encryption key (32 bytes)
-	ClientPK         []byte // Client's ephemeral public key for ntor (32 bytes)
-	RendezvousCookie []byte // Rendezvous cookie (20 bytes)
-	LinkSpecifiers   []byte // Link specifiers for rendezvous point
-	OnionKeyType     uint8  // Onion key type (0x00 = ntor)
-	OnionKey         []byte // Client's onion key (32 bytes for ntor)
-	ExtensionFields  []byte // Extension fields
-}
-
-// Introduce2Request contains parsed data needed to establish rendezvous
+// Introduce2Request contains parsed data needed to establish rendezvous.
 type Introduce2Request struct {
 	RendezvousCookie []byte           // 20-byte cookie for rendezvous point
 	LinkSpecifiers   []LinkSpecifier  // Rendezvous point address info
-	ClientOnionKey   []byte           // Client's public key for ntor handshake
-	ClientAuthKey    []byte           // Client's authentication key
+	ClientOnionKey   []byte           // Client's ephemeral X (32 bytes) for hs-ntor
+	IntroAuthKey     []byte           // AUTH_KEY from cell (Ed25519, 32 bytes)
 	Extensions       map[uint8][]byte // Extension data (type -> value)
 }
 
-// ParseIntroduce2 parses and decrypts an INTRODUCE2 cell
-// Following rend-spec-v3.txt §3.2
+// ParseIntroduce2 解析并解密 INTRODUCE2（hs-ntor）。
 //
-// The INTRODUCE2 cell format:
+// 格式（rend-spec）：
 //
-//	AUTH_KEY_TYPE   [1 byte]
-//	AUTH_KEY_LEN    [2 bytes]
-//	AUTH_KEY        [AUTH_KEY_LEN bytes]
-//	EXTENSIONS      [N bytes]
-//	ENCRYPTED_DATA  [remaining bytes]
+//	LEGACY_KEY_ID [20]（现为全零）
+//	AUTH_KEY_TYPE [1] = 0x02
+//	AUTH_KEY_LEN  [2]
+//	AUTH_KEY      [32]
+//	N_EXTENSIONS  [1]
+//	EXTENSIONS...
+//	ENCRYPTED = X[32] || C || MAC[32]
 //
-// The ENCRYPTED_DATA decrypts to:
-//
-//	RENDEZVOUS_COOKIE  [20 bytes]
-//	NSPEC              [1 byte]
-//	LINK_SPECIFIERS    [variable]
-//	ONION_KEY_TYPE     [1 byte]
-//	ONION_KEY_LEN      [2 bytes]
-//	ONION_KEY          [ONION_KEY_LEN bytes]
-//	EXTENSIONS         [variable]
-func ParseIntroduce2(encryptedCell, introAuthKey, introEncKey []byte) (*Introduce2Request, error) {
-	if len(encryptedCell) < 100 {
-		return nil, fmt.Errorf("INTRODUCE2 cell too short: %d bytes", len(encryptedCell))
+// introEncPriv 为引言点 Curve25519 私钥 b；subcred 为 N_hs_subcred。
+func ParseIntroduce2(cell, introEncPriv, subcred []byte) (*Introduce2Request, error) {
+	if len(cell) < 20+1+2+32+1+32+32 {
+		return nil, fmt.Errorf("INTRODUCE2 cell too short: %d bytes", len(cell))
+	}
+	if len(introEncPriv) != 32 {
+		return nil, fmt.Errorf("intro enc private key must be 32 bytes")
+	}
+	if len(subcred) != 32 {
+		return nil, fmt.Errorf("subcredential must be 32 bytes")
 	}
 
 	offset := 0
-
-	// Parse outer layer (before encryption)
-	authKeyType := encryptedCell[offset]
-	offset++
-	if authKeyType != 0x02 { // ED25519-SHA3-256
-		return nil, fmt.Errorf("unsupported auth key type: 0x%02x", authKeyType)
+	// LEGACY_KEY_ID（20 字节，现规范填零；兼容直接从 AUTH_KEY_TYPE 开始的旧测试向量）
+	if cell[0] == 0x00 && len(cell) > 23 && cell[20] == 0x02 {
+		offset = 20
 	}
 
-	authKeyLen := binary.BigEndian.Uint16(encryptedCell[offset : offset+2])
+	authKeyType := cell[offset]
+	offset++
+	if authKeyType != 0x02 {
+		return nil, fmt.Errorf("unsupported auth key type: 0x%02x", authKeyType)
+	}
+	authKeyLen := binary.BigEndian.Uint16(cell[offset : offset+2])
 	offset += 2
 	if authKeyLen != 32 {
 		return nil, fmt.Errorf("invalid auth key length: %d", authKeyLen)
 	}
-
-	clientAuthKey := make([]byte, authKeyLen)
-	copy(clientAuthKey, encryptedCell[offset:offset+int(authKeyLen)])
-	offset += int(authKeyLen)
-
-	// Parse outer extensions
-	if offset >= len(encryptedCell) {
-		return nil, fmt.Errorf("truncated INTRODUCE2: no extension length")
+	if offset+32 > len(cell) {
+		return nil, fmt.Errorf("truncated AUTH_KEY")
 	}
-	nExtensions := encryptedCell[offset]
-	offset++
+	authKey := make([]byte, 32)
+	copy(authKey, cell[offset:offset+32])
+	offset += 32
 
-	// Skip extensions (not used in basic implementation)
-	for i := 0; i < int(nExtensions); i++ {
-		if offset+3 > len(encryptedCell) {
+	if offset >= len(cell) {
+		return nil, fmt.Errorf("truncated N_EXTENSIONS")
+	}
+	nExt := int(cell[offset])
+	offset++
+	for i := 0; i < nExt; i++ {
+		// INTRODUCE 扩展：TYPE[1] LEN[1] DATA[LEN]（rend-spec）
+		if offset+2 > len(cell) {
 			return nil, fmt.Errorf("truncated extension header")
 		}
-		// extType := encryptedCell[offset]
+		offset++ // type
+		extLen := int(cell[offset])
 		offset++
-		extLen := binary.BigEndian.Uint16(encryptedCell[offset : offset+2])
-		offset += 2
-		if offset+int(extLen) > len(encryptedCell) {
+		if offset+extLen > len(cell) {
 			return nil, fmt.Errorf("truncated extension data")
 		}
-		offset += int(extLen)
+		offset += extLen
 	}
 
-	// Remaining data is encrypted
-	encryptedData := encryptedCell[offset:]
-	if len(encryptedData) < 32 { // Need at least MAC
-		return nil, fmt.Errorf("encrypted data too short: %d bytes", len(encryptedData))
+	header := cell[:offset] // H：MAC 覆盖 H|X|C
+	rest := cell[offset:]
+	if len(rest) < 32+32 {
+		return nil, fmt.Errorf("encrypted section too short: %d", len(rest))
+	}
+	X := rest[:32]
+	mac := rest[len(rest)-32:]
+	ciphertext := rest[32 : len(rest)-32]
+
+	encKey, macKey, _, err := crypto.HsNtorServiceIntroKeys(introEncPriv, X, authKey, subcred)
+	if err != nil {
+		return nil, fmt.Errorf("hs-ntor intro keys: %w", err)
 	}
 
-	// Decrypt the inner layer
-	// Format: ENCRYPTED_DATA || MAC (32 bytes)
-	macSize := 32
-	if len(encryptedData) < macSize {
-		return nil, fmt.Errorf("no MAC in encrypted data")
-	}
-
-	ciphertext := encryptedData[:len(encryptedData)-macSize]
-	mac := encryptedData[len(encryptedData)-macSize:]
-
-	// Derive decryption keys from intro point keys
-	// Using HKDF-SHA256 with intro enc key as input
-	kdfInfo := []byte("tor-hs-ntor-curve25519-sha3-256-1:hs_key_extract")
-	kdf := hkdf.New(sha256.New, introEncKey, nil, kdfInfo)
-	keys := make([]byte, 64) // 32 for encryption, 32 for MAC
-	if _, err := io.ReadFull(kdf, keys); err != nil {
-		return nil, fmt.Errorf("key derivation failed: %w", err)
-	}
-
-	encKey := keys[0:32]
-	macKey := keys[32:64]
-
-	// Verify MAC
-	computedMAC := hmac.New(sha256.New, macKey)
-	computedMAC.Write(ciphertext)
-	expectedMAC := computedMAC.Sum(nil)
-
+	macBody := make([]byte, 0, len(header)+32+len(ciphertext))
+	macBody = append(macBody, header...)
+	macBody = append(macBody, X...)
+	macBody = append(macBody, ciphertext...)
+	expectedMAC := crypto.HsMAC(macKey, macBody)
 	if !crypto.ConstantTimeCompare(mac, expectedMAC) {
-		return nil, fmt.Errorf("MAC verification failed")
+		return nil, fmt.Errorf("INTRODUCE2 MAC verification failed")
 	}
 
-	// Decrypt using AES-256-CTR (simplified - should use proper stream cipher)
 	plaintext, err := crypto.DecryptAES256CTR(ciphertext, encKey, make([]byte, 16))
 	if err != nil {
-		return nil, fmt.Errorf("decryption failed: %w", err)
+		return nil, fmt.Errorf("INTRODUCE2 decrypt: %w", err)
 	}
 
-	// Parse decrypted inner layer
-	return parseIntroduce2Inner(plaintext, clientAuthKey)
+	req, err := parseIntroduce2Inner(plaintext)
+	if err != nil {
+		return nil, err
+	}
+	req.IntroAuthKey = authKey
+	// ClientOnionKey 在内层也可能有 ONION_KEY；hs-ntor 的 X 才是握手公钥。
+	// 保留内层 ONION_KEY 若存在，但以 X 作为 ClientOnionKey（与 RENDEZVOUS1 一致）。
+	req.ClientOnionKey = append([]byte(nil), X...)
+	return req, nil
 }
 
-// parseIntroduce2Inner parses the decrypted inner portion of INTRODUCE2
-func parseIntroduce2Inner(plaintext, clientAuthKey []byte) (*Introduce2Request, error) {
+func parseIntroduce2Inner(plaintext []byte) (*Introduce2Request, error) {
 	if len(plaintext) < 20+1 {
 		return nil, fmt.Errorf("decrypted data too short: %d bytes", len(plaintext))
 	}
-
 	offset := 0
-
-	// Rendezvous cookie (20 bytes)
 	rendezvousCookie := make([]byte, 20)
 	copy(rendezvousCookie, plaintext[offset:offset+20])
 	offset += 20
 
-	// Link specifiers
-	if offset >= len(plaintext) {
-		return nil, fmt.Errorf("truncated: no NSPEC field")
-	}
 	nspec := plaintext[offset]
 	offset++
-
 	linkSpecifiers := make([]LinkSpecifier, 0, nspec)
 	for i := 0; i < int(nspec); i++ {
 		if offset+2 > len(plaintext) {
@@ -182,66 +143,45 @@ func parseIntroduce2Inner(plaintext, clientAuthKey []byte) (*Introduce2Request, 
 		offset++
 		lslen := plaintext[offset]
 		offset++
-
 		if offset+int(lslen) > len(plaintext) {
 			return nil, fmt.Errorf("truncated link specifier %d data", i)
 		}
-
 		lsdata := make([]byte, lslen)
 		copy(lsdata, plaintext[offset:offset+int(lslen)])
 		offset += int(lslen)
-
-		linkSpecifiers = append(linkSpecifiers, LinkSpecifier{
-			Type: lstype,
-			Data: lsdata,
-		})
+		linkSpecifiers = append(linkSpecifiers, LinkSpecifier{Type: lstype, Data: lsdata})
 	}
 
-	// Onion key
-	if offset+3 > len(plaintext) {
-		return nil, fmt.Errorf("truncated: no onion key header")
-	}
-	onionKeyType := plaintext[offset]
-	offset++
-	if onionKeyType != 0x00 { // ntor
-		return nil, fmt.Errorf("unsupported onion key type: 0x%02x", onionKeyType)
-	}
-
-	onionKeyLen := binary.BigEndian.Uint16(plaintext[offset : offset+2])
-	offset += 2
-	if onionKeyLen != 32 {
-		return nil, fmt.Errorf("invalid ntor onion key length: %d", onionKeyLen)
-	}
-
-	if offset+int(onionKeyLen) > len(plaintext) {
-		return nil, fmt.Errorf("truncated: onion key data")
-	}
-	clientOnionKey := make([]byte, onionKeyLen)
-	copy(clientOnionKey, plaintext[offset:offset+int(onionKeyLen)])
-	offset += int(onionKeyLen)
-
-	// Parse inner extensions
 	extensions := make(map[uint8][]byte)
+	// 可选 ONION_KEY（旧格式）；新格式握手密钥已在外层 X
+	if offset+3 <= len(plaintext) {
+		onionKeyType := plaintext[offset]
+		if onionKeyType == 0x00 {
+			offset++
+			onionKeyLen := binary.BigEndian.Uint16(plaintext[offset : offset+2])
+			offset += 2
+			if offset+int(onionKeyLen) <= len(plaintext) {
+				offset += int(onionKeyLen)
+			}
+		}
+	}
 	if offset < len(plaintext) {
-		nExtensions := plaintext[offset]
+		nExt := int(plaintext[offset])
 		offset++
-
-		for i := 0; i < int(nExtensions); i++ {
+		for i := 0; i < nExt; i++ {
 			if offset+3 > len(plaintext) {
-				return nil, fmt.Errorf("truncated inner extension %d", i)
+				break
 			}
 			extType := plaintext[offset]
 			offset++
 			extLen := binary.BigEndian.Uint16(plaintext[offset : offset+2])
 			offset += 2
-
 			if offset+int(extLen) > len(plaintext) {
-				return nil, fmt.Errorf("truncated inner extension %d data", i)
+				break
 			}
 			extData := make([]byte, extLen)
 			copy(extData, plaintext[offset:offset+int(extLen)])
 			offset += int(extLen)
-
 			extensions[extType] = extData
 		}
 	}
@@ -249,10 +189,31 @@ func parseIntroduce2Inner(plaintext, clientAuthKey []byte) (*Introduce2Request, 
 	return &Introduce2Request{
 		RendezvousCookie: rendezvousCookie,
 		LinkSpecifiers:   linkSpecifiers,
-		ClientOnionKey:   clientOnionKey,
-		ClientAuthKey:    clientAuthKey,
 		Extensions:       extensions,
 	}, nil
+}
+
+// BuildIntroduce1Encrypted 客户端构造 INTRODUCE1 的 ENCRYPTED 段：X || C || M。
+// header 为 LEGACY_KEY_ID…EXTENSIONS（不含 ENCRYPTED）。
+func BuildIntroduce1Encrypted(header, plaintext, xPriv, B, authKey, subcred []byte) ([]byte, error) {
+	encKey, macKey, X, err := crypto.HsNtorClientIntroKeys(xPriv, B, authKey, subcred)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext, err := crypto.EncryptAES256CTR(plaintext, encKey, make([]byte, 16))
+	if err != nil {
+		return nil, err
+	}
+	macBody := make([]byte, 0, len(header)+32+len(ciphertext))
+	macBody = append(macBody, header...)
+	macBody = append(macBody, X...)
+	macBody = append(macBody, ciphertext...)
+	mac := crypto.HsMAC(macKey, macBody)
+	out := make([]byte, 0, 32+len(ciphertext)+32)
+	out = append(out, X...)
+	out = append(out, ciphertext...)
+	out = append(out, mac...)
+	return out, nil
 }
 
 // LinkSpecifierToAddress converts link specifiers to an address string
@@ -267,7 +228,6 @@ func LinkSpecifierToAddress(specs []LinkSpecifier) (string, error) {
 			}
 		case 0x01: // TLS-over-TCP-IPv6
 			if len(spec.Data) == 18 {
-				// IPv6 address format (simplified)
 				port := binary.BigEndian.Uint16(spec.Data[16:18])
 				return fmt.Sprintf("[%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x]:%d",
 					spec.Data[0], spec.Data[1], spec.Data[2], spec.Data[3],

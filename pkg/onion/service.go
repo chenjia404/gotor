@@ -537,9 +537,9 @@ func (s *Service) establishIntroductionPoint(ctx context.Context, relay *HSDirec
 	if _, err := rand.Read(authKey); err != nil {
 		return nil, fmt.Errorf("failed to generate auth key: %w", err)
 	}
-
-	encKey := make([]byte, 32)
-	if _, err := rand.Read(encKey); err != nil {
+	// EncKey 必须是合法 Curve25519 私钥（hs-ntor 的 b）
+	encKey, err := crypto.GenerateCurve25519PrivateKey()
+	if err != nil {
 		return nil, fmt.Errorf("failed to generate enc key: %w", err)
 	}
 
@@ -1006,8 +1006,11 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 		return fmt.Errorf("no introduction point found for circuit %d", introCircuitID)
 	}
 
-	// Parse and decrypt INTRODUCE2 cell
-	request, err := ParseIntroduce2(introduce2Data, introPoint.AuthKey, introPoint.EncKey)
+	// Parse and decrypt INTRODUCE2 cell（hs-ntor）
+	timePeriod := GetTimePeriod(time.Now())
+	blinded := ComputeBlindedPubkey(s.publicKey, timePeriod)
+	subcred := ComputeHSSubcredential(s.publicKey, blinded)
+	request, err := ParseIntroduce2(introduce2Data, introPoint.EncKey, subcred)
 	if err != nil {
 		return fmt.Errorf("failed to parse INTRODUCE2: %w", err)
 	}
@@ -1032,7 +1035,7 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 		Cookie:          request.RendezvousCookie,
 		RendezvousPoint: rendezvousAddr,
 		ClientOnionKey:  request.ClientOnionKey,
-		IntroAuthKey:    append([]byte(nil), introPoint.AuthKey...),
+		IntroAuthKey:    append([]byte(nil), request.IntroAuthKey...),
 		ReceivedAt:      time.Now(),
 	}
 	s.mu.Unlock()
