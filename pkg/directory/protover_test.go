@@ -20,6 +20,31 @@ func TestParseProtoLine(t *testing.T) {
 	if !p.Supports("LinkAuth", 3) {
 		t.Fatal("LinkAuth=3 should be supported")
 	}
+	if !p.Supports("Conflux", 2) || p.Supports("Conflux", 1) {
+		t.Fatal("Conflux=2 is a flag and must not imply Conflux=1")
+	}
+}
+
+func TestRelayAdvertisesConflux(t *testing.T) {
+	r := &Relay{Protocols: ParseProtoLine("Conflux=2")}
+	if !r.AdvertisesConflux() {
+		t.Fatal("mainnet Conflux=2 must count as Conflux-capable")
+	}
+	r.Protocols = ParseProtoLine("Conflux=1")
+	if !r.AdvertisesConflux() {
+		t.Fatal("Conflux=1 must count")
+	}
+	r.Protocols = ParseProtoLine("Conflux=1-2")
+	if !r.AdvertisesConflux() {
+		t.Fatal("Conflux=1-2 must count")
+	}
+	r.Protocols = ParseProtoLine("Relay=4 FlowCtrl=1-2")
+	if r.AdvertisesConflux() {
+		t.Fatal("no Conflux line must not advertise")
+	}
+	if (*Relay)(nil).AdvertisesConflux() {
+		t.Fatal("nil relay")
+	}
 }
 
 func TestParseProtoLineCommaList(t *testing.T) {

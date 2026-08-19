@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/relay6-cgo-8e65`（基于 `origin/main`，含 Relay=5 type 3 cherry-pick）  
+**分支**：`cursor/conflux1-8e65`（基于 `origin/main`，含已合入的 Relay=6 CGO）  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + **现行** Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -52,7 +52,7 @@
 | Exit policy | PARTIAL | 已解析 `p` 行并按端口过滤；完整策略与 IPv6 `p6` 未做 |
 | Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
-| Conflux=1 | MISSING | 多路径（proposal 329）；mainnet 已广泛宣告，尚未 required |
+| Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
 | Circuit padding (Padding=2) | PARTIAL | 有定时器骨架，无 HS setup machine（proposal 302） |
 | Onion Service v3 | BROKEN / MISSING | **明确不做**，直到 client 主链路剩余缺口完成 |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
@@ -129,11 +129,15 @@
 
 #### 5. Conflux=1（proposal 329）
 
-- **状态**：MISSING。
+- **状态**：WORKING。纯 Go：`pkg/cell/conflux.go`、`pkg/circuit/conflux.go`、`pkg/path/conflux.go`。
 - **Spec**：https://spec.torproject.org/proposals/329-traffic-splitting.html
-- **要点**：`RELAY_CONFLUX_LINK` / `LINKED` / `LINKED_ACK` / `SWITCH`；两（或更多）条电路绑定后按 seq /RTT 分流。
-- **选择**：仅当两条腿的 Guard/Middle/Exit 均宣告 `Conflux=1`。
-- **验收**：真实网络两条电路 LINK 成功，并经 SOCKS 拉到 `IsTor=true`。缺实现时不得把单电路标成 Conflux。
+- **要点**：命令 19–22；LINK/LINKED 50 字节大端；UX=3 + LowRTT；OOO 上限 256。
+- **选择**：两条腿 Guard/Middle/Exit 均宣告 `Conflux=1` **或** `Conflux=2`（mainnet 常见只写 2；flag 不蕴含），且都已协商 FlowCtrl=2。同一 Exit，不同 Guard/Middle（身份键）。
+- **禁止**：未完成 LINK 把单电路标成 Conflux；日志写出 nonce；未协商 FlowCtrl=2 却 LINK。
+- **真实网络（2026-08-19 `TestRealConflux`）**：
+  - LINK：`TorNode07dot4` → `pecord` → `r0cket08i3` 与 `cryzrelay01` → `Orrion` → `r0cket08i3`（同 Exit，不同 Guard/Middle）
+  - LINKED RTT 384ms / 430ms，随后 LINKED_ACK
+  - SOCKS5 `https://check.torproject.org/api/ip`：`IsTor=true`，ExitIP=`192.42.116.116`
 
 #### 6. EXTEND2 IPv6（Relay=3）
 
@@ -324,7 +328,7 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 | `pkg/directory` microdesc / 共识验签 | digest、自生成证书、篡改必失败 | 运行 |
 | `pkg/protocol` CERTS type 7 | RSA→Ed25519 交叉签名；缺 type 2 / 篡改必失败 | 运行 |
 | `integration/link_test.go` | 真实 TLS+handshake / type 7 RSA | `-tags=integration` + `TOR_INTEGRATION_TEST=1` |
-| `integration/e2e_real_tor_test.go` | 共识验签 / ntor-v3 CREATE2 / 3-hop / IsTor / soak / RESOLVE | 同上 |
+| `integration/e2e_real_tor_test.go` | 共识验签 / ntor-v3 CREATE2 / 3-hop / IsTor / soak / RESOLVE / Conflux | 同上 |
 | `scripts/test-real-tor.sh` | 启动 client + socks5h curl | 手动 |
 
 ---
@@ -338,4 +342,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准（尚未达到）：** Conflux=1 真实双电路 LINK + `IsTor=true`。再往后：更大 soak、EXTEND2 IPv6。
+**下一轮完成标准（尚未达到）：** 更大 soak、EXTEND2 IPv6。Conflux=1 已在真实网络 LINK + `IsTor=true`。
