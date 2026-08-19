@@ -1242,7 +1242,11 @@ func EncodeDescriptor(desc *Descriptor) ([]byte, error) {
 		for i, intro := range desc.IntroPoints {
 			fmt.Fprintf(&buf, "introduction-point %d\n", i)
 			for _, ls := range intro.LinkSpecifiers {
-				lsEncoded := base64.StdEncoding.EncodeToString(append([]byte{ls.Type, byte(len(ls.Data))}, ls.Data...))
+				dlen := len(ls.Data)
+				if dlen > 255 {
+					dlen = 255
+				}
+				lsEncoded := base64.StdEncoding.EncodeToString(append([]byte{ls.Type, byte(dlen)}, ls.Data[:dlen]...)) // #nosec G115 -- LSLEN 1 字节
 				fmt.Fprintf(&buf, "link-specifier %s\n", lsEncoded)
 			}
 			if len(intro.OnionKey) > 0 {

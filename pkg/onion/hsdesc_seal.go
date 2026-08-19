@@ -15,10 +15,21 @@ func encodeIntroPointsPlaintext(intros []IntroductionPoint) []byte {
 	var out bytes.Buffer
 	for _, intro := range intros {
 		lsCombined := make([]byte, 0, 64)
-		lsCombined = append(lsCombined, byte(len(intro.LinkSpecifiers)))
-		for _, ls := range intro.LinkSpecifiers {
-			lsCombined = append(lsCombined, ls.Type, byte(len(ls.Data)))
-			lsCombined = append(lsCombined, ls.Data...)
+		nSpec := len(intro.LinkSpecifiers)
+		if nSpec > 255 {
+			nSpec = 255
+		}
+		lsCombined = append(lsCombined, byte(nSpec)) // #nosec G115 -- LSTYPE 规范为 1 字节计数
+		for i, ls := range intro.LinkSpecifiers {
+			if i >= nSpec {
+				break
+			}
+			dlen := len(ls.Data)
+			if dlen > 255 {
+				dlen = 255
+			}
+			lsCombined = append(lsCombined, ls.Type, byte(dlen)) // #nosec G115 -- LSLEN 为 1 字节
+			lsCombined = append(lsCombined, ls.Data[:dlen]...)
 		}
 		fmt.Fprintf(&out, "introduction-point %s\n", base64.RawStdEncoding.EncodeToString(lsCombined))
 		if len(intro.OnionKey) > 0 {
@@ -78,7 +89,14 @@ func buildType8SigningKeyCert(blinded *BlindedSigningMaterial, signingPub ed2551
 	certContent = append(certContent, 1) // version
 	certContent = append(certContent, 8) // cert_type = BLINDED_ID_V_SIGNING
 	var expiry [4]byte
-	binary.BigEndian.PutUint32(expiry[:], uint32(expires.Unix()/3600))
+	hours := expires.Unix() / 3600
+	if hours < 0 {
+		hours = 0
+	}
+	if hours > 0xffffffff {
+		hours = 0xffffffff
+	}
+	binary.BigEndian.PutUint32(expiry[:], uint32(hours)) // #nosec G115 -- cert-spec 到期为 uint32 小时
 	certContent = append(certContent, expiry[:]...)
 	certContent = append(certContent, 1) // Ed25519 key type
 	certContent = append(certContent, signingPub...)

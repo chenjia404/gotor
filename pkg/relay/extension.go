@@ -94,12 +94,12 @@ func extractAddressFromLinkSpecs(specs []LinkSpecifier) (string, error) {
 
 // ExtensionHandler handles circuit extension for relay servers
 type ExtensionHandler struct {
-	keys       *RelayKeys
-	circuits   *CircuitHandler
-	forwarder  *ForwardingHandler
-	logger     *logger.Logger
-	connPool   map[string]*connection.Connection // Pool of outbound connections
-	connMutex  sync.Mutex
+	keys        *RelayKeys
+	circuits    *CircuitHandler
+	forwarder   *ForwardingHandler
+	logger      *logger.Logger
+	connPool    map[string]*connection.Connection // Pool of outbound connections
+	connMutex   sync.Mutex
 	clientConns map[uint32]net.Conn // circuitID → 入向 OR 连接（发送 EXTENDED2）
 	clientMu    sync.Mutex
 }
@@ -299,10 +299,13 @@ func (h *ExtensionHandler) performLinkHandshake(ctx context.Context, conn *conne
 
 // sendCreate2ToNextHop sends a CREATE2 cell to the next hop
 func (h *ExtensionHandler) sendCreate2ToNextHop(conn *connection.Connection, circuitID uint32, htype uint16, handshakeData []byte) error {
+	if len(handshakeData) > 0xffff {
+		return fmt.Errorf("handshake data too large: %d", len(handshakeData))
+	}
 	// Build CREATE2 payload: HTYPE (2) || HLEN (2) || HDATA
 	payload := make([]byte, 4+len(handshakeData))
 	binary.BigEndian.PutUint16(payload[0:2], htype)
-	binary.BigEndian.PutUint16(payload[2:4], uint16(len(handshakeData)))
+	binary.BigEndian.PutUint16(payload[2:4], uint16(len(handshakeData))) // #nosec G115 -- 已校验 ≤65535
 	copy(payload[4:], handshakeData)
 
 	create2 := &cell.Cell{
@@ -355,8 +358,11 @@ func (h *ExtensionHandler) registerExtendedCircuit(incomingCircID, outgoingCircI
 
 // sendExtended2 sends a RELAY_EXTENDED2 cell back to the client
 func (h *ExtensionHandler) sendExtended2(circuitID uint32, handshakeResponse []byte) error {
+	if len(handshakeResponse) > 0xffff {
+		return fmt.Errorf("EXTENDED2 response too large: %d", len(handshakeResponse))
+	}
 	data := make([]byte, 2+len(handshakeResponse))
-	binary.BigEndian.PutUint16(data[0:2], uint16(len(handshakeResponse)))
+	binary.BigEndian.PutUint16(data[0:2], uint16(len(handshakeResponse))) // #nosec G115 -- 已校验 ≤65535
 	copy(data[2:], handshakeResponse)
 
 	relayCell := &cell.RelayCell{
