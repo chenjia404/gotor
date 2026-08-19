@@ -418,7 +418,7 @@ func TestDescriptorSignatureGeneration(t *testing.T) {
 			t.Fatal("signature marker not found in raw descriptor")
 		}
 
-		signedMessage := desc.RawDescriptor[:signatureIdx]
+		signedMessage := HSDescriptorSignedMaterial(desc.RawDescriptor[:signatureIdx])
 		if !ed25519.Verify(cert.SigningKey, signedMessage, desc.Signature) {
 			t.Error("descriptor signature verification failed")
 		}

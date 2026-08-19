@@ -754,7 +754,7 @@ func (s *Service) signDescriptor(desc *Descriptor) error {
 	}
 
 	// Sign the descriptor with the descriptor signing key (not identity key)
-	signature := ed25519.Sign(descriptorSigningPriv, encoded)
+	signature := ed25519.Sign(descriptorSigningPriv, HSDescriptorSignedMaterial(encoded))
 	desc.Signature = signature
 
 	// Encode again with signature to get complete descriptor

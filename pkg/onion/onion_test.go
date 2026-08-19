@@ -2993,7 +2993,7 @@ func TestVerifyDescriptorSignatureSuccess(t *testing.T) {
 	descriptorContent := "hs-descriptor 3\ndescriptor-lifetime 180\n"
 
 	// Sign the descriptor content with the signing key
-	descriptorSig := ed25519.Sign(signingPriv, []byte(descriptorContent))
+	descriptorSig := ed25519.Sign(signingPriv, HSDescriptorSignedMaterial([]byte(descriptorContent)))
 
 	// Create full raw descriptor with signature line
 	rawDesc := descriptorContent + "signature " + base64.StdEncoding.EncodeToString(descriptorSig)
@@ -3045,7 +3045,7 @@ func TestVerifyDescriptorSignatureWithCertChain(t *testing.T) {
 	copy(certData[40:104], certSig)
 
 	descriptorContent := "hs-descriptor 3\n"
-	descriptorSig := ed25519.Sign(signingPriv, []byte(descriptorContent))
+	descriptorSig := ed25519.Sign(signingPriv, HSDescriptorSignedMaterial([]byte(descriptorContent)))
 	rawDesc := descriptorContent + "signature test"
 
 	desc := &Descriptor{
@@ -3246,7 +3246,7 @@ func BenchmarkVerifyDescriptorSignature(b *testing.B) {
 	copy(certData[40:104], certSig)
 
 	descriptorContent := "hs-descriptor 3\ndescriptor-lifetime 180\n"
-	descriptorSig := ed25519.Sign(signingPriv, []byte(descriptorContent))
+	descriptorSig := ed25519.Sign(signingPriv, HSDescriptorSignedMaterial([]byte(descriptorContent)))
 	rawDesc := descriptorContent + "signature test"
 
 	desc := &Descriptor{

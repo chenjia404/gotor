@@ -720,6 +720,19 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 	return desc, nil
 }
 
+const (
+	// HSDescriptorSignaturePrefix 描述符 Ed25519 签名前缀（rend-spec）。
+	HSDescriptorSignaturePrefix = "Tor onion service descriptor sig v3"
+)
+
+// HSDescriptorSignedMaterial 返回验签/签名用的完整消息。
+func HSDescriptorSignedMaterial(bodyBeforeSignatureLine []byte) []byte {
+	out := make([]byte, 0, len(HSDescriptorSignaturePrefix)+len(bodyBeforeSignatureLine))
+	out = append(out, HSDescriptorSignaturePrefix...)
+	out = append(out, bodyBeforeSignatureLine...)
+	return out
+}
+
 // decodeDescriptorBase64 尝试 Std / RawStd，并去掉空白。
 func decodeDescriptorBase64(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
@@ -944,8 +957,8 @@ func VerifyDescriptorSignature(descriptor *Descriptor, address *Address) error {
 		return fmt.Errorf("signature line not found in descriptor")
 	}
 
-	// The signed message is everything up to (but not including) the signature line
-	signedMessage := raw[:signatureIdx]
+	// 签名覆盖：PREFIX || (signature 行之前的全部原文)
+	signedMessage := HSDescriptorSignedMaterial(raw[:signatureIdx])
 
 	// AUDIT-002 FIX: Implement full certificate chain validation
 	// Per rend-spec-v3.txt section 2.1:
