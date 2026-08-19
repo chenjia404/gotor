@@ -124,32 +124,32 @@ func parseARPAName(name string) net.IP {
 		}
 		var raw [16]byte
 		for i := 0; i < 16; i++ {
-			hi := unhexNibble(parts[31-2*i])
-			lo := unhexNibble(parts[30-2*i])
-			if hi < 0 || lo < 0 {
+			hi, ok1 := unhexNibble(parts[31-2*i])
+			lo, ok2 := unhexNibble(parts[30-2*i])
+			if !ok1 || !ok2 {
 				return nil
 			}
-			raw[i] = byte(hi<<4 | lo)
+			raw[i] = hi<<4 | lo
 		}
 		return net.IP(raw[:])
 	}
 	return nil
 }
 
-func unhexNibble(s string) int {
+func unhexNibble(s string) (byte, bool) {
 	if len(s) != 1 {
-		return -1
+		return 0, false
 	}
 	c := s[0]
 	switch {
 	case c >= '0' && c <= '9':
-		return int(c - '0')
+		return c - '0', true
 	case c >= 'a' && c <= 'f':
-		return int(c - 'a' + 10)
+		return c - 'a' + 10, true
 	case c >= 'A' && c <= 'F':
-		return int(c - 'A' + 10)
+		return c - 'A' + 10, true
 	default:
-		return -1
+		return 0, false
 	}
 }
 
