@@ -1,7 +1,6 @@
 # Circuit padding（Padding=2 / proposal 302）
 
-**日期**：2026-08-19  
-**状态**：PARTIAL（协商单元与 HS setup 状态表已对齐 C Tor；onion 建路接线与真实验收待 Phase 4）
+**状态**：PARTIAL（2026-08-19：协商单元、HS setup 状态表、运行时控制器与第二跳发送已齐；onion INTRODUCE1 自动触发待 Phase 4）
 
 对照：
 
@@ -13,26 +12,29 @@
 | 路径 | 作用 |
 |------|------|
 | `pkg/circuit/circpad.go` | PADDING_NEGOTIATE/NEGOTIATED 8 字节编解码；HS setup 状态表 |
+| `pkg/circuit/circpad_runtime.go` | `CircpadController`；intro/rend 状态转移 |
+| `pkg/circuit/circuit.go` | `SendRelayCellToHop`；`StartHSSetupPadding` |
+| `pkg/client` | 共识后 `refreshCircpadConfig`；`StartHSSetupPaddingOn` |
 | `pkg/circuit/padding_machine.go` | 兼容包装；`CIRC_SETUP=1`、`STOP=1`/`START=2` |
 
-### 协商单元（修正）
+### 协商单元
 
-- `STOP=1`、`START=2`（旧实现曾写反）
+- `STOP=1`、`START=2`
 - `machine_type=CIRCPAD_MACHINE_CIRC_SETUP(1)`
-- `machine_ctr` u32 网络序；总长 **8** 字节（含 unused）
-- negotiated：`response` 字段 `OK=1` / `ERR=2`
+- `machine_ctr` u32 网络序；总长 **8** 字节
 
-### HS setup 状态表
+### HS setup 运行时
 
-- `ClientHideIntroCircuits` / `RelayHideIntroCircuits`：INTRO DROPs **7–10**
-- `ClientHideRendCircuits`：对照 C Tor rend 机转移
-- `CircpadPaddingDisabled`：读共识 `circpad_padding_disabled`
+- `ClientHideIntroCircuits` / `ClientHideRendCircuits` / `RelayHideIntroCircuits`
+- Intro DROPs **7–10**；`circpad_padding_disabled` 禁用
+- 协商发往 **第二跳**（`encryptOnion` dest=1）
+- 错误 ctr 忽略；ERR 结束机
 
 ## 未接线
 
-- Onion INTRODUCE1 后自动发 negotiate（需 Phase 4 hs-ntor）
-- 中继侧发 DROP 的运行时（客户端库只协商；靠对端 Padding=2）
-- 直方图延迟采样完整 WTF-PAD 运行时
+- Onion INTRODUCE1 后自动 `StartHSSetupPaddingOn`（需 Phase 4）
+- 完整直方图延迟采样 WTF-PAD 定时器
+- 真实验收（需 onion 路径）
 
 ## 禁止
 

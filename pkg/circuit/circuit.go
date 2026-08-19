@@ -91,6 +91,7 @@ type Circuit struct {
 	conflux        *ConfluxSet   // 非 nil 表示本电路正在或已经参与 Conflux 套
 	sendWake       chan struct{} // SENDME / 拆路时叫醒等窗的发送方
 	exitFilter     ExitFilter    // Exit 的 p / p6 / 完整策略；IPv6 字面量必须检查
+	circpad        *CircpadController // Padding=2 HS setup 机（可选）
 }
 
 // Hop represents a single hop in a circuit (one relay)
@@ -1178,6 +1179,124 @@ func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
 		}
 	}
 	return c.sendRelayCellLocal(relayCell)
+}
+
+// SendRelayCellToHop 将 relay cell 加密到指定跳（0=guard）后发出。
+// Padding=2 HS setup 机协商目标为第二跳（hopIndex=1）。
+func (c *Circuit) SendRelayCellToHop(relayCell *cell.RelayCell, hopIndex int) error {
+	if relayCell == nil {
+		return fmt.Errorf("relay cell is nil")
+	}
+	c.mu.RLock()
+	conn := c.conn
+	state := c.State
+	nHops := len(c.Hops)
+	c.mu.RUnlock()
+	if state != StateOpen && state != StateBuilding {
+		return fmt.Errorf("circuit not usable: state=%s", state)
+	}
+	if hopIndex < 0 || hopIndex >= nHops {
+		return fmt.Errorf("hop index %d out of range [0,%d)", hopIndex, nHops)
+	}
+	if conn == nil {
+		return fmt.Errorf("circuit has no connection")
+	}
+
+	c.mu.RLock()
+	destCGO := c.Hops[hopIndex].usesCGO()
+	c.mu.RUnlock()
+
+	var payload []byte
+	var err error
+	if destCGO {
+		payload, err = cell.EncodeRelayCellV1(relayCell)
+		if err != nil {
+			return fmt.Errorf("failed to encode v1 relay cell: %w", err)
+		}
+		end := cell.V1MessageEnd(payload)
+		if end+4 < len(payload) {
+			if _, err := rand.Read(payload[end+4:]); err != nil {
+				return fmt.Errorf("failed to randomize v1 padding: %w", err)
+			}
+		}
+	} else {
+		payload, err = relayCell.Encode()
+		if err != nil {
+			return fmt.Errorf("failed to encode relay cell: %w", err)
+		}
+	}
+
+	cmd := cell.CmdRelay
+	encryptedPayload, _, err := c.encryptOnion(byte(cmd), hopIndex, payload)
+	if err != nil {
+		return fmt.Errorf("onion encrypt to hop %d: %w", hopIndex, err)
+	}
+
+	type cellSender interface {
+		SendCell(*cell.Cell) error
+	}
+	sender, ok := conn.(cellSender)
+	if !ok {
+		return fmt.Errorf("connection does not support SendCell")
+	}
+	if err := sender.SendCell(&cell.Cell{CircID: c.ID, Command: cmd, Payload: encryptedPayload}); err != nil {
+		return fmt.Errorf("failed to send cell: %w", err)
+	}
+	c.RecordActivity()
+	return nil
+}
+
+// AttachCircpad 绑定 HS setup padding 控制器。
+func (c *Circuit) AttachCircpad(ctrl *CircpadController) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.circpad = ctrl
+	c.mu.Unlock()
+}
+
+// Circpad 返回已绑定的控制器（可能为 nil）。
+func (c *Circuit) Circpad() *CircpadController {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.circpad
+}
+
+// StartHSSetupPadding 在共识允许且中间跳宣告 Padding=2 时启动客户端 HS setup 机，
+// 并立即发出 PADDING_NEGOTIATE START 到第二跳。
+func (c *Circuit) StartHSSetupPadding(kind HSSetupKind, middleSupportsPadding2 bool, cfg CircpadConfig) error {
+	if cfg.Disabled {
+		return fmt.Errorf("circpad disabled by consensus")
+	}
+	if !middleSupportsPadding2 {
+		return fmt.Errorf("middle hop does not advertise Padding=2")
+	}
+	c.mu.RLock()
+	nHops := len(c.Hops)
+	c.mu.RUnlock()
+	if nHops < 2 {
+		return fmt.Errorf("need at least 2 hops for circpad setup machine")
+	}
+	ctrl := NewCircpadController(cfg)
+	if err := ctrl.StartHSSetup(kind); err != nil {
+		return err
+	}
+	rc, err := ctrl.BuildNegotiateStart()
+	if err != nil {
+		return err
+	}
+	// 目标跳 = TargetHop（1-based）→ 0-based index
+	hopIdx := ctrl.TargetHop() - 1
+	if err := c.SendRelayCellToHop(rc, hopIdx); err != nil {
+		return fmt.Errorf("send PADDING_NEGOTIATE: %w", err)
+	}
+	ctrl.MarkNegotiateSent()
+	c.AttachCircpad(ctrl)
+	return nil
 }
 
 func (c *Circuit) destUsesCGO() bool {
