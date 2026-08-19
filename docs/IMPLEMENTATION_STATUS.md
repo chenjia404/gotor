@@ -33,7 +33,7 @@
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
 | SENDME / flow control | WORKING | 电路级 SENDME v1 已在真实网络 256KB+ soak 通过；流级仍为空（spec）；FlowCtrl=2 未做 |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
-| DNS / RELAY_RESOLVE | PARTIAL | 已修 StreamID≠0 / arpa PTR / 多条 RESOLVED；待真实网络 `TestRealRelayResolve` |
+| DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE `www.torproject.org` 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功 |
 | Exit policy | PARTIAL | 已解析共识/microdesc `p` 行并按端口过滤；预建电路改选 443；完整策略与 IPv6 `p6` 未做 |
 | Onion Service v3 | BROKEN / MISSING | 本轮不实现；hs-ntor 未做；旧代码误用 circuit ntor |
@@ -135,7 +135,8 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 - 真实 `https://check.torproject.org/api/ip` 已返回 `IsTor=true`。
 - RELAY_RESOLVE：非 0 StreamID、arpa PTR、收集多条应答；0xF0/0xF1 Value 按字符串处理。
 - CONNECT 仍把 hostname 原样放进 RELAY_BEGIN（socks5h），不走本机 DNS。
-- 生产路径静态禁止 `net.Lookup*`。真实网络验收见 `TestRealRelayResolve`。
+- 生产路径静态禁止 `net.Lookup*`。
+- 真实网络：`TestRealRelayResolve` 经 exit `artikel5ev8b` 解析 `www.torproject.org` → `204.8.99.144` + IPv6；PTR → `web-dal-07.torproject.org`；`.invalid` 回 `0xF1 Error resolving hostname`。本机 `DefaultResolver` 被指到不可达地址。
 - 详见 `docs/interop/dns.md`。
 
 ### Guard / Path / Exit policy — PARTIAL
@@ -216,5 +217,5 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 CREATE2、EXTEND2、3-hop、`IsTor=true`、SENDME v1 soak（≥256KB）。  
-**Tor Client basic interoperability 可标 WORKING（经典 ntor / AES-CTR-SHA1 / SENDME v1）**。ntor-v3、FlowCtrl=2、更大流量 soak 仍未做。
+当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 CREATE2、EXTEND2、3-hop、`IsTor=true`、SENDME v1 soak（≥256KB）、RELAY_RESOLVE（本机 DNS 不可达）。  
+**Tor Client basic interoperability 可标 WORKING（经典 ntor / AES-CTR-SHA1 / SENDME v1 / RELAY_RESOLVE）**。ntor-v3、FlowCtrl=2、更大流量 soak 仍未做。

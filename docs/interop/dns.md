@@ -26,4 +26,10 @@
 
 ## 真实网络
 
-`TestRealRelayResolve`：3-hop 上解析 `www.torproject.org` 得到 IP；同时把 `net.DefaultResolver` 指到不可达地址。
+`TestRealRelayResolve`（2026-08-19）：
+
+- 3-hop：Guard `gottahavemyp0ps` → Middle `NTH19R4` → Exit `artikel5ev8b`
+- `ResolveHostname("www.torproject.org")` → `204.8.99.144` + `2a01:4f8:fff0:4f:266:37ff:feae:3bbc`，TTL=60，Type=0x04
+- `ResolveIP(204.8.99.144)` → `web-dal-07.torproject.org`
+- `.invalid` → `type=0xF1 Error resolving hostname`
+- `net.DefaultResolver` 被指到不可达地址，证明不走本机 DNS

@@ -177,7 +177,7 @@ go test ./pkg/circuit -v
 
 3. **No DNSSEC**: DNSSEC validation is not implemented.
 
-4. **Integration Tests**: Full integration tests with real circuits require additional mocking infrastructure and are not included in the current test suite.
+4. **真实网络**：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration -run TestRealRelayResolve` 已通过。
 
 ## References
 
