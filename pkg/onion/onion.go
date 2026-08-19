@@ -26,6 +26,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 
+	"github.com/opd-ai/go-tor/pkg/crypto"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/security"
 )
@@ -1274,7 +1275,7 @@ func EncodeDescriptor(desc *Descriptor) ([]byte, error) {
 			fmt.Fprintf(&buf, "%s\n", base64.StdEncoding.EncodeToString(intro.AuthKey))
 		}
 
-		// Write enc key
+		// Write enc key（描述符中为公钥 B）
 		if len(intro.EncKey) > 0 {
 			fmt.Fprintf(&buf, "enc-key ntor %s\n", base64.StdEncoding.EncodeToString(intro.EncKey))
 		}
@@ -1705,10 +1706,11 @@ type IntroduceRequest struct {
 	IntroPoint          *IntroductionPoint // Target introduction point
 	RendezvousCookie    []byte             // Rendezvous cookie (20 bytes)
 	RendezvousPoint     string             // Rendezvous point fingerprint
-	RendezvousCircuitID uint32             // AUDIT-006: Circuit ID for storing handshake state
-	OnionKey            []byte             // Client's ephemeral onion key
-	EphemeralPrivate    [32]byte           // AUDIT-006: Client's ephemeral private key (for handshake)
-	EphemeralPublic     [32]byte           // AUDIT-006: Client's ephemeral public key
+	RendezvousCircuitID uint32             // Circuit ID for storing handshake state
+	OnionKey            []byte             // Legacy field; hs-ntor 用 EphemeralPublic
+	EphemeralPrivate    [32]byte           // Client's ephemeral private key x
+	EphemeralPublic     [32]byte           // Client's ephemeral public key X
+	Subcredential       []byte             // N_hs_subcred（32 字节）
 }
 
 // BuildIntroduce1Cell constructs an INTRODUCE1 cell for the introduction protocol
@@ -1789,78 +1791,61 @@ func (ip *IntroductionProtocol) BuildIntroduce1Cell(req *IntroduceRequest) ([]by
 	return buf.Bytes(), nil
 }
 
-// buildEncryptedData constructs the encrypted portion of INTRODUCE1
-// SPEC-006/SEC-M003: INTRODUCE1 encryption implementation
-// Implements ntor-based encryption per rend-spec-v3.txt §3.2.3
-//
-// The encryption process:
-// 1. Generate ephemeral client key pair (x, X)
-// 2. Perform Diffie-Hellman with introduction point's EncKey: shared = X25519(x, EncKey)
-// 3. Derive encryption keys using HKDF-SHA256
-// 4. Encrypt plaintext using AES-CTR
-// 5. Prepend client's ephemeral public key X for intro point to decrypt
-//
-// Wire format of encrypted data:
-//
-//	CLIENT_PK (32 bytes) || ENCRYPTED_DATA (variable length)
-//
-// Where ENCRYPTED_DATA contains:
-//
-//	RENDEZVOUS_COOKIE (20 bytes) || ONION_KEY (32 bytes) || LINK_SPECIFIERS (variable)
+// buildEncryptedData 构造 INTRODUCE1 的 ENCRYPTED = X || C || M（hs-ntor）。
 func (ip *IntroductionProtocol) buildEncryptedData(req *IntroduceRequest) ([]byte, error) {
-	// AUDIT-003: Validate required fields - no mock fallbacks
-	// Check IntroPoint first to avoid potential nil pointer issues
 	if req.IntroPoint == nil {
 		return nil, fmt.Errorf("introduction point is required")
 	}
 	if len(req.IntroPoint.EncKey) != 32 {
 		return nil, fmt.Errorf("introduction point encryption key must be 32 bytes, got %d", len(req.IntroPoint.EncKey))
 	}
-	if len(req.OnionKey) == 0 {
-		return nil, fmt.Errorf("onion key is required for INTRODUCE1 cell")
+	if len(req.IntroPoint.AuthKey) != 32 {
+		return nil, fmt.Errorf("introduction point auth key must be 32 bytes")
+	}
+	if len(req.Subcredential) != 32 {
+		return nil, fmt.Errorf("subcredential must be 32 bytes")
 	}
 
-	// Build plaintext payload
-	var plaintext bytes.Buffer
-
-	// RENDEZVOUS_COOKIE (20 bytes)
-	plaintext.Write(req.RendezvousCookie)
-
-	// ONION_KEY (32 bytes for x25519)
-	plaintext.Write(req.OnionKey)
-
-	// LINK_SPECIFIERS for rendezvous point
-	// Format: N_SPEC [1 byte] || LINK_SPEC_1 || ... || LINK_SPEC_N
-	plaintext.WriteByte(0) // N_SPEC = 0 (simplified for current phase)
-
-	plaintextData := plaintext.Bytes()
-
-	// Encrypt the data using introduction point's encryption key
-	// AUDIT-006: Now captures the ephemeral private key for handshake verification
-	encryptedData, clientPubKey, clientPrivKey, err := ip.encryptIntroduce1Data(plaintextData, req.IntroPoint.EncKey)
+	xPriv, err := crypto.GenerateCurve25519PrivateKey()
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt INTRODUCE1 data: %w", err)
+		return nil, fmt.Errorf("generate ephemeral x: %w", err)
 	}
+	copy(req.EphemeralPrivate[:], xPriv)
 
-	// AUDIT-006: Store the ephemeral private key in the request for later use
-	// This will be used in CompleteRendezvous to verify the handshake
-	if req.RendezvousCircuitID > 0 && len(clientPrivKey) == 32 {
-		// Store the private key for handshake verification
-		copy(req.EphemeralPrivate[:], clientPrivKey)
-		copy(req.EphemeralPublic[:], clientPubKey)
+	// 明文：COOKIE || NSPEC=0 || ONION_KEY_TYPE/LEN/KEY || N_EXT=0
+	var plaintext bytes.Buffer
+	plaintext.Write(req.RendezvousCookie)
+	plaintext.WriteByte(0) // NSPEC
+	plaintext.WriteByte(0x00)
+	plaintext.Write([]byte{0x00, 0x20})
+	onionKey := req.OnionKey
+	if len(onionKey) != 32 {
+		onionKey = make([]byte, 32) // 占位；握手密钥在外层 X
 	}
+	plaintext.Write(onionKey)
+	plaintext.WriteByte(0)
 
-	// Build final encrypted payload: CLIENT_PK || ENCRYPTED_DATA
-	var result bytes.Buffer
-	result.Write(clientPubKey) // 32 bytes
-	result.Write(encryptedData)
+	// Header H（与 BuildIntroduce1Cell 前缀一致）
+	var header bytes.Buffer
+	header.Write(make([]byte, 20))
+	header.WriteByte(0x02)
+	header.Write([]byte{0x00, 0x20})
+	header.Write(req.IntroPoint.AuthKey)
+	header.WriteByte(0)
 
-	ip.logger.Debug("INTRODUCE1 data encrypted",
-		"plaintext_len", len(plaintextData),
-		"encrypted_len", len(encryptedData),
-		"total_len", result.Len())
+	encrypted, err := BuildIntroduce1Encrypted(
+		header.Bytes(), plaintext.Bytes(), xPriv,
+		req.IntroPoint.EncKey, req.IntroPoint.AuthKey, req.Subcredential,
+	)
+	if err != nil {
+		return nil, err
+	}
+	copy(req.EphemeralPublic[:], encrypted[:32])
 
-	return result.Bytes(), nil
+	ip.logger.Debug("INTRODUCE1 encrypted (hs-ntor)",
+		"plaintext_len", plaintext.Len(),
+		"encrypted_len", len(encrypted))
+	return encrypted, nil
 }
 
 // encryptIntroduce1Data encrypts the INTRODUCE1 data using the introduction point's public key

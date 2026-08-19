@@ -22,6 +22,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/path"
 	"github.com/opd-ai/go-tor/pkg/security"
+	"golang.org/x/crypto/curve25519"
 )
 
 // Service represents an onion service (hidden service) that can be hosted
@@ -633,11 +634,17 @@ func (s *Service) createDescriptor() error {
 		// In production, would add IPv4, IPv6, and fingerprint link specifiers
 		// For Phase 7.4, simplified
 
+		encPub := serviceIntro.EncKey
+		if len(serviceIntro.EncKey) == 32 {
+			if p, err := curve25519.X25519(serviceIntro.EncKey, curve25519.Basepoint); err == nil {
+				encPub = p
+			}
+		}
 		intro := IntroductionPoint{
 			LinkSpecifiers: linkSpecs,
 			OnionKey:       make([]byte, 32), // Would be relay's ntor key
 			AuthKey:        serviceIntro.AuthKey,
-			EncKey:         serviceIntro.EncKey,
+			EncKey:         encPub,
 			EncKeyCert:     nil, // Would be cross-certification
 			LegacyKeyID:    make([]byte, 20),
 		}

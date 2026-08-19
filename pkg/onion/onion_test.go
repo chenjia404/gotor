@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/crypto/curve25519"
 
+	"github.com/opd-ai/go-tor/pkg/crypto"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
@@ -1184,6 +1185,16 @@ func TestBuildIntroduce1Cell(t *testing.T) {
 	for i := range rendezvousCookie {
 		rendezvousCookie[i] = byte(i)
 	}
+	bPriv, err := crypto.GenerateCurve25519PrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bPub, err := curve25519.X25519(bPriv, curve25519.Basepoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subcred := make([]byte, 32)
+	subcred[0] = 0x42
 
 	tests := []struct {
 		name        string
@@ -1222,15 +1233,16 @@ func TestBuildIntroduce1Cell(t *testing.T) {
 			request: &IntroduceRequest{
 				IntroPoint: &IntroductionPoint{
 					AuthKey: make([]byte, 32),
-					EncKey:  make([]byte, 32), // Required for encryption
+					EncKey:  bPub,
 				},
 				RendezvousCookie: rendezvousCookie,
 				RendezvousPoint:  "test-rendezvous-point",
 				OnionKey:         make([]byte, 32),
+				Subcredential:    subcred,
 			},
 			wantErr:   false,
 			checkSize: true,
-			minSize:   75, // LEGACY_KEY_ID(20) + AUTH_KEY_TYPE(1) + AUTH_KEY_LEN(2) + AUTH_KEY(32) + EXT(1) + ENCRYPTED(>=20)
+			minSize:   75,
 		},
 		{
 			name: "request without auth key - should fail",
@@ -1259,17 +1271,17 @@ func TestBuildIntroduce1Cell(t *testing.T) {
 			errContains: "introduction point encryption key must be 32 bytes",
 		},
 		{
-			name: "request without onion key - should fail",
+			name: "request without onion key - still ok (X generated)",
 			request: &IntroduceRequest{
 				IntroPoint: &IntroductionPoint{
 					AuthKey: make([]byte, 32),
-					EncKey:  make([]byte, 32),
+					EncKey:  bPub,
 				},
 				RendezvousCookie: rendezvousCookie,
 				RendezvousPoint:  "test-rendezvous-point",
+				Subcredential:    subcred,
 			},
-			wantErr:     true,
-			errContains: "onion key is required",
+			wantErr: false,
 		},
 	}
 
@@ -1488,16 +1500,27 @@ func TestIntroduce1CellFormat(t *testing.T) {
 	for i := range rendezvousCookie {
 		rendezvousCookie[i] = byte(i)
 	}
+	bPriv, err := crypto.GenerateCurve25519PrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bPub, err := curve25519.X25519(bPriv, curve25519.Basepoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subcred := make([]byte, 32)
+	subcred[0] = 1
 
-	// AUDIT-003: Include all required fields (AuthKey, EncKey, OnionKey)
+	// AUDIT-003: Include all required fields (AuthKey, EncKey, OnionKey, Subcredential)
 	req := &IntroduceRequest{
 		IntroPoint: &IntroductionPoint{
 			AuthKey: make([]byte, 32),
-			EncKey:  make([]byte, 32),
+			EncKey:  bPub,
 		},
 		RendezvousCookie: rendezvousCookie,
 		RendezvousPoint:  "test-rp",
 		OnionKey:         make([]byte, 32),
+		Subcredential:    subcred,
 	}
 
 	data, err := intro.BuildIntroduce1Cell(req)
@@ -2296,6 +2319,7 @@ func TestBuildEncryptedDataWithEncryption(t *testing.T) {
 		RendezvousCookie: rendezvousCookie,
 		RendezvousPoint:  "test-rendezvous",
 		OnionKey:         onionKey,
+		Subcredential:    make([]byte, 32),
 	}
 
 	// Build encrypted data
@@ -2304,10 +2328,8 @@ func TestBuildEncryptedDataWithEncryption(t *testing.T) {
 		t.Fatalf("buildEncryptedData failed: %v", err)
 	}
 
-	// Verify result contains: CLIENT_PK (32 bytes) + ENCRYPTED_DATA
-	// Plaintext would be: RENDEZVOUS_COOKIE (20) + ONION_KEY (32) + N_SPEC (1) = 53 bytes
-	// With encryption: CLIENT_PK (32) + ENCRYPTED (53) = 85 bytes
-	expectedMinLen := 32 + 53 // CLIENT_PK + encrypted payload
+	// hs-ntor: X(32) + C + M(32)；明文约 53 字节
+	expectedMinLen := 32 + 53 + 32
 	if len(result) < expectedMinLen {
 		t.Errorf("Encrypted result length = %d, want >= %d", len(result), expectedMinLen)
 	}
@@ -2488,6 +2510,8 @@ func TestEncryptionIntegration(t *testing.T) {
 		t.Fatalf("Failed to generate auth key: %v", err)
 	}
 
+	subcred := make([]byte, 32)
+	subcred[3] = 9
 	req := &IntroduceRequest{
 		IntroPoint: &IntroductionPoint{
 			EncKey:  introPointPublic[:],
@@ -2496,6 +2520,7 @@ func TestEncryptionIntegration(t *testing.T) {
 		RendezvousCookie: rendezvousCookie,
 		RendezvousPoint:  "test-rendezvous-point",
 		OnionKey:         onionKey,
+		Subcredential:    subcred,
 	}
 
 	// Build INTRODUCE1 cell
