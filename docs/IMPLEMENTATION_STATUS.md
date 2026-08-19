@@ -3,7 +3,7 @@
 **日期**：2026-08-19  
 **分支**：`cursor/path-fast-middleonly-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + **现行** Tor Spec / C Tor / Arti 为准。  
-**与官方差距（客户端 / 中继 / 洋葱托管 / 网桥 / 控制口 + 后续清单）**：见 [`COMPAT_WITH_OFFICIAL_TOR.md`](COMPAT_WITH_OFFICIAL_TOR.md)。
+**与官方差距（客户端 / 中继 / 洋葱托管 / 网桥 / 控制口 + 后续清单 + Arti 新特性追踪）**：见 [`COMPAT_WITH_OFFICIAL_TOR.md`](COMPAT_WITH_OFFICIAL_TOR.md)。
 
 状态定义：
 
@@ -65,7 +65,7 @@
 
 ## 未完成（给后续 AI，按最新 Tor 优先）
 
-与官方 C Tor / Arti 的角色对照和按优先级清单见 [`COMPAT_WITH_OFFICIAL_TOR.md`](COMPAT_WITH_OFFICIAL_TOR.md)。
+与官方 C Tor / Arti 的角色对照、按优先级清单、以及 Arti 新特性追踪见 [`COMPAT_WITH_OFFICIAL_TOR.md`](COMPAT_WITH_OFFICIAL_TOR.md)。
 
 下列是**还没做完**、需要按现行 spec / C Tor / Arti 继续实现的项。不要把骨架或 mock 标成 WORKING。
 
