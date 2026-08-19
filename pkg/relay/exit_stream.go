@@ -721,5 +721,5 @@ func parseBeginAddr(data []byte) (host string, port uint16, flags uint32, err er
 	if err != nil || p < 1 || p > 65535 {
 		return "", 0, 0, fmt.Errorf("bad port")
 	}
-	return h, uint16(p), flags, nil
+	return h, uint16(p), flags, nil // #nosec G115 -- 已校验 1..65535
 }

@@ -125,9 +125,10 @@ func encodeResolvedHostname(host string, ttl uint32) []byte {
 	if len(host) > 255 {
 		host = host[:255]
 	}
-	rec := make([]byte, 2+len(host)+4)
+	n := len(host)
+	rec := make([]byte, 2+n+4)
 	rec[0] = circuit.DNSTypeHostname
-	rec[1] = byte(len(host))
+	rec[1] = byte(n) // #nosec G115 -- 已截断 ≤255
 	copy(rec[2:], host)
 	binary.BigEndian.PutUint32(rec[2+len(host):], ttl)
 	return rec
@@ -144,9 +145,10 @@ func encodeResolvedError(transient bool, msg string) []byte {
 	if transient {
 		typ = circuit.DNSTypeError
 	}
-	rec := make([]byte, 2+len(msg)+4)
+	n := len(msg)
+	rec := make([]byte, 2+n+4)
 	rec[0] = typ
-	rec[1] = byte(len(msg))
+	rec[1] = byte(n) // #nosec G115 -- 已截断 ≤255
 	copy(rec[2:], msg)
 	binary.BigEndian.PutUint32(rec[2+len(msg):], 0)
 	return rec

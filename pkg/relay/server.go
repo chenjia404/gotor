@@ -139,12 +139,12 @@ func (s *Server) startPublisher(ctx context.Context) error {
 		dcfg := &DescriptorConfig{
 			Nickname:        s.cfg.Nickname,
 			Address:         s.cfg.RelayAddress,
-			ORPort:          uint16(s.cfg.ORPort),
-			DirPort:         uint16(s.cfg.DirPort),
+			ORPort:          portToUint16(s.cfg.ORPort),
+			DirPort:         portToUint16(s.cfg.DirPort),
 			Contact:         s.cfg.ContactInfo,
 			Family:          append([]string(nil), s.cfg.MyFamily...),
-			BandwidthAvg:    uint64(s.cfg.RelayBandwidthRate),
-			BandwidthBurst:  uint64(s.cfg.RelayBandwidthBurst),
+			BandwidthAvg:    nonNegUint64(s.cfg.RelayBandwidthRate),
+			BandwidthBurst:  nonNegUint64(s.cfg.RelayBandwidthBurst),
 			Uptime:          int(time.Since(s.startedAt).Seconds()),
 			ExitPolicyLines: s.policy.DescriptorLines(),
 			IPv6Policy:      s.policy.IPv6PolicyLine(),
@@ -202,4 +202,21 @@ func (s *Server) Fingerprint() string {
 		return ""
 	}
 	return s.keys.Fingerprint()
+}
+
+func portToUint16(p int) uint16 {
+	if p <= 0 {
+		return 0
+	}
+	if p > 65535 {
+		return 65535
+	}
+	return uint16(p) // #nosec G115 -- 已限制在 0..65535
+}
+
+func nonNegUint64(v int64) uint64 {
+	if v <= 0 {
+		return 0
+	}
+	return uint64(v) // #nosec G115 -- 负值已归零
 }
