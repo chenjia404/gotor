@@ -29,7 +29,7 @@ func cloneDigest(tag []byte) []byte {
 // 记下该 cell 的 20 字节滚动摘要，供对端电路级 SENDME v1 校验。
 // 对照 spec flow-control 与 C Tor sendme_record_cell_digest_on_circ。
 func (c *Circuit) maybeRecordSendmeTag(tag []byte) {
-	if len(tag) != cell.SendmeV1DigestLen {
+	if len(tag) != cell.SendmeV1DigestLen && len(tag) != cell.SendmeCGOTagLen {
 		return
 	}
 	c.mu.Lock()
@@ -111,7 +111,7 @@ func (c *Circuit) decrementPackageWindowForSendme() (record bool, err error) {
 }
 
 func (c *Circuit) recordSendmeTag(tag []byte) {
-	if len(tag) != cell.SendmeV1DigestLen {
+	if len(tag) != cell.SendmeV1DigestLen && len(tag) != cell.SendmeCGOTagLen {
 		return
 	}
 	c.mu.Lock()
@@ -184,8 +184,8 @@ func (c *Circuit) processCircuitSendme(payload []byte) error {
 }
 
 func (c *Circuit) sendCircuitSendme(tag []byte) error {
-	if len(tag) != cell.SendmeV1DigestLen {
-		return fmt.Errorf("missing SENDME v1 digest")
+	if len(tag) != cell.SendmeV1DigestLen && len(tag) != cell.SendmeCGOTagLen {
+		return fmt.Errorf("missing SENDME v1 tag")
 	}
 	payload, err := cell.EncodeSendmeV1(tag)
 	if err != nil {

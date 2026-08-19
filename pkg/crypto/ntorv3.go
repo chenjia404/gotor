@@ -12,7 +12,8 @@
 //	ID_LEN   = 32（KP_relayid_ed）
 //
 // 电路密钥从 KDF_final 的 KEYSTREAM 取出（跳过 32 字节 ENC_KEY）：
-// Df(20) || Db(20) || Kf(16) || Kb(16)。
+// tor1：Df(20) || Db(20) || Kf(16) || Kb(16) = 72。
+// CGO：fwd(80) || back(80) = 160（C Tor CGO_AES_BITS=128）。
 //
 // C Tor: src/core/crypto/onion_ntor_v3.c
 // Arti: crates/tor-proto/src/crypto/handshake/ntor_v3.rs
@@ -55,8 +56,9 @@ var NtorV3CircuitVerification = []byte("circuit extend")
 
 // NtorV3ExtType 是握手加密附加数据里的扩展类型。
 const (
-	NtorV3ExtCCRequest  uint8 = 1
-	NtorV3ExtCCResponse uint8 = 2
+	NtorV3ExtCCRequest       uint8 = 1
+	NtorV3ExtCCResponse      uint8 = 2
+	NtorV3ExtSubprotoRequest uint8 = 3 // proposal 346 / RELAY_NEGOTIATE_SUBPROTO
 )
 
 // NtorV3Extension 是 ntor-v3 CM/SM 里的一条扩展。
@@ -67,12 +69,13 @@ type NtorV3Extension struct {
 
 // NtorV3ClientState 保存客户端第一阶段状态，供处理 CREATED2/EXTENDED2。
 type NtorV3ClientState struct {
-	x      [32]byte
-	X      [32]byte
-	B      [32]byte
-	ID     []byte
-	Bx     [32]byte
-	msgMAC []byte
+	x              [32]byte
+	X              [32]byte
+	B              [32]byte
+	ID             []byte
+	Bx             [32]byte
+	msgMAC         []byte
+	keyMaterialLen int // 0 表示 72（tor1）；CGO 为 160
 }
 
 func ntorV3Encap(s []byte) []byte {
@@ -272,6 +275,13 @@ func ntorV3ClientHandshakeWithKey(edID, onionKey, verification, clientMsg, priv 
 	return skin, st, nil
 }
 
+// SetKeyMaterialLen 在发出 type 3 请求 CGO 后把 KDF 长度设为 160。
+func (s *NtorV3ClientState) SetKeyMaterialLen(n int) {
+	if s != nil {
+		s.keyMaterialLen = n
+	}
+}
+
 // NtorV3ProcessResponse 校验 AUTH 并导出 72 字节电路密钥与服务端 SM。
 func NtorV3ProcessResponse(reply []byte, st *NtorV3ClientState, verification []byte) (keyMaterial, serverMsg []byte, err error) {
 	if st == nil {
@@ -323,7 +333,11 @@ func NtorV3ProcessResponse(reply []byte, st *NtorV3ClientState, verification []b
 		return nil, nil, fmt.Errorf("ntor-v3 AUTH verification failed")
 	}
 
-	raw := ntorV3KDF(ntorV3TFinal, keySeed, NtorV3EncKeyLen+NtorV3KeyMaterialLen)
+	keyLen := NtorV3KeyMaterialLen
+	if st.keyMaterialLen > 0 {
+		keyLen = st.keyMaterialLen
+	}
+	raw := ntorV3KDF(ntorV3TFinal, keySeed, NtorV3EncKeyLen+keyLen)
 	encKey := raw[:NtorV3EncKeyLen]
 	keyMaterial = append([]byte(nil), raw[NtorV3EncKeyLen:]...)
 	serverMsg, err = ntorV3AESCTR(encKey, encSM)

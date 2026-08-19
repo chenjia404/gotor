@@ -94,3 +94,19 @@ func (r *Relay) RequestCongestionControl() bool {
 	}
 	return r.Protocols.Supports("FlowCtrl", 2)
 }
+
+// SupportsSubprotoRequest 表示对端宣告 Relay=5（RELAY_NEGOTIATE_SUBPROTO）。
+func (r *Relay) SupportsSubprotoRequest() bool {
+	if r == nil {
+		return false
+	}
+	return r.Protocols.Supports("Relay", 5)
+}
+
+// Supports 把 Relay 当作 crypto.ProtoSupport，供 SelectSubprotoRequest 使用。
+func (r *Relay) Supports(name string, ver int) bool {
+	if r == nil {
+		return false
+	}
+	return r.Protocols.Supports(name, ver)
+}

@@ -42,6 +42,7 @@ type Extension struct {
 	handshakeType    HandshakeType
 	ntorv3State      *crypto.NtorV3ClientState
 	requestCC        bool
+	requestCGO       bool
 }
 
 // NewExtension creates a new circuit extension handler
@@ -202,6 +203,16 @@ func requestCCFor(relay interface{}) bool {
 	return false
 }
 
+func subprotoCapsFor(relay interface{}) ([]crypto.SubprotoCap, error) {
+	type advertiser interface {
+		crypto.ProtoSupport
+	}
+	if r, ok := relay.(advertiser); ok {
+		return crypto.SelectSubprotoRequest(r)
+	}
+	return nil, nil
+}
+
 func (e *Extension) generateHandshakeData(handshakeType HandshakeType) ([]byte, error) {
 	e.handshakeType = handshakeType
 	switch handshakeType {
@@ -213,13 +224,33 @@ func (e *Extension) generateHandshakeData(handshakeType HandshakeType) ([]byte, 
 		e.serverIdentity = append([]byte(nil), edID...)
 		e.serverNtorKey = append([]byte(nil), ntorKey...)
 		e.requestCC = requestCCFor(e.targetRelay)
-		cm := crypto.EncodeNtorV3Extensions(nil)
-		if e.requestCC {
-			cm = crypto.EncodeCCRequest()
+		caps, err := subprotoCapsFor(e.targetRelay)
+		if err != nil {
+			return nil, fmt.Errorf("subproto_request selection: %w", err)
+		}
+		if len(caps) > 0 && !e.requestCC {
+			return nil, fmt.Errorf("CGO requires FlowCtrl=2")
+		}
+		e.requestCGO = false
+		for _, cap := range caps {
+			if cap.ProtocolID == crypto.ProtoRelay && cap.Cap == crypto.CapRelayCGO {
+				e.requestCGO = true
+			}
+		}
+		cm, err := crypto.EncodeNtorV3ClientMsg(e.requestCC, caps)
+		if err != nil {
+			return nil, fmt.Errorf("ntor-v3 client extensions: %w", err)
+		}
+		if len(caps) > 0 {
+			e.logger.Info("Requesting ntor-v3 subproto capabilities",
+				"circuit_id", e.circuit.ID, "caps", caps)
 		}
 		skin, st, err := crypto.NtorV3ClientHandshake(edID, ntorKey, crypto.NtorV3CircuitVerification, cm)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate ntor-v3 handshake: %w", err)
+		}
+		if e.requestCGO {
+			st.SetKeyMaterialLen(crypto.CGOKeyMaterialLen)
 		}
 		e.ntorv3State = st
 		return skin, nil
@@ -634,7 +665,11 @@ func (e *Extension) finishHandshake(handshakeResponse []byte) error {
 			return fmt.Errorf("ntor handshake verification failed: %w", err)
 		}
 	}
-	if len(keyMaterial) < 72 {
+	if e.requestCGO {
+		if len(keyMaterial) != crypto.CGOKeyMaterialLen {
+			return fmt.Errorf("CGO requested: key material %d, want %d (refusing AES-CTR fallback)", len(keyMaterial), crypto.CGOKeyMaterialLen)
+		}
+	} else if len(keyMaterial) < 72 {
 		return fmt.Errorf("insufficient key material: got %d bytes, need 72", len(keyMaterial))
 	}
 	hop, err := e.deriveHopFromKeyMaterial(keyMaterial)
@@ -654,6 +689,9 @@ func (e *Extension) finishHandshake(handshakeResponse []byte) error {
 			e.logger.Info("Negotiated FlowCtrl=2", "sendme_inc", inc)
 		}
 	}
+	if e.requestCGO {
+		e.logger.Info("Negotiated Relay=6 CGO", "circuit_id", e.circuit.ID)
+	}
 	return nil
 }
 
@@ -664,6 +702,23 @@ func (e *Extension) finishHandshake(handshakeResponse []byte) error {
 // - Kf (16 bytes): forward cipher key (AES-128)
 // - Kb (16 bytes): backward cipher key (AES-128)
 func (e *Extension) deriveHopFromKeyMaterial(keyMaterial []byte) (*Hop, error) {
+	if e.requestCGO {
+		pair, err := crypto.NewCGOPairFromKeyMaterial(keyMaterial)
+		if err != nil {
+			return nil, err
+		}
+		hop := &Hop{CGO: pair}
+		if relay, ok := e.targetRelay.(interface{ String() string }); ok {
+			hop.Address = relay.String()
+		}
+		if relay, ok := e.targetRelay.(interface{ GetFingerprintHex() string }); ok {
+			hop.Fingerprint = relay.GetFingerprintHex()
+		}
+		e.logger.Info("Derived CGO hop",
+			"circuit_id", e.circuit.ID,
+			"key_len", len(keyMaterial))
+		return hop, nil
+	}
 	if len(keyMaterial) < 72 {
 		return nil, fmt.Errorf("insufficient key material: got %d bytes, need 72", len(keyMaterial))
 	}
