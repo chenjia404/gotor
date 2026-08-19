@@ -3,6 +3,7 @@ package circuit
 import (
 	"bytes"
 	"crypto/sha1"
+	"fmt"
 	"testing"
 	"time"
 
@@ -215,6 +216,59 @@ func TestSendRelayCellWaitsForPackageWindow(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("sender did not wake after package window increment")
+	}
+}
+
+type soakFailSender struct{}
+
+func (soakFailSender) SendCell(*cell.Cell) error { return fmt.Errorf("send fail") }
+
+func TestSendRelayCellRefundsWindowOnSendFail(t *testing.T) {
+	c := NewCircuit(1)
+	if err := c.AddHop(&Hop{Fingerprint: "E"}); err != nil {
+		t.Fatal(err)
+	}
+	c.SetConnection(soakFailSender{})
+	c.SetState(StateOpen)
+	want := c.packageWindow
+	rc, err := cell.NewRelayCell(1, cell.RelayData, []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SendRelayCell(rc); err == nil {
+		t.Fatal("send must fail")
+	}
+	if c.packageWindow != want {
+		t.Fatalf("send fail leaked window: got %d want %d", c.packageWindow, want)
+	}
+	if _, queued := c.SendmeStats(); queued != 0 {
+		t.Fatal("unsent DATA must not enqueue a SENDME tag")
+	}
+}
+
+func TestCloseWakesPackageWindowWaiter(t *testing.T) {
+	c := NewCircuit(1)
+	if err := c.AddHop(&Hop{Fingerprint: "E"}); err != nil {
+		t.Fatal(err)
+	}
+	c.SetConnection(&soakCellSender{})
+	c.SetState(StateOpen)
+	c.packageWindow = 0
+	rc, err := cell.NewRelayCell(1, cell.RelayData, []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.SendRelayCell(rc) }()
+	time.Sleep(30 * time.Millisecond)
+	c.Close()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Close must unblock waiter with an error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close must wake package-window waiter")
 	}
 }
 

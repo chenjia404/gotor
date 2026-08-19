@@ -2,8 +2,8 @@ package circuit
 
 import (
 	"crypto/subtle"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
@@ -15,6 +15,9 @@ const (
 	packageWindowWait   = 2 * time.Minute
 	sendWakePoll        = 25 * time.Millisecond
 )
+
+// ErrWindowExhausted 表示电路或流的发送窗用尽，发送方应等待 SENDME。
+var ErrWindowExhausted = errors.New("package window exhausted")
 
 type sendmePending struct {
 	digest []byte
@@ -100,14 +103,14 @@ func (c *Circuit) decrementPackageWindowForSendme() (record bool, err error) {
 	defer c.mu.Unlock()
 	if c.vegas != nil {
 		if c.vegas.inflight >= c.vegas.cwnd {
-			return false, fmt.Errorf("package window exhausted: cannot send more cells until SENDME received")
+			return false, fmt.Errorf("%w: cannot send more cells until SENDME received", ErrWindowExhausted)
 		}
 		c.vegas.inflight++
 		c.packageWindow = c.vegas.packageWindow()
 		return c.vegas.inflight%c.vegas.sendmeInc == 0, nil
 	}
 	if c.packageWindow <= 0 {
-		return false, fmt.Errorf("package window exhausted: cannot send more cells until SENDME received")
+		return false, fmt.Errorf("%w: cannot send more cells until SENDME received", ErrWindowExhausted)
 	}
 	c.packageWindow--
 	return c.packageWindow%c.sendmeIncrementLocked() == 0, nil
@@ -215,7 +218,7 @@ func (c *Circuit) wakeSenders() {
 }
 
 func isPackageWindowExhausted(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "window exhausted")
+	return errors.Is(err, ErrWindowExhausted)
 }
 
 func (c *Circuit) refundPackageWindow() {
@@ -229,6 +232,39 @@ func (c *Circuit) refundPackageWindow() {
 		return
 	}
 	c.packageWindow++
+}
+
+func (c *Circuit) refundStreamPackageWindow(streamID uint16) {
+	c.mu.RLock()
+	mgr := c.streamManager
+	c.mu.RUnlock()
+	if mgr == nil {
+		return
+	}
+	type streamGetter interface {
+		GetStream(uint16) (interface{}, error)
+	}
+	getter, ok := mgr.(streamGetter)
+	if !ok {
+		return
+	}
+	streamIface, err := getter.GetStream(streamID)
+	if err != nil {
+		return
+	}
+	type streamRefunder interface {
+		RefundPackageWindow()
+	}
+	if s, ok := streamIface.(streamRefunder); ok {
+		s.RefundPackageWindow()
+	}
+}
+
+func (c *Circuit) refundReservedWindows(streamID uint16, destCGO bool) {
+	c.refundPackageWindow()
+	if !destCGO && streamID > 0 {
+		c.refundStreamPackageWindow(streamID)
+	}
 }
 
 func (c *Circuit) waitForSendWake(deadline time.Time) error {

@@ -436,7 +436,7 @@ func (s *Stream) DecrementPackageWindow() error {
 	defer s.mu.Unlock()
 
 	if s.packageWindow <= 0 {
-		return fmt.Errorf("stream package window exhausted: cannot send more cells until SENDME received")
+		return fmt.Errorf("%w: cannot send more cells until SENDME received", circuit.ErrWindowExhausted)
 	}
 
 	s.packageWindow--
@@ -452,6 +452,13 @@ func (s *Stream) IncrementPackageWindow() {
 	// Per tor-spec.txt §7.4, each stream SENDME increments the window by 50
 	s.packageWindow += 50
 	s.sendmeSent++
+}
+
+// RefundPackageWindow 在预留流窗后发送失败时退还一格，不是收到 SENDME。
+func (s *Stream) RefundPackageWindow() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.packageWindow++
 }
 
 // DecrementDeliverWindow decrements the stream-level deliver window

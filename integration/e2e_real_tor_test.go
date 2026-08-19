@@ -410,7 +410,8 @@ func soakDownload(t *testing.T, httpClient *http.Client, url string) (int64, err
 	return n, nil
 }
 
-// TestRealFlowControlSoak10MB 单客户端连续下载至少 10MB，覆盖多次 SENDME 与 window=0 等待。
+// TestRealFlowControlSoak10MB 连续下载至少 10MB，覆盖多次电路级 SENDME。
+// 每轮 GET 是新流；单流 window=0 由单元测试覆盖。
 func TestRealFlowControlSoak10MB(t *testing.T) {
 	requireRealTor(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)

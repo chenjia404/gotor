@@ -165,6 +165,9 @@ func NewCircuit(id uint32) *Circuit {
 
 // NotifyDestroyed 由连接 mux 在收到 DESTROY 时调用，打断 RELAY 等待。
 func (c *Circuit) NotifyDestroyed(reason byte) {
+	if c == nil || c.destroyCh == nil {
+		return
+	}
 	c.destroyOnce.Do(func() {
 		c.mu.Lock()
 		c.destroyReason = reason
@@ -253,6 +256,9 @@ func (c *Circuit) Close() {
 		c.relayReceiveChan = nil
 	}
 	c.mu.Unlock()
+
+	c.NotifyDestroyed(0)
+	c.wakeSenders()
 
 	if set != nil {
 		set.onLegClosed(c)
@@ -879,7 +885,7 @@ func (c *Circuit) decrementPackageWindow() error {
 
 	if c.vegas != nil {
 		if c.vegas.inflight >= c.vegas.cwnd {
-			return fmt.Errorf("package window exhausted: cannot send more cells until SENDME received")
+			return fmt.Errorf("%w: cannot send more cells until SENDME received", ErrWindowExhausted)
 		}
 		c.vegas.inflight++
 		c.packageWindow = c.vegas.packageWindow()
@@ -887,7 +893,7 @@ func (c *Circuit) decrementPackageWindow() error {
 	}
 
 	if c.packageWindow <= 0 {
-		return fmt.Errorf("package window exhausted: cannot send more cells until SENDME received")
+		return fmt.Errorf("%w: cannot send more cells until SENDME received", ErrWindowExhausted)
 	}
 
 	c.packageWindow--
@@ -1184,6 +1190,7 @@ func (c *Circuit) sendRelayCellLocal(relayCell *cell.RelayCell) error {
 	// Check flow control for DATA cells
 	// Per tor-spec.txt §7.4, only DATA cells count against the package window
 	recordSendme := false
+	reserved := false
 	if relayCell.Command == cell.RelayData {
 		// window=0 时等待 SENDME，而不是立刻失败（大上传 / Vegas cwnd 用尽）。
 		var err error
@@ -1191,13 +1198,29 @@ func (c *Circuit) sendRelayCellLocal(relayCell *cell.RelayCell) error {
 		if err != nil {
 			return err
 		}
+		reserved = true
+	}
+
+	// 等待期间电路可能已关；重新取 conn/state，失败则退还已预留窗口。
+	c.mu.Lock()
+	conn = c.conn
+	state = c.State
+	c.mu.Unlock()
+
+	refund := func() {
+		if reserved {
+			c.refundReservedWindows(relayCell.StreamID, destCGO)
+			reserved = false
+		}
 	}
 
 	if state != StateOpen && state != StateBuilding {
+		refund()
 		return fmt.Errorf("circuit not usable: state=%s", state)
 	}
 
 	if conn == nil {
+		refund()
 		return fmt.Errorf("circuit has no connection")
 	}
 
@@ -1206,23 +1229,27 @@ func (c *Circuit) sendRelayCellLocal(relayCell *cell.RelayCell) error {
 	if destCGO {
 		payload, err = cell.EncodeRelayCellV1(relayCell)
 		if err != nil {
+			refund()
 			return fmt.Errorf("failed to encode v1 relay cell: %w", err)
 		}
 		end := cell.V1MessageEnd(payload)
 		if end+4 < len(payload) {
 			if _, err := rand.Read(payload[end+4:]); err != nil {
+				refund()
 				return fmt.Errorf("failed to randomize v1 padding: %w", err)
 			}
 		}
 	} else {
 		payload, err = relayCell.Encode()
 		if err != nil {
+			refund()
 			return fmt.Errorf("failed to encode relay cell: %w", err)
 		}
 		if relayCell.Command == cell.RelayData {
 			padStart := cell.RelayCellHeaderLen + int(relayCell.Length)
 			if padStart < len(payload) {
 				if _, err := rand.Read(payload[padStart:]); err != nil {
+					refund()
 					return fmt.Errorf("failed to randomize DATA padding: %w", err)
 				}
 			}
@@ -1239,14 +1266,11 @@ func (c *Circuit) sendRelayCellLocal(relayCell *cell.RelayCell) error {
 	if dest >= 0 {
 		encryptedPayload, forwardTag, err = c.encryptOnion(byte(cmd), dest, payload)
 		if err != nil {
+			refund()
 			return fmt.Errorf("onion encrypt: %w", err)
 		}
 	} else {
 		encryptedPayload = payload
-	}
-
-	if recordSendme {
-		c.recordSendmeTag(forwardTag)
 	}
 
 	cellToSend := &cell.Cell{
@@ -1261,11 +1285,18 @@ func (c *Circuit) sendRelayCellLocal(relayCell *cell.RelayCell) error {
 	}
 	sender, ok := conn.(cellSender)
 	if !ok {
+		refund()
 		return fmt.Errorf("connection does not support SendCell")
 	}
 
 	if err := sender.SendCell(cellToSend); err != nil {
+		refund()
 		return fmt.Errorf("failed to send cell: %w", err)
+	}
+
+	// 只有真正发出去的 DATA 才入队 SENDME tag，避免未发送 cell 导致 FIFO 失配拆路。
+	if recordSendme {
+		c.recordSendmeTag(forwardTag)
 	}
 
 	// Record activity

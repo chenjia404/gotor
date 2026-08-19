@@ -504,6 +504,9 @@ func TestWriteBlockedHeuristic(t *testing.T) {
 	c.sendWaiters.Store(0)
 	c.lastWriteNs.Store(orconnSlowWrite.Nanoseconds())
 	if !c.WriteBlocked() {
-		t.Fatal("slow TLS write must report write-blocked")
+		t.Fatal("slow TLS write must report write-blocked once")
+	}
+	if c.WriteBlocked() {
+		t.Fatal("slow-write signal must be one-shot, not sticky")
 	}
 }
