@@ -350,7 +350,7 @@ func TestReadRequestProtocolCompliance(t *testing.T) {
 			addr:               net.ParseIP("fe80::1").To16(),
 			port:               443,
 			expectError:        false,
-			expectedTargetAddr: "fe80::1:443",
+			expectedTargetAddr: "[fe80::1]:443",
 			description:        "CONNECT to IPv6 should format address:port correctly",
 		},
 		{

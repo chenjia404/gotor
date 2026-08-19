@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/extend2-ipv6-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
+**分支**：`cursor/exit-policy-p6-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + **现行** Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -49,7 +49,7 @@
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family ID（Desc=4）未用 |
-| Exit policy | PARTIAL | 已解析 `p` 行并按端口过滤；完整策略与 IPv6 `p6` 未做 |
+| Exit policy | PARTIAL | 已解析 `p`/`p6` 与完整 accept/reject；IPv6 字面量按 p6 选路。真实验收待 `TestRealExitPolicyP6` |
 | Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
@@ -158,10 +158,15 @@
 
 #### 7. Exit policy IPv6 `p6` + 完整 `p` 行
 
-- **状态**：PARTIAL。已解析摘要 `p` 行并按端口过滤。
-- **未做**：完整 accept/reject 列表、`p6`、IPv6 出口选路。
-- **现有代码**：`pkg/directory` policy 解析；path selector
+- **状态**：PARTIAL（实现已接线；真实 microdesc / IPv6 选路待 `TestRealExitPolicyP6`）。
+- **已做**：
+  - microdesc / 共识解析 `p6`；缺 p6 ≡ `reject 1-65535`
+  - server descriptor 完整 `accept`/`reject`（CIDR、点分掩码、`[IPv6]`、`*`/`*4`/`*6`）；无匹配则接受
+  - `ipv6-policy` 摘要；`CanExitTo` 按地址族分流，IPv4 `*` 不得放行 IPv6
+  - `SelectPathFor` / Conflux / 预建补齐 microdesc 后按目标重选
+  - 电路绑定 ExitFilter；SOCKS IPv6 用 `[addr]:port`，池中按策略取电路
 - **验收**：选路不会把只放行 80 的 exit 用于 443；IPv6-only 目标走 `p6`。
+- **现有代码**：`pkg/directory/exitpolicy.go`、`exitrules.go`；`pkg/path`；`pkg/circuit/exitfilter.go`；`docs/interop/exit-policy.md`
 
 #### 8. Circuit padding machine（Padding=2 / proposal 302）
 
@@ -298,6 +303,7 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 
 - build 前 `FetchMicrodescriptorsFor`，缺 key 则失败。
 - 预建按端口 443 选 exit；禁止把非 Exit 当 fallback。
+- IPv6 字面量按 `p6` 选路；缺 p6 拒绝。完整 `accept`/`reject` 已解析。
 
 ---
 
@@ -338,7 +344,7 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 | `pkg/directory` microdesc / 共识验签 | digest、自生成证书、篡改必失败 | 运行 |
 | `pkg/protocol` CERTS type 7 | RSA→Ed25519 交叉签名；缺 type 2 / 篡改必失败 | 运行 |
 | `integration/link_test.go` | 真实 TLS+handshake / type 7 RSA | `-tags=integration` + `TOR_INTEGRATION_TEST=1` |
-| `integration/e2e_real_tor_test.go` | 共识验签 / ntor-v3 CREATE2 / 3-hop / IsTor / soak / RESOLVE / Conflux / EXTEND2 IPv6 | 同上 |
+| `integration/e2e_real_tor_test.go` | 共识验签 / ntor-v3 CREATE2 / 3-hop / IsTor / soak / RESOLVE / Conflux / EXTEND2 IPv6 / p6 选路 | 同上 |
 | `scripts/test-real-tor.sh` | 启动 client + socks5h curl | 手动 |
 
 ---

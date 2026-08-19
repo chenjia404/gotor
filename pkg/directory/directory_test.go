@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -118,6 +119,34 @@ p accept 80,443
 	}
 	if relays[0].CanExitToPort(25) {
 		t.Fatal("accept 80,443 should reject 25")
+	}
+}
+
+func TestParseConsensusExitPolicyP6(t *testing.T) {
+	consensusData := `network-status-version 3
+vote-status consensus
+r TestExit AAAAAAAAAAAAAAAAAAAAAA BBBBBBBBBBBBB 2024-01-01 00:00:00 192.168.1.2 9002 9030
+s Exit Fast Running Stable Valid
+p accept 80,443
+p6 accept 80
+`
+
+	client := NewClient(nil)
+	relays, err := client.parseConsensus(strings.NewReader(consensusData))
+	if err != nil {
+		t.Fatalf("parseConsensus() error = %v", err)
+	}
+	if len(relays) != 1 {
+		t.Fatalf("got %d relays, want 1", len(relays))
+	}
+	if !relays[0].HasParsedIPv6Policy() {
+		t.Fatal("consensus p6 line was not parsed")
+	}
+	if relays[0].CanExitTo(net.ParseIP("2001:db8::1"), 443) {
+		t.Fatal("p6 accept 80 must not allow IPv6:443")
+	}
+	if !relays[0].CanExitTo(net.ParseIP("2001:db8::1"), 80) {
+		t.Fatal("p6 accept 80 should allow IPv6:80")
 	}
 }
 

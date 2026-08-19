@@ -137,7 +137,9 @@ type Relay struct {
 	MicrodescDigest string             // SHA256 digest of microdescriptor (base64, no padding)
 	Family          []string           // Relay family members (fingerprints) - Path Selection Enhancement
 	Bandwidth       uint64             // Advertised bandwidth in bytes/sec (from "w" line) - path-spec.txt §2.2
-	ExitPolicy      *ExitPolicySummary // 共识或 microdescriptor 的 p 行摘要
+	ExitPolicy      *ExitPolicySummary // 共识或 microdescriptor 的 p 行（IPv4 摘要）
+	ExitPolicyIPv6  *ExitPolicySummary // microdescriptor 的 p6 / descriptor 的 ipv6-policy
+	ExitRules       *ExitPolicy        // server descriptor 完整 accept/reject 列表
 	Protocols       ProtoVersions      // 共识 pr 行（Relay=4 / FlowCtrl=2）
 }
 
@@ -567,10 +569,14 @@ func (c *Client) parseConsensusWithMetadata(r io.Reader) ([]*Relay, *ConsensusMe
 			currentRelay.Protocols = ParseProtoLine(line)
 		}
 
-		// Parse "p" lines (IPv4 exit policy summary) — ns consensus; microdesc 共识通常把 p 放在 microdescriptor。
-		if strings.HasPrefix(line, "p ") && currentRelay != nil {
+		// Parse "p" / "p6" 摘要。microdesc 共识通常把策略放在 microdescriptor。
+		if currentRelay != nil && (strings.HasPrefix(line, "p ") || strings.HasPrefix(line, "p6 ")) {
 			if pol, err := ParseExitPolicySummary(line); err == nil {
-				currentRelay.ExitPolicy = pol
+				if strings.HasPrefix(line, "p6 ") {
+					currentRelay.ExitPolicyIPv6 = pol
+				} else {
+					currentRelay.ExitPolicy = pol
+				}
 			} else {
 				c.logger.Debug("Failed to parse exit policy summary", "error", err, "line", line)
 			}

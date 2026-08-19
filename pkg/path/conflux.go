@@ -66,6 +66,11 @@ func identityIn(r *directory.Relay, others ...*directory.Relay) bool {
 // SelectConfluxPath 选一条三跳均宣告 Conflux 且 FlowCtrl=2 的路径，供第一腿使用。
 // 选不出合格 hop 时返回错误，调用方应回退普通 SelectPath，且不得标成 Conflux。
 func (s *Selector) SelectConfluxPath(exitPort int) (*Path, error) {
+	return s.SelectConfluxPathFor(ExitTarget{Port: exitPort})
+}
+
+// SelectConfluxPathFor 与 SelectConfluxPath 相同，但按目的地址族过滤 exit。
+func (s *Selector) SelectConfluxPathFor(target ExitTarget) (*Path, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -77,7 +82,7 @@ func (s *Selector) SelectConfluxPath(exitPort int) (*Path, error) {
 	if err != nil {
 		return nil, err
 	}
-	exit, err := s.selectConfluxExit(exitPort, guard)
+	exit, err := s.selectConfluxExit(target, guard)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +123,7 @@ func (s *Selector) selectConfluxGuardFrom(first *Path) (*directory.Relay, error)
 	return candidates[idx], nil
 }
 
-func (s *Selector) selectConfluxExit(port int, avoid *directory.Relay) (*directory.Relay, error) {
+func (s *Selector) selectConfluxExit(target ExitTarget, avoid *directory.Relay) (*directory.Relay, error) {
 	exits := make([]*directory.Relay, 0)
 	for _, relay := range s.relays {
 		if !confluxHopOK(relay) {
@@ -127,12 +132,12 @@ func (s *Selector) selectConfluxExit(port int, avoid *directory.Relay) (*directo
 		if avoid != nil && (sameRelayIdentity(relay, avoid) || relay.InSameFamily(avoid) || relay.InSameSubnet(avoid)) {
 			continue
 		}
-		if relay.CanExitToPort(port) {
+		if relay.AllowsExitTarget(target.Port, target.IP) {
 			exits = append(exits, relay)
 		}
 	}
 	if len(exits) == 0 {
-		return nil, fmt.Errorf("no Conflux-capable exit for port %d", port)
+		return nil, fmt.Errorf("no Conflux-capable exit for %s", target)
 	}
 	idx, err := weightedRandomIndex(exits)
 	if err != nil {

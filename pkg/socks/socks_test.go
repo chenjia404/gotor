@@ -1076,18 +1076,12 @@ func TestSOCKS5IPv6Request(t *testing.T) {
 		t.Fatalf("Failed to read reply: %v", err)
 	}
 
-	// Check reply - IPv6 addresses are parsed correctly from SOCKS5 wire format,
-	// but the current implementation has a known issue with formatting IPv6:port
-	// (it produces "::1:80" instead of "[::1]:80" which net.SplitHostPort can't parse)
-	// This test verifies the SOCKS5 protocol handling for IPv6 address type (0x04)
+	// IPv6 目标已格式化为 [addr]:port；无电路池时仍应失败，但不得因 SplitHostPort 解析失败。
 	if reply[0] != 0x05 {
 		t.Errorf("Expected SOCKS version 5, got %d", reply[0])
 	}
-
-	// Expect general failure (0x01) due to IPv6 address formatting issue
-	// This is a known limitation - IPv6 addresses aren't formatted correctly for net.SplitHostPort
 	if reply[1] != replyGeneralFailure {
-		t.Logf("Got reply code 0x%02X (expected 0x%02X for general failure with IPv6)", reply[1], replyGeneralFailure)
+		t.Logf("Got reply code 0x%02X (expected 0x%02X without circuit pool)", reply[1], replyGeneralFailure)
 	}
 }
 

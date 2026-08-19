@@ -154,6 +154,7 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 
 	// Mark circuit as open
 	circuit.SetState(StateOpen)
+	circuit.SetExitFilter(p.Exit)
 
 	b.logger.Info("Circuit built successfully", "circuit_id", circuit.ID, "hops", circuit.Length())
 

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -137,6 +137,7 @@ type Server struct {
 	listener          net.Listener
 	circuitMgr        *circuit.Manager
 	circuitPool       *pool.CircuitPool         // Optional: for circuit isolation support
+	circuitForExit    CircuitForExit            // IPv6 / 指定端口：池中无合格 exit 时按目标建路
 	streamMgr         *stream.Manager           // Stream manager for multiplexing
 	isolationEnforcer *stream.IsolationEnforcer // Stream isolation enforcement (ROADMAP 2.2)
 	onionClient       *onion.Client
@@ -234,12 +235,48 @@ func buildIsolationPolicy(cfg *Config, log *logger.Logger) *stream.IsolationPoli
 	}
 }
 
+// CircuitForExit 在池里没有允许该目标的电路时，按目的地址族建一条新路。
+type CircuitForExit func(ctx context.Context, ip net.IP, port int) (*circuit.Circuit, error)
+
 // SetCircuitPool sets the circuit pool for isolated circuit selection
 // This should be called after the pool is initialized (usually by the client)
 func (s *Server) SetCircuitPool(pool *pool.CircuitPool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.circuitPool = pool
+}
+
+// SetCircuitForExit 设置按出口目标建路的回调（IPv6 必须走 p6）。
+func (s *Server) SetCircuitForExit(fn CircuitForExit) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.circuitForExit = fn
+}
+
+func replaceIfExitRejected(ctx context.Context, circ *circuit.Circuit, ip net.IP, port int, circuitPool *pool.CircuitPool, build CircuitForExit, isolationKey *circuit.IsolationKey) (*circuit.Circuit, error) {
+	if circ != nil && circ.AllowsExit(ip, port) {
+		return circ, nil
+	}
+	if circ != nil && circuitPool != nil {
+		circuitPool.Put(circ)
+	}
+	if build == nil {
+		return nil, fmt.Errorf("no exit allows target and no targeted builder")
+	}
+	built, err := build(ctx, ip, port)
+	if err != nil {
+		return nil, err
+	}
+	if built == nil || !built.AllowsExit(ip, port) {
+		if built != nil {
+			built.Close()
+		}
+		return nil, fmt.Errorf("newly built circuit rejects exit target")
+	}
+	if isolationKey != nil {
+		built.SetIsolationKey(isolationKey)
+	}
+	return built, nil
 }
 
 // SetMetrics sets the metrics instance for recording rate limit events
@@ -452,10 +489,10 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	// CONNECT command handling
 	targetAddr := request.targetAddr
 
-	// Extract hostname from targetAddr (format: "host:port")
+	// Extract hostname from targetAddr（IPv6 必须是 [addr]:port）
 	host := targetAddr
-	if idx := strings.LastIndex(targetAddr, ":"); idx != -1 {
-		host = targetAddr[:idx]
+	if h, _, err := net.SplitHostPort(targetAddr); err == nil {
+		host = h
 	}
 
 	// Check if this is an onion address
@@ -496,8 +533,23 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 	// For regular addresses, use circuit isolation if configured
 	// Use isolation enforcer to validate and build isolation key (ROADMAP Phase 2.2)
+	hostStr, portStr, err := net.SplitHostPort(targetAddr)
+	if err != nil {
+		s.logger.Error("Failed to parse target address", "target", targetAddr, "error", err)
+		s.sendReply(conn, replyGeneralFailure, nil)
+		return
+	}
+	var port uint16
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil || port < 1 {
+		s.logger.Error("Failed to parse port", "port", portStr, "error", err)
+		s.sendReply(conn, replyGeneralFailure, nil)
+		return
+	}
+	destIP := net.ParseIP(hostStr)
+
 	s.mu.Lock()
 	circuitPool := s.circuitPool
+	circuitForExit := s.circuitForExit
 	s.mu.Unlock()
 
 	// Build stream request for isolation validation
@@ -535,68 +587,47 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		defer cancel()
 
 		var err error
-		// Use isolated circuit if isolation key is present, otherwise get any circuit
-		if isolationKey != nil {
-			circ, err = circuitPool.GetWithIsolation(timeoutCtx, isolationKey)
-			if err != nil {
-				s.logger.Error("Failed to get isolated circuit", "error", err, "isolation_key", isolationKey)
-				s.sendReply(conn, replyGeneralFailure, nil)
-				return
-			}
+		allowExit := func(c *circuit.Circuit) bool {
+			return c.AllowsExit(destIP, int(port))
+		}
+		circ, err = circuitPool.GetIf(timeoutCtx, isolationKey, allowExit)
+		if err != nil {
+			s.logger.Error("Failed to get circuit from pool", "error", err, "isolation_key", isolationKey)
+			s.sendReply(conn, replyGeneralFailure, nil)
+			return
+		}
+		circ, err = replaceIfExitRejected(timeoutCtx, circ, destIP, int(port), circuitPool, circuitForExit, isolationKey)
+		if err != nil {
+			s.logger.Error("Exit policy rejects target", "target", targetAddr, "error", err)
+			s.sendReply(conn, replyNetworkUnreachable, nil)
+			return
+		}
 
-			// Verify circuit compatibility with isolation enforcer (ROADMAP Phase 2.2)
+		if isolationKey != nil {
 			compatible, reason := s.isolationEnforcer.CheckCircuitCompatibility(circ.ID, isolationKey)
 			if !compatible {
 				s.logger.Error("Circuit isolation incompatibility",
 					"circuit_id", circ.ID,
 					"isolation_key", isolationKey.String(),
 					"reason", reason)
-				circuitPool.Put(circ) // Return incompatible circuit
+				circuitPool.Put(circ)
 				s.sendReply(conn, replyConnectionNotAllowed, nil)
 				return
 			}
-
-			// Register circuit with enforcer for tracking
 			s.isolationEnforcer.RegisterCircuit(circ.ID, isolationKey)
-
 			s.logger.Info("Using isolated circuit",
 				"circuit_id", circ.ID,
 				"isolation_key", isolationKey.String(),
 				"target", targetAddr)
 		} else {
-			// No isolation - get any available circuit from the pool
-			circ, err = circuitPool.Get(timeoutCtx)
-			if err != nil {
-				s.logger.Error("Failed to get circuit from pool", "error", err)
-				s.sendReply(conn, replyGeneralFailure, nil)
-				return
-			}
-
 			s.logger.Info("Using non-isolated circuit",
 				"circuit_id", circ.ID,
 				"target", targetAddr)
 		}
 
-		// Return circuit to pool when done
 		defer circuitPool.Put(circ)
 	} else {
-		// No circuit pool available - cannot proceed
 		s.logger.Error("No circuit pool available for connection")
-		s.sendReply(conn, replyGeneralFailure, nil)
-		return
-	}
-
-	// Parse target address and port
-	hostStr, portStr, err := net.SplitHostPort(targetAddr)
-	if err != nil {
-		s.logger.Error("Failed to parse target address", "target", targetAddr, "error", err)
-		s.sendReply(conn, replyGeneralFailure, nil)
-		return
-	}
-
-	var port uint16
-	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
-		s.logger.Error("Failed to parse port", "port", portStr, "error", err)
 		s.sendReply(conn, replyGeneralFailure, nil)
 		return
 	}
@@ -866,8 +897,8 @@ func (s *Server) readRequest(conn net.Conn) (*requestInfo, error) {
 		// For RESOLVE_PTR, we need the IP address (port is ignored)
 		targetAddr = addr
 	} else {
-		// For CONNECT and other commands, include port
-		targetAddr = fmt.Sprintf("%s:%d", addr, port)
+		// IPv6 必须是 [addr]:port，否则 SplitHostPort 失败，无法按 p6 选路
+		targetAddr = net.JoinHostPort(addr, strconv.Itoa(int(port)))
 	}
 
 	return &requestInfo{
