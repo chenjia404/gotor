@@ -254,6 +254,34 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 	case "ExitRelay":
 		cfg.ExitRelay = parseBool(value)
 
+	case "IPv6Exit":
+		cfg.IPv6Exit = parseBool(value)
+
+	case "ReduceExitPolicy":
+		cfg.ReduceExitPolicy = parseBool(value)
+
+	case "ExitPolicy":
+		cfg.ExitPolicyLines = append(cfg.ExitPolicyLines, value)
+
+	case "ExitPolicyRejectPrivate":
+		// 与出口路径 privateRejectLines 对齐的显式前置（即便 ExitRelay 也会再加一层）
+		if parseBool(value) {
+			cfg.ExitPolicyLines = append([]string{
+				"reject 0.0.0.0/8:*",
+				"reject 127.0.0.0/8:*",
+				"reject 10.0.0.0/8:*",
+				"reject 172.16.0.0/12:*",
+				"reject 192.168.0.0/16:*",
+				"reject 169.254.0.0/16:*",
+				"reject 100.64.0.0/10:*",
+				"reject [::]/128:*",
+				"reject [::1]/128:*",
+				"reject [fe80::]/10:*",
+				"reject [fc00::]/7:*",
+				"reject *:25",
+			}, cfg.ExitPolicyLines...)
+		}
+
 	case "PublishServerDescriptor":
 		// CSV；含 0/false/none 视为关闭
 		v := strings.ToLower(strings.TrimSpace(value))

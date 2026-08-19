@@ -315,16 +315,10 @@ func TestGetRejectedCount_Concurrent(t *testing.T) {
 
 func TestExitPolicy_AllowExitWarning(t *testing.T) {
 	log := logger.NewDefault()
-	policy := NewExitPolicy(log)
-
-	// Manually set AllowExit to true (should never happen in production)
-	policy.AllowExit = true
+	policy := NewExitPolicyFromConfig(true, []string{"accept *:*"}, false, true, log)
 
 	allowed, _ := policy.CheckExitAllowed("example.com", 80)
 	if !allowed {
-		t.Error("Expected exit to be allowed when AllowExit is true")
+		t.Error("Expected exit to be allowed when ExitRelay policy accepts")
 	}
-
-	// Note: In real usage, AllowExit should always be false for non-exit relays
-	// This test just verifies the warning path
 }

@@ -1,26 +1,30 @@
-# gotor 中继（非出口）
+# gotor 中继与出口
 
-## 启用
+## 非出口
 
 ```bash
-gotor -f examples/torrc.relay.sample
-# 或
-gotor ORPort 9001 Nickname gotorMiddle ExitRelay 0 DataDirectory ./data
+gotor ORPort 9001 Nickname gotorMiddle ExitRelay 0
 ```
 
-## 已支持 torrc 键
+## 出口
 
-ORPort、Nickname、ContactInfo、Address、ExitRelay、PublishServerDescriptor、
-AssumeReachable、RelayBandwidthRate/Burst、BandwidthRate/Burst。
+```bash
+gotor -f examples/torrc.exit.sample
+# 或
+gotor ORPort 9001 ExitRelay 1 ReduceExitPolicy 1 \
+  ExitPolicy 'accept *:80' ExitPolicy 'accept *:443' ExitPolicy 'reject *:*'
+```
 
-## 能力边界（首轮）
+### 出口 torrc 键
 
-- OR 监听 + TLS + VERSIONS/CERTS/NETINFO
-- CREATE2：经典 ntor（0x0002）与 ntor-v3（0x0003，含 CC 响应）
-- NODEID = SHA1(PKCS#1 RSA 公钥)；ntor 密钥落盘 `keys/secret_onion_key_ntor`
-- ExitRelay=1 时告警并仍按非出口运行
+- `ExitRelay`、`ExitPolicy`、`ExitPolicyRejectPrivate`、`ReduceExitPolicy`、`IPv6Exit`
+
+### 行为
+
+- 电路末端解密 RELAY（Tor1 AES-CTR + digest）
+- `RELAY_BEGIN` → 策略检查 → TCP 拨号 → `RELAY_CONNECTED` → 双向 `DATA` / `END`
+- 默认未配置 `ExitPolicy` 且 `ExitRelay 1` 时使用精简端口集（类 ReduceExitPolicy）
 
 ## 未完成
 
-- 向权威发布服务描述符并获得共识标志
-- 完整 RELAY 解密/出口流、DirPort、网桥
+向权威发布描述符、多跳 EXTEND 完整转发真网验收、DirPort。

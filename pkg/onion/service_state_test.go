@@ -17,10 +17,10 @@ func TestServiceStatePersistence(t *testing.T) {
 	// Create a service with persistence
 	config := &ServiceConfig{
 		AllowPlaceholderIntros: true,
-		DataDirectory:      tempDir,
-		NumIntroPoints:     3,
-		DescriptorLifetime: 3 * time.Hour,
-		Ports:              map[int]string{80: "localhost:8080"},
+		DataDirectory:          tempDir,
+		NumIntroPoints:         3,
+		DescriptorLifetime:     3 * time.Hour,
+		Ports:                  map[int]string{80: "localhost:8080"},
 	}
 
 	service, err := NewService(config, nil)
@@ -73,10 +73,10 @@ func TestServiceStateRevisionIncrement(t *testing.T) {
 
 	config := &ServiceConfig{
 		AllowPlaceholderIntros: true,
-		DataDirectory:      tempDir,
-		NumIntroPoints:     3,
-		DescriptorLifetime: 3 * time.Hour,
-		Ports:              map[int]string{80: "localhost:8080"},
+		DataDirectory:          tempDir,
+		NumIntroPoints:         3,
+		DescriptorLifetime:     3 * time.Hour,
+		Ports:                  map[int]string{80: "localhost:8080"},
 	}
 
 	service, err := NewService(config, nil)
@@ -131,10 +131,10 @@ func TestServiceStateIntroPointCache(t *testing.T) {
 
 	config := &ServiceConfig{
 		AllowPlaceholderIntros: true,
-		DataDirectory:      tempDir,
-		NumIntroPoints:     3,
-		DescriptorLifetime: 3 * time.Hour,
-		Ports:              map[int]string{80: "localhost:8080"},
+		DataDirectory:          tempDir,
+		NumIntroPoints:         3,
+		DescriptorLifetime:     3 * time.Hour,
+		Ports:                  map[int]string{80: "localhost:8080"},
 	}
 
 	service, err := NewService(config, nil)
@@ -206,9 +206,9 @@ func TestServiceStateNoPersistence(t *testing.T) {
 	// Create service without DataDirectory (no persistence)
 	config := &ServiceConfig{
 		AllowPlaceholderIntros: true,
-		NumIntroPoints:     3,
-		DescriptorLifetime: 3 * time.Hour,
-		Ports:              map[int]string{80: "localhost:8080"},
+		NumIntroPoints:         3,
+		DescriptorLifetime:     3 * time.Hour,
+		Ports:                  map[int]string{80: "localhost:8080"},
 	}
 
 	service, err := NewService(config, nil)
@@ -240,11 +240,11 @@ func TestServiceStateWithProvidedKey(t *testing.T) {
 	// Create service with provided key
 	config := &ServiceConfig{
 		AllowPlaceholderIntros: true,
-		PrivateKey:         privKey,
-		DataDirectory:      tempDir,
-		NumIntroPoints:     3,
-		DescriptorLifetime: 3 * time.Hour,
-		Ports:              map[int]string{80: "localhost:8080"},
+		PrivateKey:             privKey,
+		DataDirectory:          tempDir,
+		NumIntroPoints:         3,
+		DescriptorLifetime:     3 * time.Hour,
+		Ports:                  map[int]string{80: "localhost:8080"},
 	}
 
 	service, err := NewService(config, nil)
@@ -268,10 +268,10 @@ func TestServiceStopSavesState(t *testing.T) {
 
 	config := &ServiceConfig{
 		AllowPlaceholderIntros: true,
-		DataDirectory:      tempDir,
-		NumIntroPoints:     3,
-		DescriptorLifetime: 3 * time.Hour,
-		Ports:              map[int]string{80: "localhost:8080"},
+		DataDirectory:          tempDir,
+		NumIntroPoints:         3,
+		DescriptorLifetime:     3 * time.Hour,
+		Ports:                  map[int]string{80: "localhost:8080"},
 	}
 
 	service, err := NewService(config, nil)
@@ -312,10 +312,10 @@ func TestServiceStateCreationTime(t *testing.T) {
 
 	config := &ServiceConfig{
 		AllowPlaceholderIntros: true,
-		DataDirectory:      tempDir,
-		NumIntroPoints:     3,
-		DescriptorLifetime: 3 * time.Hour,
-		Ports:              map[int]string{80: "localhost:8080"},
+		DataDirectory:          tempDir,
+		NumIntroPoints:         3,
+		DescriptorLifetime:     3 * time.Hour,
+		Ports:                  map[int]string{80: "localhost:8080"},
 	}
 
 	service1, err := NewService(config, nil)

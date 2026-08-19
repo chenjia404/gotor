@@ -5,7 +5,6 @@ package relay
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"net"
 	"sync"
@@ -18,13 +17,14 @@ import (
 
 // ServerCircuit represents a server-side circuit
 type ServerCircuit struct {
-	CircuitID      uint32
-	Created        time.Time
-	LastActivity   time.Time
-	KeyMaterial    []byte // 72 bytes from ntor handshake
-	ForwardDigest  []byte // Forward digest state
-	BackwardDigest []byte // Backward digest state
-	mu             sync.RWMutex
+	CircuitID    uint32
+	Created      time.Time
+	LastActivity time.Time
+	KeyMaterial  []byte
+	crypto       *circuitCrypto
+	ctx          context.Context
+	cancel       context.CancelFunc
+	mu           sync.RWMutex
 }
 
 // CircuitHandler manages server-side circuits for a relay
@@ -35,20 +35,31 @@ type CircuitHandler struct {
 	logger    *logger.Logger
 	ctx       context.Context
 	forwarder *ForwardingHandler
+	policy    *ExitPolicy
+	exits     *ExitStreamManager
 }
 
 // NewCircuitHandler creates a new circuit handler
 func NewCircuitHandler(keys *RelayKeys, log *logger.Logger) *CircuitHandler {
+	return NewCircuitHandlerWithPolicy(keys, NewExitPolicy(log), log)
+}
+
+// NewCircuitHandlerWithPolicy 带出口策略。
+func NewCircuitHandlerWithPolicy(keys *RelayKeys, policy *ExitPolicy, log *logger.Logger) *CircuitHandler {
 	if log == nil {
 		log = logger.NewDefault()
+	}
+	if policy == nil {
+		policy = NewExitPolicy(log)
 	}
 	h := &CircuitHandler{
 		keys:     keys,
 		circuits: make(map[uint32]*ServerCircuit),
 		logger:   log.Component("circuit-handler"),
 		ctx:      context.Background(),
+		policy:   policy,
+		exits:    NewExitStreamManager(policy, log),
 	}
-	// Create forwarding handler
 	h.forwarder = NewForwardingHandler(h, log)
 	return h
 }
@@ -150,13 +161,20 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 	}
 
 	// Create circuit state
+	cc, cerr := newCircuitCrypto(keyMaterial)
+	if cerr != nil {
+		h.logger.Error("circuit crypto init failed", "error", cerr)
+		return h.sendDestroyCell(conn, c.CircID, cell.DestroyReasonInternal)
+	}
+	cctx, ccancel := context.WithCancel(h.ctx)
 	circuit := &ServerCircuit{
-		CircuitID:      c.CircID,
-		Created:        time.Now(),
-		LastActivity:   time.Now(),
-		KeyMaterial:    keyMaterial,
-		ForwardDigest:  make([]byte, sha256.Size),
-		BackwardDigest: make([]byte, sha256.Size),
+		CircuitID:    c.CircID,
+		Created:      time.Now(),
+		LastActivity: time.Now(),
+		KeyMaterial:  keyMaterial,
+		crypto:       cc,
+		ctx:          cctx,
+		cancel:       ccancel,
 	}
 
 	// Store circuit
@@ -222,7 +240,7 @@ func (h *CircuitHandler) handleRelay(conn net.Conn, c *cell.Cell) error {
 
 	// Forward relay cell using ForwardingHandler
 	// fromClient=true indicates this cell is from the client
-	if err := h.forwarder.ForwardRelayCell(h.ctx, true, c.CircID, c); err != nil {
+	if err := h.forwarder.ForwardRelayCell(h.ctx, true, c.CircID, c, conn); err != nil {
 		h.logger.Error("Failed to forward RELAY cell",
 			"circuit_id", c.CircID,
 			"error", err)
@@ -235,17 +253,7 @@ func (h *CircuitHandler) handleRelay(conn net.Conn, c *cell.Cell) error {
 // handleDestroy processes DESTROY cells
 func (h *CircuitHandler) handleDestroy(c *cell.Cell) error {
 	h.logger.Info("Received DESTROY", "circuit_id", c.CircID)
-
-	// Clean up forwarding state if this is an extended circuit
-	if h.forwarder != nil {
-		h.forwarder.HandleDestroy(c.CircID)
-	}
-
-	// Remove circuit state
-	h.mu.Lock()
-	delete(h.circuits, c.CircID)
-	h.mu.Unlock()
-
+	h.CloseCircuit(c.CircID)
 	return nil
 }
 
@@ -283,24 +291,42 @@ func (h *CircuitHandler) GetCircuitCount() int {
 // CloseCircuit destroys a circuit
 func (h *CircuitHandler) CloseCircuit(circuitID uint32) {
 	h.mu.Lock()
+	circ := h.circuits[circuitID]
 	delete(h.circuits, circuitID)
 	h.mu.Unlock()
-
+	if circ != nil && circ.cancel != nil {
+		circ.cancel()
+	}
+	if h.exits != nil {
+		h.exits.CloseCircuit(circuitID)
+	}
+	if h.forwarder != nil {
+		h.forwarder.HandleDestroy(circuitID)
+	}
 	h.logger.Info("Circuit closed", "circuit_id", circuitID)
 }
 
 // CloseAll destroys all circuits
 func (h *CircuitHandler) CloseAll() {
-	// Close forwarding handler first
-	if h.forwarder != nil {
-		h.forwarder.CloseAll()
-	}
-
 	h.mu.Lock()
+	all := make([]*ServerCircuit, 0, len(h.circuits))
+	for _, c := range h.circuits {
+		all = append(all, c)
+	}
 	count := len(h.circuits)
 	h.circuits = make(map[uint32]*ServerCircuit)
 	h.mu.Unlock()
-
+	for _, c := range all {
+		if c.cancel != nil {
+			c.cancel()
+		}
+	}
+	if h.forwarder != nil {
+		h.forwarder.CloseAll()
+	}
+	if h.exits != nil {
+		h.exits.CloseAll()
+	}
 	h.logger.Info("All circuits closed", "count", count)
 }
 

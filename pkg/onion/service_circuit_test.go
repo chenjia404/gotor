@@ -18,10 +18,10 @@ func TestServiceWithCircuitBuilder(t *testing.T) {
 	}
 
 	config := &ServiceConfig{
-		PrivateKey:              privateKey,
-		NumIntroPoints:          1,
-		AllowPlaceholderIntros:  true,
-		Ports:                   map[int]string{80: "localhost:8080"},
+		PrivateKey:             privateKey,
+		NumIntroPoints:         1,
+		AllowPlaceholderIntros: true,
+		Ports:                  map[int]string{80: "localhost:8080"},
 		// CircuitBuilder and PathSelector are nil - should fall back to placeholder
 	}
 

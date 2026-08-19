@@ -1,119 +1,201 @@
-// Package relay - Exit policy enforcement for relay servers
-// This file implements reject-all exit policy per tor-spec.txt §6.2
+// Package relay — 出口策略（复用 directory.ExitPolicy 规则语义）。
 package relay
 
 import (
 	"fmt"
+	"net"
+	"strings"
 	"sync/atomic"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
+	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
-// ExitPolicy defines the exit policy for a relay
-type ExitPolicy struct {
-	// AllowExit determines if the relay allows exit traffic
-	// For non-exit relays, this is always false
-	AllowExit bool
-
-	// RejectedConnections tracks the number of rejected exit attempts
-	rejectedConnections uint64
-
-	logger *logger.Logger
+// 私网/特殊用途：ExitRelay 启用时始终前置拒绝
+var privateRejectLines = []string{
+	"reject 0.0.0.0/8:*",
+	"reject 127.0.0.0/8:*",
+	"reject 10.0.0.0/8:*",
+	"reject 172.16.0.0/12:*",
+	"reject 192.168.0.0/16:*",
+	"reject 169.254.0.0/16:*",
+	"reject 100.64.0.0/10:*",
+	"reject [::]/128:*",
+	"reject [::1]/128:*",
+	"reject [fe80::]/10:*",
+	"reject [fc00::]/7:*",
+	"reject [2001:db8::]/32:*",
+	"reject *:25",
 }
 
-// NewExitPolicy creates a new exit policy
-// For bridge and non-exit relays, exit traffic is always rejected
+var reducedExitPolicyLines = []string{
+	"reject *:119",
+	"reject *:135-139",
+	"reject *:445",
+	"reject *:563",
+	"reject *:1214",
+	"reject *:4661-4666",
+	"reject *:6346-6429",
+	"reject *:6699",
+	"reject *:6881-6999",
+	"accept *:80",
+	"accept *:443",
+	"reject *:*",
+}
+
+var defaultRejectAll = []string{"reject *:*", "reject *6:*"}
+
+// ExitPolicy 封装出口判定。
+type ExitPolicy struct {
+	AllowExit bool
+	rules     *directory.ExitPolicy
+	ipv6OK    bool
+
+	rejectedConnections uint64
+	logger              *logger.Logger
+}
+
+// NewExitPolicy 默认拒绝全部（非出口）。
 func NewExitPolicy(log *logger.Logger) *ExitPolicy {
 	if log == nil {
 		log = logger.NewDefault()
 	}
+	pol, _, _ := directory.ParseExitPolicyLines(defaultRejectAll)
 	return &ExitPolicy{
-		AllowExit: false, // Always reject exit traffic
+		AllowExit: false,
+		rules:     pol,
 		logger:    log.Component("exit-policy"),
 	}
 }
 
-// CheckExitAllowed checks if exit traffic is allowed
-// Per tor-spec.txt §6.2, non-exit relays must reject all exit attempts
-func (p *ExitPolicy) CheckExitAllowed(address string, port uint16) (bool, byte) {
-	if p.AllowExit {
-		// This should never be true for bridge/non-exit relays
-		p.logger.Warn("Exit allowed flag is true - this should not happen for non-exit relays")
-		return true, 0
+// NewExitPolicyFromConfig 构建出口策略。
+// 始终前置私网拒绝；末尾 reject *6:*（IPv6Exit 时先插入 accept *6:80/443）。
+func NewExitPolicyFromConfig(exitRelay bool, lines []string, reduce, ipv6Exit bool, log *logger.Logger) *ExitPolicy {
+	p := NewExitPolicy(log)
+	p.ipv6OK = ipv6Exit
+	if !exitRelay {
+		return p
 	}
+	p.AllowExit = true
+	use := append([]string(nil), privateRejectLines...)
+	if len(lines) == 0 {
+		use = append(use, reducedExitPolicyLines...)
+		p.logger.Info("ExitRelay 1 使用精简默认 ExitPolicy（含私网拒绝）")
+	} else {
+		if reduce {
+			use = append(use, "reject *:119", "reject *:135-139", "reject *:445")
+		}
+		use = append(use, lines...)
+	}
+	if ipv6Exit {
+		if len(lines) == 0 || reduce {
+			use = append(use, "accept *6:80", "accept *6:443")
+		}
+	}
+	// 封闭 IPv6：无匹配不得默认 accept（directory.Allows 无命中为 true）
+	use = append(use, "reject *6:*")
 
-	// Always reject exit traffic for non-exit relays
-	atomic.AddUint64(&p.rejectedConnections, 1)
-
-	p.logger.Info("Rejected exit attempt",
-		"address", address,
-		"port", port,
-		"total_rejected", atomic.LoadUint64(&p.rejectedConnections))
-
-	// Return EXITPOLICY reason per tor-spec.txt §6.3
-	return false, cell.EndReasonExitPolicy
+	pol, _, err := directory.ParseExitPolicyLines(use)
+	if err != nil {
+		p.logger.Warn("ExitPolicy 解析失败，回退 reject *:*", "error", err)
+		return NewExitPolicy(log)
+	}
+	p.rules = pol
+	return p
 }
 
-// GetRejectedCount returns the number of rejected exit attempts
+// CheckExitAllowed 判断是否允许向 address:port 出口。
+func (p *ExitPolicy) CheckExitAllowed(address string, port uint16) (bool, byte) {
+	if p == nil || !p.AllowExit {
+		if p != nil {
+			atomic.AddUint64(&p.rejectedConnections, 1)
+		}
+		return false, cell.EndReasonExitPolicy
+	}
+	if port == 0 {
+		atomic.AddUint64(&p.rejectedConnections, 1)
+		return false, cell.EndReasonExitPolicy
+	}
+
+	host := address
+	if h, _, err := net.SplitHostPort(address); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	var ok bool
+	if ip == nil {
+		ok = p.rules != nil && p.rules.AllowsUnknown(int(port))
+	} else if ip.To4() == nil && !p.ipv6OK {
+		ok = false
+	} else {
+		ok = p.rules != nil && p.rules.Allows(ip, int(port))
+	}
+	if !ok {
+		atomic.AddUint64(&p.rejectedConnections, 1)
+		p.logger.Debug("exit rejected by policy", "address", address, "port", port)
+		return false, cell.EndReasonExitPolicy
+	}
+	return true, 0
+}
+
+// GetRejectedCount 拒绝次数。
 func (p *ExitPolicy) GetRejectedCount() uint64 {
+	if p == nil {
+		return 0
+	}
 	return atomic.LoadUint64(&p.rejectedConnections)
 }
 
-// String returns a human-readable representation of the exit policy
 func (p *ExitPolicy) String() string {
-	if p.AllowExit {
-		return "accept *:*"
+	if p == nil || !p.AllowExit {
+		return "reject *:*"
 	}
-	return "reject *:*"
+	return p.GetExitPolicyString()
 }
 
-// GetExitPolicyString returns the exit policy in torrc format
-// For non-exit relays, this is always "reject *:*"
+// GetExitPolicyString 返回简要策略描述。
 func (p *ExitPolicy) GetExitPolicyString() string {
-	return "reject *:*"
+	if p == nil || !p.AllowExit {
+		return "reject *:*"
+	}
+	return "accept (configured ExitPolicy)"
 }
 
-// ValidateExitAttempt validates and rejects an exit attempt
-// Returns an error if the exit attempt should be rejected
+// ValidateExitAttempt 校验 BEGIN/BEGIN_DIR。
 func (p *ExitPolicy) ValidateExitAttempt(command byte, address string, port uint16) error {
-	// Only check for BEGIN and BEGIN_DIR commands
-	if command != cell.RelayBegin && command != cell.RelayBeginDir {
+	if command == cell.RelayBeginDir {
+		if p == nil || !p.AllowExit {
+			if p != nil {
+				atomic.AddUint64(&p.rejectedConnections, 1)
+			}
+			return &ExitPolicyViolation{Address: address, Port: port, Reason: cell.EndReasonExitPolicy}
+		}
 		return nil
 	}
-
-	// Check if exit is allowed
+	if command != cell.RelayBegin {
+		return nil
+	}
 	allowed, reason := p.CheckExitAllowed(address, port)
 	if !allowed {
-		return &ExitPolicyViolation{
-			Address: address,
-			Port:    port,
-			Reason:  reason,
-		}
+		return &ExitPolicyViolation{Address: address, Port: port, Reason: reason}
 	}
-
 	return nil
 }
 
-// ExitPolicyViolation represents an exit policy violation error
+// ExitPolicyViolation 策略拒绝。
 type ExitPolicyViolation struct {
 	Address string
 	Port    uint16
 	Reason  byte
 }
 
-// Error implements the error interface
 func (e *ExitPolicyViolation) Error() string {
-	return fmt.Sprintf("exit policy violation: %s:%d (reason: %s)",
-		e.Address, e.Port, endReasonString(e.Reason))
+	return fmt.Sprintf("exit policy rejected %s:%d (%s)", e.Address, e.Port, endReasonString(e.Reason))
 }
 
-// GetReason returns the END_REASON code for the violation
-func (e *ExitPolicyViolation) GetReason() byte {
-	return e.Reason
-}
+func (e *ExitPolicyViolation) GetReason() byte { return e.Reason }
 
-// endReasonString converts an END_REASON code to a string
 func endReasonString(reason byte) string {
 	switch reason {
 	case cell.EndReasonMisc:
@@ -149,8 +231,16 @@ func endReasonString(reason byte) string {
 	}
 }
 
-// IsExitPolicyError checks if an error is an exit policy violation
+// ReasonToString 兼容别名。
+func ReasonToString(reason byte) string { return endReasonString(reason) }
+
+// IsExitPolicyError 类型断言。
 func IsExitPolicyError(err error) bool {
 	_, ok := err.(*ExitPolicyViolation)
 	return ok
+}
+
+// FormatExitPolicyLines 将规则列表格式化为文档行。
+func FormatExitPolicyLines(lines []string) string {
+	return strings.Join(lines, "\n")
 }

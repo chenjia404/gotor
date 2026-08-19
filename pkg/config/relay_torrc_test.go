@@ -32,3 +32,23 @@ func TestLoadTorrcRelayOptions(t *testing.T) {
 		t.Fatalf("bw rate=%d burst=%d", cfg.RelayBandwidthRate, cfg.RelayBandwidthBurst)
 	}
 }
+
+func TestLoadTorrcExitPolicy(t *testing.T) {
+	dir := t.TempDir()
+	torrc := filepath.Join(dir, "torrc")
+	body := "ORPort 9001\nExitRelay 1\nReduceExitPolicy 1\nIPv6Exit 0\n" +
+		"ExitPolicy accept *:80\nExitPolicy accept *:443\nExitPolicy reject *:*\n"
+	if err := os.WriteFile(torrc, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	if err := LoadFromFile(torrc, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ExitRelay || !cfg.ReduceExitPolicy || cfg.IPv6Exit {
+		t.Fatal("exit flags")
+	}
+	if len(cfg.ExitPolicyLines) < 3 {
+		t.Fatalf("ExitPolicy lines %d", len(cfg.ExitPolicyLines))
+	}
+}

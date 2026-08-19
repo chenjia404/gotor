@@ -49,11 +49,15 @@ type Config struct {
 	Nickname                string // 中继昵称
 	ContactInfo             string // ContactInfo
 	RelayAddress            string // Address（对外宣告的 IPv4/主机名）
-	ExitRelay               bool   // ExitRelay；本实现首轮强制非出口时忽略 true 并告警
+	ExitRelay               bool   // ExitRelay
 	PublishServerDescriptor bool   // 是否尝试发布描述符（首轮可仅本地生成）
 	AssumeReachable         bool   // AssumeReachable
 	RelayBandwidthRate      int64  // 字节/秒，0=不限
 	RelayBandwidthBurst     int64  // 突发字节，0=不限
+	// ExitPolicyLines 为 torrc 中按顺序出现的 ExitPolicy / ExitPolicyReject* 规则行（不含关键字）
+	ExitPolicyLines  []string
+	IPv6Exit         bool // IPv6Exit
+	ReduceExitPolicy bool // ReduceExitPolicy（启用精简默认出口策略）
 
 	// Onion service settings
 	OnionServices []OnionServiceConfig
@@ -244,6 +248,9 @@ func DefaultConfig() *Config {
 		AssumeReachable:         false,
 		RelayBandwidthRate:      0,
 		RelayBandwidthBurst:     0,
+		ExitPolicyLines:         nil,
+		IPv6Exit:                false,
+		ReduceExitPolicy:        false,
 		OnionServices:           []OnionServiceConfig{},
 		ClientTransports:        []ClientTransportConfig{},
 		ServerTransports:        []ServerTransportConfig{},
@@ -573,6 +580,7 @@ func (c *Config) Clone() *Config {
 	clone.ExcludeExitNodes = append([]string{}, c.ExcludeExitNodes...)
 	clone.ExitNodes = append([]string{}, c.ExitNodes...)
 	clone.EntryNodes = append([]string{}, c.EntryNodes...)
+	clone.ExitPolicyLines = append([]string{}, c.ExitPolicyLines...)
 	clone.OnionServices = make([]OnionServiceConfig, len(c.OnionServices))
 	copy(clone.OnionServices, c.OnionServices)
 	return &clone

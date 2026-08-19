@@ -45,6 +45,7 @@ type ORListenerConfig struct {
 	MaxConnections int           // Maximum concurrent connections (0 = unlimited)
 	ReadTimeout    time.Duration // Per-connection read timeout
 	WriteTimeout   time.Duration // Per-connection write timeout
+	ExitPolicy     *ExitPolicy   // 出口策略；nil 则拒绝全部
 }
 
 // DefaultORListenerConfig returns default configuration
@@ -55,6 +56,7 @@ func DefaultORListenerConfig(address string, keys *RelayKeys) *ORListenerConfig 
 		MaxConnections: 1000,
 		ReadTimeout:    60 * time.Second,
 		WriteTimeout:   60 * time.Second,
+		ExitPolicy:     nil,
 	}
 }
 
@@ -68,8 +70,11 @@ func NewORListener(cfg *ORListenerConfig, log *logger.Logger) (*ORListener, erro
 		log = logger.NewDefault()
 	}
 
-	// Create circuit handler
-	circuitHandler := NewCircuitHandler(cfg.Keys, log)
+	policy := cfg.ExitPolicy
+	if policy == nil {
+		policy = NewExitPolicy(log)
+	}
+	circuitHandler := NewCircuitHandlerWithPolicy(cfg.Keys, policy, log)
 
 	return &ORListener{
 		address:        cfg.Address,

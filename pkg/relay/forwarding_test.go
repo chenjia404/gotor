@@ -67,7 +67,7 @@ func TestForwardRelayCell_RelayEarlyLimiting(t *testing.T) {
 			Payload: make([]byte, cell.PayloadLen),
 		}
 
-		err := handler.ForwardRelayCell(ctx, true, 100, c)
+		err := handler.ForwardRelayCell(ctx, true, 100, c, nil)
 		if err != nil {
 			t.Fatalf("ForwardRelayCell failed at iteration %d: %v", i, err)
 		}
@@ -100,10 +100,10 @@ func TestForwardRelayCell_NonExtended(t *testing.T) {
 		Payload: payload,
 	}
 
-	// This should handle locally (and reject exit attempt)
-	err := handler.ForwardRelayCell(ctx, true, 100, c)
-	if err != nil {
-		t.Fatalf("ForwardRelayCell failed: %v", err)
+	// 未建电路时本地处理应失败（需加密状态）
+	err := handler.ForwardRelayCell(ctx, true, 100, c, nil)
+	if err == nil {
+		t.Fatal("expected error without circuit crypto")
 	}
 }
 
@@ -149,9 +149,10 @@ func TestHandleLocalRelayCell_ExitAttempt(t *testing.T) {
 				Payload: payload,
 			}
 
-			err = handler.handleLocalRelayCell(ctx, 100, c)
-			if err != nil {
-				t.Errorf("handleLocalRelayCell failed: %v", err)
+			err = handler.handleLocalRelayCell(ctx, 100, c, nil)
+			// 无电路加密状态时应报错（不再在未解密载荷上假装处理）
+			if err == nil {
+				t.Errorf("expected error without circuit crypto")
 			}
 		})
 	}
@@ -293,7 +294,7 @@ func TestRejectExitAttempt(t *testing.T) {
 	circuits := NewCircuitHandler(nil, log)
 	handler := NewForwardingHandler(circuits, log)
 
-	err := handler.rejectExitAttempt(100, 1)
+	err := handler.rejectExitAttempt(&ServerCircuit{CircuitID: 100}, nil, 1)
 	if err != nil {
 		t.Fatalf("rejectExitAttempt failed: %v", err)
 	}
@@ -315,8 +316,8 @@ func TestHandleLocalRelayCell_InvalidPayload(t *testing.T) {
 		Payload: []byte{0, 1, 2}, // Too short
 	}
 
-	err := handler.handleLocalRelayCell(ctx, 100, c)
+	err := handler.handleLocalRelayCell(ctx, 100, c, nil)
 	if err == nil {
-		t.Error("Expected error for invalid relay cell payload")
+		t.Error("Expected error for missing circuit")
 	}
 }
