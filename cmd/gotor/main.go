@@ -163,7 +163,7 @@ func runKeygen(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	if err := keys.SaveKeys(keysDir); err != nil {
+	if err := keys.SaveKeys(keysDir); err != nil { // #nosec G304 -- DataDirectory 由操作者配置
 		return err
 	}
 	fmt.Println("Generated identity keys in", keysDir)

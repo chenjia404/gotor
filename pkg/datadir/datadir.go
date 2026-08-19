@@ -276,7 +276,7 @@ func sortStateKeys(keys []string) {
 
 // LoadState 读取 DataDirectory/state；不存在返回空对象。
 func LoadState(path string) (*StateFile, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- DataDirectory/state 由操作者配置
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &StateFile{}, nil

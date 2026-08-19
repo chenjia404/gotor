@@ -29,7 +29,7 @@ func LoadClientAuthDir(dir string, store *ClientAuthStore) (int, error) {
 		if !strings.HasSuffix(e.Name(), ".auth_private") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		data, err := os.ReadFile(filepath.Join(dir, e.Name())) // #nosec G304 -- 仅读 ClientOnionAuthDir 下 *.auth_private
 		if err != nil {
 			continue
 		}

@@ -166,7 +166,7 @@ func encodeName(name string) []byte {
 		if len(lab) > 63 {
 			lab = lab[:63]
 		}
-		out = append(out, byte(len(lab)))
+		out = append(out, byte(len(lab))) // #nosec G115 -- 标签长度已截断到 ≤63
 		out = append(out, lab...)
 	}
 	out = append(out, 0)
@@ -181,7 +181,12 @@ func buildDNSResponse(id uint16, name string, qtype uint16, rcode uint16, answer
 	flags := uint16(0x8180) | (rcode & 0xF)
 	binary.BigEndian.PutUint16(hdr[2:4], flags)
 	binary.BigEndian.PutUint16(hdr[4:6], 1)
-	binary.BigEndian.PutUint16(hdr[6:8], uint16(len(answers)))
+	ancount := len(answers)
+	if ancount > 65535 {
+		ancount = 65535
+		answers = answers[:65535]
+	}
+	binary.BigEndian.PutUint16(hdr[6:8], uint16(ancount)) // #nosec G115 -- 已截断到 ≤65535
 	b = append(b, hdr...)
 	qname := encodeName(name)
 	b = append(b, qname...)
@@ -195,7 +200,12 @@ func buildDNSResponse(id uint16, name string, qtype uint16, rcode uint16, answer
 		binary.BigEndian.PutUint16(rrh[0:2], rr.Type)
 		binary.BigEndian.PutUint16(rrh[2:4], 1)
 		binary.BigEndian.PutUint32(rrh[4:8], rr.TTL)
-		binary.BigEndian.PutUint16(rrh[8:10], uint16(len(rr.Data)))
+		dlen := len(rr.Data)
+		if dlen > 65535 {
+			dlen = 65535
+			rr.Data = rr.Data[:65535]
+		}
+		binary.BigEndian.PutUint16(rrh[8:10], uint16(dlen)) // #nosec G115 -- 已截断到 ≤65535
 		b = append(b, rrh...)
 		b = append(b, rr.Data...)
 	}

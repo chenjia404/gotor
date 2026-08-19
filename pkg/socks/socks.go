@@ -718,12 +718,12 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		}
 		if s.config.SafeSocks && destIP != nil {
 			s.logger.Warn("SafeSocks rejected IP literal", "target", targetAddr)
-			s.sendReply(conn, replyConnectionNotAllowed, nil)
+			_ = s.sendReply(conn, replyConnectionNotAllowed, nil)
 			return
 		}
 		if s.config.RejectInternal && destIP != nil && isInternalIP(destIP) {
 			s.logger.Warn("ClientRejectInternalAddresses", "target", targetAddr)
-			s.sendReply(conn, replyConnectionNotAllowed, nil)
+			_ = s.sendReply(conn, replyConnectionNotAllowed, nil)
 			return
 		}
 	}

@@ -21,7 +21,7 @@ func daemonizeUnix(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, os.Args[1:]...)
+	cmd := exec.Command(exe, os.Args[1:]...) // #nosec G204 -- 用自身可执行文件 re-exec，参数即本进程 argv
 	cmd.Env = append(os.Environ(), daemonEnv+"=1")
 	cmd.Stdin = nil
 	if cfg.LogFile != "" {

@@ -50,7 +50,7 @@ func (c *Client) tryLoadConsensusDisk(ctx context.Context) ([]*Relay, error) {
 	if path == "" {
 		return nil, fmt.Errorf("consensus disk cache disabled")
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- CacheDirectory 由操作者配置
 	if err != nil {
 		return nil, err
 	}

@@ -51,7 +51,7 @@ type microdescDiskCache struct {
 func (m *microdescDiskCache) load() error {
 	for _, name := range []string{cachedMicrodescsName, cachedMicrodescsNewName} {
 		path := filepath.Join(m.dir, name)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) // #nosec G304 -- CacheDirectory 固定文件名
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -162,7 +162,7 @@ func (m *microdescDiskCache) appendNew(body []byte, avoidDisk bool) {
 	if !strings.HasSuffix(buf.String(), "\n") {
 		buf.WriteByte('\n')
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304 -- CacheDirectory 固定文件名
 	if err != nil {
 		return
 	}
