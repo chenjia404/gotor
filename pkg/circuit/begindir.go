@@ -88,7 +88,12 @@ func (c *Circuit) HTTPGetViaBeginDir(ctx context.Context, streamID uint16, host,
 		}
 		raw.Write(chunk)
 		// 若已有完整 HTTP 头且 Content-Length 满足则提前结束
-		if body, ok := tryCompleteHTTPBody(raw.Bytes()); ok {
+		body, done, err := tryCompleteHTTPBody(raw.Bytes())
+		if err != nil {
+			_ = c.EndStream(streamID, 1)
+			return nil, err
+		}
+		if done {
 			_ = c.EndStream(streamID, 6)
 			return body, nil
 		}
@@ -119,21 +124,36 @@ func (c *Circuit) FetchHTTPViaBeginDir(ctx context.Context, host, path string) (
 	return c.HTTPGetViaBeginDir(ctx, sid, host, path)
 }
 
-func tryCompleteHTTPBody(raw []byte) ([]byte, bool) {
+func tryCompleteHTTPBody(raw []byte) ([]byte, bool, error) {
 	headerEnd := bytes.Index(raw, []byte("\r\n\r\n"))
 	if headerEnd < 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	headers := string(raw[:headerEnd])
+	statusLine := headers
+	if i := strings.Index(headers, "\r\n"); i >= 0 {
+		statusLine = headers[:i]
+	}
+	parts := strings.Fields(statusLine)
+	statusOK := false
+	for _, p := range parts {
+		if p == "200" {
+			statusOK = true
+			break
+		}
+	}
 	body := raw[headerEnd+4:]
 	cl := httpContentLength(headers)
 	if cl < 0 {
-		return nil, false // 无 Content-Length，等 END
+		return nil, false, nil // 无 Content-Length，等 END
 	}
 	if len(body) < cl {
-		return nil, false
+		return nil, false, nil
 	}
-	return body[:cl], true
+	if !statusOK {
+		return nil, false, fmt.Errorf("directory HTTP status: %s", strings.TrimSpace(statusLine))
+	}
+	return body[:cl], true, nil
 }
 
 func parseHTTPResponseBody(raw []byte) ([]byte, error) {

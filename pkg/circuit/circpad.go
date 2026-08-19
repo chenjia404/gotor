@@ -36,9 +36,9 @@ const (
 	CircpadEventPaddingRecv    = 3
 	CircpadEventLengthCount    = 5
 
-	CircpadStateStart            = 0
+	CircpadStateStart              = 0
 	CircpadStateObfuscateCircSetup = 1
-	CircpadStateEnd              = 2
+	CircpadStateEnd                = 2
 )
 
 // CircpadNegotiate 是 RELAY PADDING_NEGOTIATE（cmd=41）载荷。
@@ -143,10 +143,10 @@ type CircpadTransition struct {
 // CircpadHSSetupMachine 是 proposal 302 / C Tor 的 HS setup 机定义（仅客户端侧表）。
 // 运行时接线（发 DROP / 与 onion 建路耦合）在 Onion Phase 完成；此处保证状态表合规。
 type CircpadHSSetupMachine struct {
-	Name                 string
-	TargetHop            int // 1=guard, 2=middle（setup 机协商到第二跳）
-	AllowedPaddingCount  int
-	Transitions          []CircpadTransition
+	Name                string
+	TargetHop           int // 1=guard, 2=middle（setup 机协商到第二跳）
+	AllowedPaddingCount int
+	Transitions         []CircpadTransition
 	// OriginSide：客户端机；false 表示中继侧表（我们只实现客户端协商，表仍保留对照）。
 	OriginSide bool
 	// SendsNegotiate：origin intro 机在 INTRODUCE1 后发 PADDING_NEGOTIATE。

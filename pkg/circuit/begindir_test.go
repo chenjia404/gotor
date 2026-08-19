@@ -6,15 +6,25 @@ import (
 
 func TestTryCompleteHTTPBody(t *testing.T) {
 	raw := []byte("HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nhelloEXTRA")
-	body, ok := tryCompleteHTTPBody(raw)
+	body, ok, err := tryCompleteHTTPBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !ok {
 		t.Fatal("expected complete")
 	}
 	if string(body) != "hello" {
 		t.Fatalf("body=%q", body)
 	}
-	if _, ok := tryCompleteHTTPBody([]byte("HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nhel")); ok {
-		t.Fatal("incomplete should be false")
+	if _, ok, err := tryCompleteHTTPBody([]byte("HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nhel")); err != nil || ok {
+		t.Fatal("incomplete should be false without error")
+	}
+	_, ok, err = tryCompleteHTTPBody([]byte("HTTP/1.0 503 Unavailable\r\nContent-Length: 4\r\n\r\nfail"))
+	if err == nil {
+		t.Fatal("non-200 with full body must error")
+	}
+	if ok {
+		t.Fatal("non-200 must not complete successfully")
 	}
 }
 

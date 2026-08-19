@@ -321,9 +321,9 @@ const (
 
 // Padding negotiate responses（与 CircpadResponse* 一致）。
 const (
-	PaddingResponseOK    byte = CircpadResponseOK  // 1
-	PaddingResponseErr   byte = CircpadResponseErr // 2
-	PaddingResponseStarted byte = CircpadResponseOK // 兼容旧测试名
+	PaddingResponseOK      byte = CircpadResponseOK  // 1
+	PaddingResponseErr     byte = CircpadResponseErr // 2
+	PaddingResponseStarted byte = CircpadResponseOK  // 兼容旧测试名
 	PaddingResponseStopped byte = CircpadResponseOK
 	PaddingResponseError   byte = CircpadResponseErr
 )

@@ -34,13 +34,13 @@ func CircpadConfigFromParams(disabled bool, globalAllowed int) CircpadConfig {
 
 // CircpadController 管理单条电路上的 HS setup padding 机。
 type CircpadController struct {
-	mu         sync.Mutex
-	cfg        CircpadConfig
-	machine    CircpadHSSetupMachine
-	kind       HSSetupKind
-	state      int
-	machineCtr uint32
-	active     bool
+	mu            sync.Mutex
+	cfg           CircpadConfig
+	machine       CircpadHSSetupMachine
+	kind          HSSetupKind
+	state         int
+	machineCtr    uint32
+	active        bool
 	negotiateSent bool
 	paddingSent   int
 	paddingRecv   int

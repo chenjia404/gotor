@@ -34,8 +34,8 @@ const (
 	HsNtorAuthMacLen    = 32
 	HsNtorKeySeedLen    = 32
 	HsNtorSubcredLen    = 32
-	HsNtorAuthKeyLen    = 32 // Ed25519 intro auth pubkey
-	HsNtorResponseLen   = 64 // Y(32) || AUTH_INPUT_MAC(32)
+	HsNtorAuthKeyLen    = 32                // Ed25519 intro auth pubkey
+	HsNtorResponseLen   = 64                // Y(32) || AUTH_INPUT_MAC(32)
 	HsNtorCircuitKeyLen = 32 + 32 + 32 + 32 // Df||Db||Kf||Kb（各 SHA3-256 / AES-256）
 )
 

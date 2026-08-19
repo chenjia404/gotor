@@ -14,12 +14,12 @@ import (
 )
 
 const (
-	hsdirNReplicasDefault    = 2
-	hsdirSpreadFetchDefault  = 3
-	hsdirSpreadStoreDefault  = 4
-	hsIndexPrefix            = "store-at-idx"
-	hsdirIndexPrefix         = "node-idx"
-	hsSRVDisasterPrefix      = "shared-random-disaster"
+	hsdirNReplicasDefault   = 2
+	hsdirSpreadFetchDefault = 3
+	hsdirSpreadStoreDefault = 4
+	hsIndexPrefix           = "store-at-idx"
+	hsdirIndexPrefix        = "node-idx"
+	hsSRVDisasterPrefix     = "shared-random-disaster"
 )
 
 // DisasterSRV = SHA3_256("shared-random-disaster" | INT_8(period_length) | INT_8(period_num))

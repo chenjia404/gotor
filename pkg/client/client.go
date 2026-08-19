@@ -305,13 +305,11 @@ func (c *Client) Start(ctx context.Context) error {
 	return nil
 }
 
-// handleNewnym 实现 SIGNAL NEWNYM：关闭预建/遗留电路，迫使后续流新建。
+// handleNewnym 实现 SIGNAL NEWNYM：轮换预建/遗留电路，迫使后续流新建。
 func (c *Client) handleNewnym() {
 	c.logger.Info("SIGNAL NEWNYM: rotating circuits")
 	if c.circuitPool != nil {
-		if err := c.circuitPool.Close(); err != nil {
-			c.logger.Warn("NEWNYM: failed to close circuit pool", "error", err)
-		}
+		c.circuitPool.Rotate()
 	}
 	c.circuitsMu.Lock()
 	legacy := append([]*circuit.Circuit(nil), c.circuits...)

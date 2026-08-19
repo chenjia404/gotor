@@ -19,7 +19,6 @@ import (
 	"io"
 	mrand "math/rand"
 	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -27,8 +26,8 @@ import (
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 
-	"github.com/opd-ai/go-tor/pkg/crypto"
 	"github.com/opd-ai/go-tor/pkg/cell"
+	"github.com/opd-ai/go-tor/pkg/crypto"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/security"
@@ -817,8 +816,6 @@ func extractFollowingEd25519Cert(lines [][]byte, start int) []byte {
 	return b
 }
 
-
-
 // deriveDescriptorKeys derives keys for descriptor encryption/decryption
 // Per rend-spec-v3.txt: Uses HKDF-SHA256 with provided salt and info
 func deriveDescriptorKeys(secret, salt []byte, info string) ([]byte, error) {
@@ -1306,8 +1303,8 @@ type HSDirectory struct {
 	Fingerprint string
 	Address     string
 	ORPort      int
-	DirPort     int  // Directory port for HTTP requests；0 表示仅 ORPort（需 BEGIN_DIR）
-	HSDir       bool // Has HSDir flag
+	DirPort     int              // Directory port for HTTP requests；0 表示仅 ORPort（需 BEGIN_DIR）
+	HSDir       bool             // Has HSDir flag
 	Relay       *directory.Relay // 可选：共识条目，供 BEGIN_DIR 取密钥
 }
 
@@ -1585,34 +1582,6 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 		}
 	}
 
-	// 负责 HSDir 常无 DirPort。回退：尝试列表中所有开放 HTTP DirPort 的缓存。
-	for _, hsdir := range hsdirs {
-		if hsdir == nil || hsdir.DirPort <= 0 {
-			continue
-		}
-		desc, err := h.fetchFromHSDir(ctx, hsdir, blindedPubkey, -1)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		desc.Address = addr
-		desc.BlindedPubkey = blindedPubkey
-		desc.DescriptorID = descriptorID
-		if err := VerifyDescriptorSignature(desc, addr); err != nil {
-			lastErr = err
-			continue
-		}
-		decryptedDesc, err := DecryptDescriptor(desc, addr, timePeriod)
-		if err != nil {
-			h.logger.Warn("Descriptor decryption failed (may not be encrypted)",
-				"hsdir", hsdir.Fingerprint, "error", err)
-			return desc, nil
-		}
-		h.logger.Info("Fetched descriptor from HTTP DirPort cache",
-			"hsdir", hsdir.Fingerprint, "intro_points", len(decryptedDesc.IntroPoints))
-		return decryptedDesc, nil
-	}
-
 	// Failed after all retries
 	if lastErr != nil {
 		return nil, fmt.Errorf("failed to fetch descriptor after %d retries: %w", maxRetries, lastErr)
@@ -1620,9 +1589,8 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 	return nil, fmt.Errorf("failed to fetch descriptor from any HSDir")
 }
 
-// fetchFromHSDir fetches a descriptor from a specific HSDir using HTTP
-// Implements the HSDir protocol per dir-spec.txt section 4.3
-// AUDIT-003 FIX: Removed mock fallbacks, returns proper errors with retry support
+// fetchFromHSDir 仅经 BEGIN_DIR（匿名电路）拉取描述符。
+// 禁止明文 DirPort HTTP：会把客户端真实出口 IP 与盲化洋葱身份绑定在同一请求中。
 func (h *HSDir) fetchFromHSDir(ctx context.Context, hsdir *HSDirectory, blindedPubkey []byte, replica int) (*Descriptor, error) {
 	if len(blindedPubkey) != 32 {
 		return nil, fmt.Errorf("blinded pubkey must be 32 bytes")
@@ -1635,58 +1603,20 @@ func (h *HSDir) fetchFromHSDir(ctx context.Context, hsdir *HSDirectory, blindedP
 		"hsdir", hsdir.Fingerprint,
 		"blinded_b64", blindedB64[:minInt(16, len(blindedB64))],
 		"replica", replica)
-	var body []byte
-	var err error
 
-	// 优先 BEGIN_DIR（ORPort）；现代 HSDir 通常无 DirPort
-	if h.begindir != nil && hsdir.Relay != nil && hsdir.Relay.HasNtorKeys() {
-		body, err = h.begindir.Fetch(ctx, hsdir.Relay, httpPath)
-		if err != nil {
-			h.logger.Debug("BEGIN_DIR fetch failed, may try HTTP",
-				"hsdir", hsdir.Fingerprint, "error", err)
-		}
-	} else if h.begindir != nil && (hsdir.Relay == nil || !hsdir.Relay.HasNtorKeys()) {
-		h.logger.Debug("BEGIN_DIR skipped: missing relay microdesc keys",
-			"hsdir", hsdir.Fingerprint, "has_relay", hsdir.Relay != nil)
+	if h.begindir == nil {
+		return nil, fmt.Errorf("HSDir %s: BEGIN_DIR unavailable (required for anonymous descriptor fetch)", hsdir.Fingerprint)
+	}
+	if hsdir.Relay == nil || !hsdir.Relay.HasNtorKeys() {
+		return nil, fmt.Errorf("HSDir %s: missing relay microdesc keys for BEGIN_DIR", hsdir.Fingerprint)
 	}
 
-	if body == nil && hsdir.DirPort > 0 {
-		url := fmt.Sprintf("http://%s:%d%s", hsdir.Address, hsdir.DirPort, httpPath)
-		h.logger.Debug("Building HSDir HTTP request", "url", url)
-		timeout := 5 * time.Second
-		client := &http.Client{Timeout: timeout}
-		req, reqErr := http.NewRequestWithContext(ctx, "GET", url, nil)
-		if reqErr != nil {
-			return nil, fmt.Errorf("failed to create HSDir request: %w", reqErr)
-		}
-		req.Header.Set("User-Agent", "Tor/0.4.7.0")
-		resp, doErr := client.Do(req)
-		if doErr != nil {
-			if err != nil {
-				return nil, fmt.Errorf("BEGIN_DIR: %v; HTTP: %w", err, doErr)
-			}
-			return nil, fmt.Errorf("failed to fetch descriptor from %s: %w", hsdir.Fingerprint, doErr)
-		}
-		defer func() {
-			if cerr := resp.Body.Close(); cerr != nil {
-				h.logger.Error("Failed to close response body", "function", "fetchFromHSDir", "error", cerr)
-			}
-		}()
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("HSDir %s returned status %d", hsdir.Fingerprint, resp.StatusCode)
-		}
-		limitedReader := io.LimitReader(resp.Body, MaxDescriptorSize+1)
-		body, err = io.ReadAll(limitedReader)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read descriptor from %s: %w", hsdir.Fingerprint, err)
-		}
+	body, err := h.begindir.Fetch(ctx, hsdir.Relay, httpPath)
+	if err != nil {
+		return nil, fmt.Errorf("BEGIN_DIR fetch from %s: %w", hsdir.Fingerprint, err)
 	}
-
 	if body == nil {
-		if err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("HSDir %s: no DirPort and BEGIN_DIR unavailable", hsdir.Fingerprint)
+		return nil, fmt.Errorf("HSDir %s: empty BEGIN_DIR response", hsdir.Fingerprint)
 	}
 
 	if len(body) > MaxDescriptorSize {
@@ -1699,18 +1629,11 @@ func (h *HSDir) fetchFromHSDir(ctx context.Context, hsdir *HSDirectory, blindedP
 		return nil, fmt.Errorf("failed to parse descriptor from %s: %w", hsdir.Fingerprint, err)
 	}
 	desc.DescriptorID = computeDescriptorID(blindedPubkey)
-	via := "HTTP"
-	if h.begindir != nil && body != nil && (hsdir.DirPort <= 0 || err == nil) {
-		// 粗略：无 DirPort 或 begindir 成功时标 BEGIN_DIR
-		if hsdir.DirPort <= 0 {
-			via = "BEGIN_DIR"
-		}
-	}
 	h.logger.Info("Successfully fetched descriptor",
 		"hsdir", hsdir.Fingerprint,
 		"intro_points", len(desc.IntroPoints),
 		"revision", desc.RevisionCounter,
-		"via", via)
+		"via", "BEGIN_DIR")
 	return desc, nil
 }
 
@@ -1900,8 +1823,8 @@ func (ip *IntroductionProtocol) buildEncryptedData(req *IntroduceRequest) ([]byt
 
 	var plaintext bytes.Buffer
 	plaintext.Write(req.RendezvousCookie)
-	plaintext.WriteByte(0) // N_EXTENSIONS
-	plaintext.WriteByte(0x01) // ONION_KEY_TYPE = NTOR
+	plaintext.WriteByte(0)              // N_EXTENSIONS
+	plaintext.WriteByte(0x01)           // ONION_KEY_TYPE = NTOR
 	plaintext.Write([]byte{0x00, 0x20}) // ONION_KEY_LEN = 32
 	plaintext.Write(req.RendezvousOnionKey)
 	if len(req.RendezvousLinkSpecs) > 255 {

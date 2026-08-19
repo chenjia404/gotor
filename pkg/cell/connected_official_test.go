@@ -20,9 +20,9 @@ type connectedVectorFile struct {
 		Error  bool   `json:"error"`
 	} `json:"cases"`
 	Create2 struct {
-		Hex            string `json:"hex"`
-		HandshakeType  int    `json:"handshake_type"`
-		OnionSkinLen   int    `json:"onion_skin_len"`
+		Hex           string `json:"hex"`
+		HandshakeType int    `json:"handshake_type"`
+		OnionSkinLen  int    `json:"onion_skin_len"`
 	} `json:"create2_ntor_header"`
 }
 

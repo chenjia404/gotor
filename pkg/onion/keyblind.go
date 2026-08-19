@@ -41,6 +41,7 @@ func BuildBlindedKeyParam(pubkey []byte, secret []byte, periodNum, periodLength 
 
 	h := sha3.New256()
 	// sizeof("Derive temporary signing key") in C includes NUL
+	// lgtm[go/weak-sensitive-data-hashing] KEYBLIND 按 rend-spec-v3 使用 SHA3-256 致盲公钥，非口令哈希
 	_, _ = h.Write([]byte("Derive temporary signing key\x00"))
 	_, _ = h.Write(pubkey)
 	if len(secret) > 0 {

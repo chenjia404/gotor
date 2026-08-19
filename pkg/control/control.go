@@ -328,7 +328,7 @@ func (s *Server) handleSignal(conn *connection, args []string) {
 		conn.writeReply(250, "OK")
 	case "SHUTDOWN", "HALT":
 		conn.writeReply(250, "OK")
-		s.logger.Info("SIGNAL "+sig)
+		s.logger.Info("SIGNAL " + sig)
 		if s.onShutdown != nil {
 			go s.onShutdown()
 		}

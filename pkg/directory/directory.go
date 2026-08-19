@@ -148,27 +148,27 @@ type Relay struct {
 
 // Client provides directory protocol operations
 type Client struct {
-	httpClient        *http.Client
-	logger            *logger.Logger
-	authorities       []string
-	certCache         *AuthorityCertCache // Certificate cache for signature verification
-	mu                sync.RWMutex
-	lastParams        map[string]int // 最近一次验签成功的共识 params（给 FlowCtrl=2）
-	lastConsensusRaw  string         // 验签成功的整份共识（给 DirCache=2 diff）
-	lastSignedSHA3Hex string         // 上述文档 signed part 的 SHA3-256 hex
-	lastFetchUsedDiff bool           // 最近一次成功 ingest 是否来自 limited-ed diff
-	sharedRandCurrent []byte         // shared-rand-current-value（32 字节）
-	sharedRandPrev    []byte         // shared-rand-previous-value（32 字节）
+	httpClient          *http.Client
+	logger              *logger.Logger
+	authorities         []string
+	certCache           *AuthorityCertCache // Certificate cache for signature verification
+	mu                  sync.RWMutex
+	lastParams          map[string]int // 最近一次验签成功的共识 params（给 FlowCtrl=2）
+	lastConsensusRaw    string         // 验签成功的整份共识（给 DirCache=2 diff）
+	lastSignedSHA3Hex   string         // 上述文档 signed part 的 SHA3-256 hex
+	lastFetchUsedDiff   bool           // 最近一次成功 ingest 是否来自 limited-ed diff
+	sharedRandCurrent   []byte         // shared-rand-current-value（32 字节）
+	sharedRandPrev      []byte         // shared-rand-previous-value（32 字节）
 	consensusValidAfter time.Time
 }
 
 // AuthorityCertCache caches authority signing certificates for consensus verification
 type AuthorityCertCache struct {
-	mu       sync.RWMutex
-	certs    map[string]*AuthorityCert // Key: identity fingerprint (v3ident)
-	diskPath string                    // DataDirectory/cached-certs；空则不落盘
-	logger   *logger.Logger
-	keyFetches atomic.Uint64           // 实际发起的 /tor/keys/fp HTTP 次数（验收用）
+	mu         sync.RWMutex
+	certs      map[string]*AuthorityCert // Key: identity fingerprint (v3ident)
+	diskPath   string                    // DataDirectory/cached-certs；空则不落盘
+	logger     *logger.Logger
+	keyFetches atomic.Uint64 // 实际发起的 /tor/keys/fp HTTP 次数（验收用）
 }
 
 // AuthorityCert 是一份权威密钥证书（dir-key-certificate-version 3）。

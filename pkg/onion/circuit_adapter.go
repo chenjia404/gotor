@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
@@ -20,6 +21,7 @@ type CircuitAdapter struct {
 	manager *circuit.Manager
 	relays  []*directory.Relay
 	logger  *logger.Logger
+	mu      sync.RWMutex
 	circs   map[uint32]*circuit.Circuit
 }
 
@@ -39,7 +41,9 @@ func NewCircuitAdapter(builder *circuit.Builder, manager *circuit.Manager, relay
 
 // SetRelays 更新共识节点池。
 func (a *CircuitAdapter) SetRelays(relays []*directory.Relay) {
+	a.mu.Lock()
 	a.relays = relays
+	a.mu.Unlock()
 }
 
 // BuildCircuitToRelay 建 Guard→Middle→relay 三跳。
@@ -76,7 +80,9 @@ func (a *CircuitAdapter) BuildCircuitToRelay(ctx context.Context, target *HSDire
 	if circ == nil {
 		return 0, fmt.Errorf("build circuit to %s: %w", exit.Nickname, last)
 	}
+	a.mu.Lock()
 	a.circs[circ.ID] = circ
+	a.mu.Unlock()
 	return circ.ID, nil
 }
 
@@ -87,7 +93,10 @@ func (a *CircuitAdapter) resolveTarget(h *HSDirectory) *directory.Relay {
 	if h.Relay != nil && h.Relay.HasExtendKeys() {
 		return h.Relay
 	}
-	for _, r := range a.relays {
+	a.mu.RLock()
+	relays := a.relays
+	a.mu.RUnlock()
+	for _, r := range relays {
 		if r == nil {
 			continue
 		}
@@ -103,9 +112,12 @@ func (a *CircuitAdapter) resolveTarget(h *HSDirectory) *directory.Relay {
 }
 
 func (a *CircuitAdapter) pickPath(exit *directory.Relay) (*path.Path, error) {
+	a.mu.RLock()
+	relays := a.relays
+	a.mu.RUnlock()
 	guards := make([]*directory.Relay, 0, 32)
 	middles := make([]*directory.Relay, 0, 64)
-	for _, r := range a.relays {
+	for _, r := range relays {
 		if r == nil || !r.IsRunning() || !r.IsValid() || !r.HasExtendKeys() {
 			continue
 		}
@@ -135,7 +147,10 @@ func (a *CircuitAdapter) pickPath(exit *directory.Relay) (*path.Path, error) {
 }
 
 func (a *CircuitAdapter) lookup(circuitID uint32) *circuit.Circuit {
-	if c := a.circs[circuitID]; c != nil {
+	a.mu.RLock()
+	c := a.circs[circuitID]
+	a.mu.RUnlock()
+	if c != nil {
 		return c
 	}
 	if a.manager != nil {

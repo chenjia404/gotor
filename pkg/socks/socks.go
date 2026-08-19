@@ -158,6 +158,7 @@ type Server struct {
 
 	circpadCfg    circuit.CircpadConfig
 	circpadCfgSet bool
+	onionRelays   []*directory.Relay // 用于检查中间跳 Padding=2
 
 	eventPub EventPublisher
 }
@@ -244,12 +245,35 @@ func (s *Server) wireOnionCircpad() {
 		if s.circpadCfgSet {
 			cfg = s.circpadCfg
 		}
+		relays := s.onionRelays
 		s.mu.Unlock()
 		if cfg.Disabled {
 			return nil
 		}
-		return circ.StartHSSetupPadding(circuit.HSSetupIntro, true, cfg)
+		middleSupports := middleHopSupportsPadding2(circ, relays)
+		return circ.StartHSSetupPadding(circuit.HSSetupIntro, middleSupports, cfg)
 	}
+}
+
+// middleHopSupportsPadding2 检查电路中间跳是否宣告 Padding=2。
+func middleHopSupportsPadding2(circ *circuit.Circuit, relays []*directory.Relay) bool {
+	if circ == nil {
+		return false
+	}
+	hops := circ.GetHops()
+	if len(hops) < 2 || hops[1] == nil || hops[1].Fingerprint == "" {
+		return false
+	}
+	fp := hops[1].Fingerprint
+	for _, r := range relays {
+		if r == nil {
+			continue
+		}
+		if r.Fingerprint == fp || r.GetFingerprintHex() == fp {
+			return r.Supports("Padding", 2)
+		}
+	}
+	return false
 }
 
 // SetEventPublisher 注入 Control 事件发布器。
@@ -288,6 +312,9 @@ func (s *Server) SetOnionNetwork(
 		return
 	}
 	hsdirs := onion.HSDirectoriesFromRelays(relays)
+	s.mu.Lock()
+	s.onionRelays = relays
+	s.mu.Unlock()
 	s.onionClient.UpdateHSDirs(hsdirs)
 	s.onionClient.SetNetworkRelays(relays)
 	if dirClient != nil {
