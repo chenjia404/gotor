@@ -280,10 +280,14 @@ func (c *Client) Start(ctx context.Context) error {
 		}
 	}()
 
-	// Step 6: Start control protocol server
-	c.logger.Info("Starting control protocol server", "port", c.config.ControlPort)
-	if err := c.controlServer.Start(); err != nil {
-		return fmt.Errorf("failed to start control server: %w", err)
+	// Step 6: Start control protocol server（ControlPort=0 表示关闭，供移动端 SDK 使用）
+	if c.config.ControlPort > 0 {
+		c.logger.Info("Starting control protocol server", "port", c.config.ControlPort)
+		if err := c.controlServer.Start(); err != nil {
+			return fmt.Errorf("failed to start control server: %w", err)
+		}
+	} else {
+		c.logger.Info("ControlPort disabled (0)")
 	}
 
 	// Step 6.5: Start HTTP metrics server if enabled

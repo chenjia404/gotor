@@ -150,6 +150,17 @@ func main() {
 }
 ```
 
+### Android SDK（gomobile 绑定）
+
+本仓库只提供可绑定 API 与文档，不包含 Android 工程、Gradle 或 Sample App。
+
+集成说明、AAR 构建与 Kotlin/Java 示例见 [Android SDK 指南](docs/ANDROID_SDK.md)。
+
+```bash
+# 需要 gomobile 与 Android NDK
+make android-aar
+```
+
 ### HTTP Client Helper
 
 Streamlined HTTP requests through Tor:
@@ -280,6 +291,7 @@ Copyright (c) 2024, OPD AI. See [LICENSE](LICENSE) for full license text.
 - [The Tor Project](https://www.torproject.org/)
 - [Architecture Documentation](docs/ARCHITECTURE.md)
 - [API Reference](docs/API.md)
+- [Android SDK 指南](docs/ANDROID_SDK.md)
 - [Onion Service Hosting Guide](docs/ONION_SERVICE_HOSTING.md)
 - [Examples Directory](examples/)
 

@@ -7,16 +7,23 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // GetDefaultDataDir returns the platform-appropriate data directory for go-tor.
 // On Unix: ~/.config/go-tor
 // On Windows: %APPDATA%/go-tor
 // On macOS: ~/Library/Application Support/go-tor
+// On Android: $GOTOR_DATADIR 或 os.TempDir()/go-tor（不使用 ~/.config）。
+// Android SDK（pkg/mobile）仍要求调用方显式传入 dataDir，不会依赖本函数。
 func GetDefaultDataDir() (string, error) {
+	return defaultDataDirForGOOS(runtime.GOOS)
+}
+
+func defaultDataDirForGOOS(goos string) (string, error) {
 	var baseDir string
 
-	switch runtime.GOOS {
+	switch goos {
 	case "windows":
 		// Use %APPDATA% on Windows
 		baseDir = os.Getenv("APPDATA")
@@ -36,6 +43,14 @@ func GetDefaultDataDir() (string, error) {
 			return "", fmt.Errorf("cannot determine home directory: %w", err)
 		}
 		return filepath.Join(homeDir, "Library", "Application Support", "go-tor"), nil
+
+	case "android":
+		// Android 没有稳定家目录。SDK 必须由调用方传入 dataDir；
+		// 这里只给其它代码路径兜底，避免落到 ~/.config/go-tor。
+		if dir := strings.TrimSpace(os.Getenv("GOTOR_DATADIR")); dir != "" {
+			return dir, nil
+		}
+		return filepath.Join(os.TempDir(), "go-tor"), nil
 
 	default:
 		// Use XDG_CONFIG_HOME or ~/.config on Linux/Unix
