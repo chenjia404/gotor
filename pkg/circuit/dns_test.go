@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -403,14 +404,23 @@ func TestDNSResultValidation(t *testing.T) {
 
 // mockConnection 记录发出的 RELAY cell StreamID，供 mock 应答配对。
 type mockConnection struct {
+	mu           sync.Mutex
 	lastStreamID uint16
 }
 
 func (m *mockConnection) SendCell(c *cell.Cell) error {
 	if len(c.Payload) >= 5 {
+		m.mu.Lock()
 		m.lastStreamID = binary.BigEndian.Uint16(c.Payload[3:5])
+		m.mu.Unlock()
 	}
 	return nil
+}
+
+func (m *mockConnection) streamID() uint16 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastStreamID
 }
 
 // MockCircuitForDNS 注入与发出 RESOLVE 相同 StreamID 的 RELAY_RESOLVED。
@@ -429,12 +439,12 @@ func MockCircuitForDNS(t *testing.T, responseData []byte) *Circuit {
 	go func() {
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
-			if conn.lastStreamID != 0 {
+			if conn.streamID() != 0 {
 				break
 			}
 			time.Sleep(time.Millisecond)
 		}
-		sid := conn.lastStreamID
+		sid := conn.streamID()
 		if sid == 0 {
 			t.Errorf("RESOLVE 未发出非 0 StreamID")
 			return

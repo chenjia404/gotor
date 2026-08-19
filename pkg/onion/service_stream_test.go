@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 // mockCircuit implements CircuitInterface for testing
 type mockCircuit struct {
+	mu               sync.Mutex
 	id               uint32
 	sentCells        []*cell.RelayCell
 	receiveCellsChan chan *cell.RelayCell
@@ -28,6 +30,8 @@ func newMockCircuit(id uint32) *mockCircuit {
 }
 
 func (m *mockCircuit) SendRelayCell(relayCell *cell.RelayCell) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.sentCells = append(m.sentCells, relayCell)
 	return nil
 }
@@ -46,10 +50,26 @@ func (m *mockCircuit) GetID() uint32 {
 }
 
 func (m *mockCircuit) getSentCell(index int) *cell.RelayCell {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if index < 0 || index >= len(m.sentCells) {
 		return nil
 	}
 	return m.sentCells[index]
+}
+
+func (m *mockCircuit) sentCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.sentCells)
+}
+
+func (m *mockCircuit) snapshotSent() []*cell.RelayCell {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*cell.RelayCell, len(m.sentCells))
+	copy(out, m.sentCells)
+	return out
 }
 
 func TestParseAddrPort(t *testing.T) {
@@ -560,7 +580,7 @@ func TestServiceStream_Bidirectional(t *testing.T) {
 
 	// Check for RELAY_DATA cells sent back
 	foundEcho := false
-	for _, sentCell := range circuit.sentCells {
+	for _, sentCell := range circuit.snapshotSent() {
 		if sentCell.Command == cell.RelayData && string(sentCell.Data) == string(testMsg) {
 			foundEcho = true
 			break

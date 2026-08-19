@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 
 // mockConn is a mock connection for testing
 type mockConn struct {
+	mu        sync.Mutex
 	readData  []byte
 	readPos   int
 	writeData []byte
@@ -29,6 +31,8 @@ func newMockConn() *mockConn {
 }
 
 func (m *mockConn) Read(b []byte) (n int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.readPos >= len(m.readData) {
 		return 0, io.EOF
 	}
@@ -38,11 +42,15 @@ func (m *mockConn) Read(b []byte) (n int, err error) {
 }
 
 func (m *mockConn) Write(b []byte) (n int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.writeData = append(m.writeData, b...)
 	return len(b), nil
 }
 
 func (m *mockConn) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.closed = true
 	return nil
 }

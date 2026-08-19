@@ -107,8 +107,10 @@ func TestFlowControlConcurrentStreams(t *testing.T) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				// Replenish circuit window if low
-				if circ.packageWindow < 500 {
+				circ.mu.Lock()
+				low := circ.packageWindow < 500
+				circ.mu.Unlock()
+				if low {
 					circ.incrementPackageWindow()
 				}
 			}
