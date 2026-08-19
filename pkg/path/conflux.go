@@ -17,7 +17,7 @@ func PathAdvertisesConflux(p *Path) bool {
 }
 
 func confluxHopOK(r *directory.Relay) bool {
-	return r.AdvertisesConflux() && r.RequestCongestionControl()
+	return r.UsableAsCircuitHop() && r.AdvertisesConflux() && r.RequestCongestionControl()
 }
 
 func relayIdentity(r *directory.Relay) string {
@@ -91,6 +91,9 @@ func (s *Selector) SelectConfluxPathFor(target ExitTarget) (*Path, error) {
 		return nil, err
 	}
 	p := &Path{Guard: guard, Middle: middle, Exit: exit}
+	if !p.hopsMeetFlagConstraints() {
+		return nil, fmt.Errorf("conflux first path failed Fast/MiddleOnly/BadExit constraints")
+	}
 	if !PathAdvertisesConflux(p) {
 		return nil, fmt.Errorf("constructed path missing Conflux advertisement")
 	}
@@ -104,7 +107,7 @@ func (s *Selector) SelectConfluxPathFor(target ExitTarget) (*Path, error) {
 func (s *Selector) selectConfluxGuardFrom(first *Path) (*directory.Relay, error) {
 	candidates := make([]*directory.Relay, 0)
 	for _, relay := range s.guards {
-		if !confluxHopOK(relay) {
+		if !confluxHopOK(relay) || !relay.UsableAsGuard() {
 			continue
 		}
 		if first != nil && (identityIn(relay, first.Guard, first.Middle, first.Exit) ||
@@ -126,7 +129,7 @@ func (s *Selector) selectConfluxGuardFrom(first *Path) (*directory.Relay, error)
 func (s *Selector) selectConfluxExit(target ExitTarget, avoid *directory.Relay) (*directory.Relay, error) {
 	exits := make([]*directory.Relay, 0)
 	for _, relay := range s.relays {
-		if !confluxHopOK(relay) {
+		if !confluxHopOK(relay) || !relay.UsableAsExit() {
 			continue
 		}
 		if avoid != nil && (sameRelayIdentity(relay, avoid) || s.sameFamily(relay, avoid) || relay.InSameSubnet(avoid)) {
@@ -153,6 +156,9 @@ func (s *Selector) SelectConfluxSecondPath(first *Path) (*Path, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	if !first.hopsMeetFlagConstraints() {
+		return nil, fmt.Errorf("first path failed Fast/MiddleOnly/BadExit constraints")
+	}
 	if !PathAdvertisesConflux(first) {
 		return nil, fmt.Errorf("first path does not advertise Conflux on all hops")
 	}
@@ -171,6 +177,9 @@ func (s *Selector) SelectConfluxSecondPath(first *Path) (*Path, error) {
 	}
 
 	second := &Path{Guard: guard, Middle: middle, Exit: exit}
+	if !second.hopsMeetFlagConstraints() {
+		return nil, fmt.Errorf("conflux second path failed Fast/MiddleOnly/BadExit constraints")
+	}
 	if !PathAdvertisesConflux(second) {
 		return nil, fmt.Errorf("second path missing Conflux advertisement")
 	}

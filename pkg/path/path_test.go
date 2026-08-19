@@ -27,14 +27,14 @@ func newMockDirectoryClient() *mockDirectoryClient {
 				Fingerprint: "AAAA1111",
 				Address:     "10.0.1.1", // Different /16 subnet
 				ORPort:      9001,
-				Flags:       []string{"Running", "Valid", "Guard", "Stable", "Fast"},
+				Flags:       []string{"Running", "Valid", "Guard", "Fast", "Stable"},
 			},
 			{
 				Nickname:    "GuardRelay2",
 				Fingerprint: "AAAA2222",
 				Address:     "10.1.1.2", // Different /16 subnet
 				ORPort:      9001,
-				Flags:       []string{"Running", "Valid", "Guard", "Stable"},
+				Flags:       []string{"Running", "Valid", "Guard", "Fast", "Stable"},
 			},
 			{
 				Nickname:    "MiddleRelay1",
@@ -48,7 +48,7 @@ func newMockDirectoryClient() *mockDirectoryClient {
 				Fingerprint: "BBBB2222",
 				Address:     "172.17.2.2", // Different /16 subnet
 				ORPort:      9001,
-				Flags:       []string{"Running", "Valid"},
+				Flags:       []string{"Running", "Valid", "Fast"},
 			},
 			{
 				Nickname:    "ExitRelay1",
@@ -62,7 +62,7 @@ func newMockDirectoryClient() *mockDirectoryClient {
 				Fingerprint: "CCCC2222",
 				Address:     "192.169.3.2", // Different /16 subnet
 				ORPort:      9001,
-				Flags:       []string{"Running", "Valid", "Exit"},
+				Flags:       []string{"Running", "Valid", "Exit", "Fast"},
 			},
 			{
 				Nickname:    "InvalidRelay",
@@ -260,14 +260,14 @@ func TestSelectExitRespectsPolicy(t *testing.T) {
 		Fingerprint: "GUARD1",
 		Address:     "10.0.1.1",
 		ORPort:      9001,
-		Flags:       []string{"Running", "Valid", "Guard"},
+		Flags:       []string{"Running", "Valid", "Guard", "Fast"},
 	}
 	httpExit := &directory.Relay{
 		Nickname:    "HTTPOnly",
 		Fingerprint: "EXIT80",
 		Address:     "192.168.3.1",
 		ORPort:      9001,
-		Flags:       []string{"Running", "Valid", "Exit"},
+		Flags:       []string{"Running", "Valid", "Exit", "Fast"},
 		ExitPolicy:  httpOnly,
 	}
 	httpsExit := &directory.Relay{
@@ -275,7 +275,7 @@ func TestSelectExitRespectsPolicy(t *testing.T) {
 		Fingerprint: "EXIT443",
 		Address:     "192.169.3.2",
 		ORPort:      9001,
-		Flags:       []string{"Running", "Valid", "Exit"},
+		Flags:       []string{"Running", "Valid", "Exit", "Fast"},
 		ExitPolicy:  httpsOK,
 	}
 
@@ -318,14 +318,14 @@ func TestSelectExitIPv6UsesP6(t *testing.T) {
 		Fingerprint: "GUARD1",
 		Address:     "10.0.1.1",
 		ORPort:      9001,
-		Flags:       []string{"Running", "Valid", "Guard"},
+		Flags:       []string{"Running", "Valid", "Guard", "Fast"},
 	}
 	ipv4Exit := &directory.Relay{
 		Nickname:    "IPv4Only",
 		Fingerprint: "EXITV4",
 		Address:     "192.168.3.1",
 		ORPort:      9001,
-		Flags:       []string{"Running", "Valid", "Exit"},
+		Flags:       []string{"Running", "Valid", "Exit", "Fast"},
 		ExitPolicy:  v4Only,
 	}
 	http6Exit := &directory.Relay{
@@ -333,7 +333,7 @@ func TestSelectExitIPv6UsesP6(t *testing.T) {
 		Fingerprint:    "EXIT80V6",
 		Address:        "192.168.4.1",
 		ORPort:         9001,
-		Flags:          []string{"Running", "Valid", "Exit"},
+		Flags:          []string{"Running", "Valid", "Exit", "Fast"},
 		ExitPolicy:     v4Only,
 		ExitPolicyIPv6: v6HTTP,
 	}
@@ -342,7 +342,7 @@ func TestSelectExitIPv6UsesP6(t *testing.T) {
 		Fingerprint:    "EXIT443V6",
 		Address:        "192.169.4.2",
 		ORPort:         9001,
-		Flags:          []string{"Running", "Valid", "Exit"},
+		Flags:          []string{"Running", "Valid", "Exit", "Fast"},
 		ExitPolicy:     v4Only,
 		ExitPolicyIPv6: v6HTTPS,
 	}
@@ -526,42 +526,42 @@ func TestDiversityIntegration(t *testing.T) {
 			Fingerprint: "G1",
 			Address:     "10.0.1.1",
 			ORPort:      9001,
-			Flags:       []string{"Running", "Valid", "Guard", "Stable"},
+			Flags:       []string{"Running", "Valid", "Guard", "Fast", "Stable"},
 		},
 		{
 			Nickname:    "Middle1",
 			Fingerprint: "M1",
 			Address:     "172.16.2.1",
 			ORPort:      9001,
-			Flags:       []string{"Running", "Valid"},
+			Flags:       []string{"Running", "Valid", "Fast"},
 		},
 		{
 			Nickname:    "Exit1",
 			Fingerprint: "E1",
 			Address:     "192.168.3.1",
 			ORPort:      9001,
-			Flags:       []string{"Running", "Valid", "Exit"},
+			Flags:       []string{"Running", "Valid", "Exit", "Fast"},
 		},
 		{
 			Nickname:    "Guard2",
 			Fingerprint: "G2",
 			Address:     "10.1.1.1",
 			ORPort:      9001,
-			Flags:       []string{"Running", "Valid", "Guard", "Stable"},
+			Flags:       []string{"Running", "Valid", "Guard", "Fast", "Stable"},
 		},
 		{
 			Nickname:    "Middle2",
 			Fingerprint: "M2",
 			Address:     "172.17.2.1",
 			ORPort:      9001,
-			Flags:       []string{"Running", "Valid"},
+			Flags:       []string{"Running", "Valid", "Fast"},
 		},
 		{
 			Nickname:    "Exit2",
 			Fingerprint: "E2",
 			Address:     "192.169.3.1",
 			ORPort:      9001,
-			Flags:       []string{"Running", "Valid", "Exit"},
+			Flags:       []string{"Running", "Valid", "Exit", "Fast"},
 		},
 	}
 
@@ -608,21 +608,21 @@ func TestGetDiversityStats(t *testing.T) {
 			Fingerprint: "G1",
 			Address:     "10.0.1.1",
 			ORPort:      9001,
-			Flags:       []string{"Running", "Valid", "Guard", "Stable"},
+			Flags:       []string{"Running", "Valid", "Guard", "Fast", "Stable"},
 		},
 		{
 			Nickname:    "Middle1",
 			Fingerprint: "M1",
 			Address:     "172.16.2.1",
 			ORPort:      9001,
-			Flags:       []string{"Running", "Valid"},
+			Flags:       []string{"Running", "Valid", "Fast"},
 		},
 		{
 			Nickname:    "Exit1",
 			Fingerprint: "E1",
 			Address:     "192.168.3.1",
 			ORPort:      9001,
-			Flags:       []string{"Running", "Valid", "Exit"},
+			Flags:       []string{"Running", "Valid", "Exit", "Fast"},
 		},
 	}
 

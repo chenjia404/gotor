@@ -29,6 +29,14 @@ func (t ExitTarget) String() string {
 	return fmt.Sprintf("*:%d", t.Port)
 }
 
+// hopsMeetFlagConstraints 三跳必须满足最新 Tor 非测试电路的 Fast/MiddleOnly/BadExit 规则。
+func (p *Path) hopsMeetFlagConstraints() bool {
+	if p == nil || p.Guard == nil || p.Middle == nil || p.Exit == nil {
+		return false
+	}
+	return p.Guard.UsableAsGuard() && p.Middle.UsableAsCircuitHop() && p.Exit.UsableAsExit()
+}
+
 // Path represents a selected path through the Tor network
 type Path struct {
 	Guard  *directory.Relay
@@ -138,7 +146,7 @@ func (s *Selector) UpdateConsensus(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Filter relays for guards (must be Guard, Running, Valid, Stable)
+	// Filter relays for guards：Running+Valid+Fast+Guard+Stable，且不得 MiddleOnly
 	guards := make([]*directory.Relay, 0)
 	allRelays := make([]*directory.Relay, 0)
 
@@ -149,7 +157,7 @@ func (s *Selector) UpdateConsensus(ctx context.Context) error {
 
 		allRelays = append(allRelays, relay)
 
-		if relay.IsGuard() && relay.IsStable() {
+		if relay.UsableAsGuard() {
 			guards = append(guards, relay)
 		}
 	}
@@ -218,6 +226,9 @@ func (s *Selector) SelectPathFor(target ExitTarget) (*Path, error) {
 			Middle: middle,
 			Exit:   exit,
 		}
+		if !path.hopsMeetFlagConstraints() {
+			return nil, fmt.Errorf("selected path failed Fast/MiddleOnly/BadExit constraints")
+		}
 
 		// Analyze diversity of this path
 		score := s.diversityAnalyzer.AnalyzePath(path)
@@ -272,6 +283,12 @@ func (s *Selector) selectGuard() (*directory.Relay, error) {
 		for _, pGuard := range persistentGuards {
 			for _, relay := range s.guards {
 				if relay.Fingerprint == pGuard.Fingerprint {
+					if !relay.UsableAsGuard() {
+						s.logger.Warn("Skipping persistent guard that is no longer usable",
+							"nickname", relay.Nickname,
+							"fingerprint", relay.Fingerprint)
+						continue
+					}
 					// Check if this guard is biased
 					if s.biasDetector != nil && s.biasDetector.IsBiased(relay.Fingerprint) {
 						s.logger.Warn("Skipping biased persistent guard",
@@ -290,11 +307,19 @@ func (s *Selector) selectGuard() (*directory.Relay, error) {
 		s.logger.Debug("No persistent guards available, selecting new guard")
 	}
 
-	// Filter out biased guards
-	availableGuards := s.guards
+	// Filter out biased / 非 Fast / MiddleOnly guards
+	availableGuards := make([]*directory.Relay, 0, len(s.guards))
+	for _, guard := range s.guards {
+		if guard.UsableAsGuard() {
+			availableGuards = append(availableGuards, guard)
+		}
+	}
+	if len(availableGuards) == 0 {
+		return nil, fmt.Errorf("no Fast, non-MiddleOnly guard relays available")
+	}
 	if s.biasDetector != nil {
-		filtered := make([]*directory.Relay, 0, len(s.guards))
-		for _, guard := range s.guards {
+		filtered := make([]*directory.Relay, 0, len(availableGuards))
+		for _, guard := range availableGuards {
 			if !s.biasDetector.IsBiased(guard.Fingerprint) {
 				filtered = append(filtered, guard)
 			}
@@ -354,6 +379,9 @@ func (s *Selector) selectExitFor(target ExitTarget, avoid *directory.Relay) (*di
 	exits := make([]*directory.Relay, 0)
 
 	for _, relay := range s.relays {
+		if !relay.UsableAsExit() {
+			continue
+		}
 		// Skip family/subnet checks if no relay to avoid
 		if avoid != nil {
 			// Skip if same relay
@@ -384,7 +412,7 @@ func (s *Selector) selectExitFor(target ExitTarget, avoid *directory.Relay) (*di
 	}
 
 	if len(exits) == 0 {
-		return nil, fmt.Errorf("no suitable exit relays available for %s (family/subnet/policy constraints)", target)
+		return nil, fmt.Errorf("no suitable exit relays available for %s (fast/middleonly/family/subnet/policy constraints)", target)
 	}
 
 	idx, err := weightedRandomIndex(exits)
@@ -401,6 +429,9 @@ func (s *Selector) selectMiddle(guard, exit *directory.Relay) (*directory.Relay,
 	candidates := make([]*directory.Relay, 0)
 
 	for _, relay := range s.relays {
+		if !relay.UsableAsCircuitHop() {
+			continue
+		}
 		// Skip family/subnet checks if no guard or exit to avoid
 		if guard != nil && relay.Fingerprint == guard.Fingerprint {
 			continue
@@ -441,7 +472,7 @@ func (s *Selector) selectMiddle(guard, exit *directory.Relay) (*directory.Relay,
 	}
 
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no suitable middle relays available (family/subnet constraints)")
+		return nil, fmt.Errorf("no suitable middle relays available (fast/family/subnet constraints)")
 	}
 
 	idx, err := weightedRandomIndex(candidates)

@@ -201,7 +201,7 @@ func TestPathSelectionWithFamilyConstraints(t *testing.T) {
 		Nickname:    "GuardRelay",
 		Address:     "192.168.1.1",
 		ORPort:      9001,
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		Family:      []string{"MIDDLE1"}, // Guard is in family with middle
 	}
 
@@ -210,7 +210,7 @@ func TestPathSelectionWithFamilyConstraints(t *testing.T) {
 		Nickname:    "MiddleRelay1",
 		Address:     "192.168.1.2", // Same /16 subnet as guard
 		ORPort:      9001,
-		Flags:       []string{"Running", "Valid"},
+		Flags:       []string{"Running", "Valid", "Fast"},
 		Family:      []string{"GUARD1"}, // Bidirectional family with guard
 	}
 
@@ -219,7 +219,7 @@ func TestPathSelectionWithFamilyConstraints(t *testing.T) {
 		Nickname:    "MiddleRelay2",
 		Address:     "10.0.1.1", // Different /16 subnet
 		ORPort:      9001,
-		Flags:       []string{"Running", "Valid"},
+		Flags:       []string{"Running", "Valid", "Fast"},
 		Family:      []string{}, // No family relationship
 	}
 
@@ -228,7 +228,7 @@ func TestPathSelectionWithFamilyConstraints(t *testing.T) {
 		Nickname:    "ExitRelay",
 		Address:     "172.16.1.1",
 		ORPort:      9001,
-		Flags:       []string{"Exit", "Running", "Valid"},
+		Flags:       []string{"Exit", "Running", "Valid", "Fast"},
 		Family:      []string{},
 	}
 
@@ -266,28 +266,28 @@ func TestSelectMiddleAvoidsSharedFamilyID(t *testing.T) {
 		Fingerprint: "G1",
 		Nickname:    "g",
 		Address:     "198.51.100.1",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		FamilyIDs:   []string{"ed25519:SHAREDKEY"},
 	}
 	bad := &directory.Relay{
 		Fingerprint: "M1",
 		Nickname:    "bad",
 		Address:     "203.0.113.1",
-		Flags:       []string{"Running", "Valid"},
+		Flags:       []string{"Running", "Valid", "Fast"},
 		FamilyIDs:   []string{"ed25519:SHAREDKEY"},
 	}
 	good := &directory.Relay{
 		Fingerprint: "M2",
 		Nickname:    "good",
 		Address:     "192.0.2.1",
-		Flags:       []string{"Running", "Valid"},
+		Flags:       []string{"Running", "Valid", "Fast"},
 		FamilyIDs:   []string{"ed25519:OTHER"},
 	}
 	exit := &directory.Relay{
 		Fingerprint: "E1",
 		Nickname:    "e",
 		Address:     "172.16.0.8",
-		Flags:       []string{"Exit", "Running", "Valid"},
+		Flags:       []string{"Exit", "Running", "Valid", "Fast"},
 	}
 
 	s := NewSelector(directory.NewClient(nil), nil)
