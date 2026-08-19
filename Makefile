@@ -133,13 +133,19 @@ build-linux-mips: ## Build for Linux MIPS
 build-all: build-linux-amd64 build-linux-arm build-linux-arm64 build-linux-mips ## Build for all target platforms
 
 # Docker targets
+IMAGE ?= ghcr.io/chenjia404/gotor
+
 docker-build: ## Build Docker image
 	@echo "Building Docker image..."
-	docker build -t go-tor:$(VERSION) .
+	docker build -t $(IMAGE):$(VERSION) -t go-tor:$(VERSION) .
+
+docker-push: docker-build ## Push Docker image to GHCR
+	@echo "Pushing Docker image to $(IMAGE)..."
+	docker push $(IMAGE):$(VERSION)
 
 docker-run: ## Run Docker container
 	@echo "Running Docker container..."
-	docker run --rm -p 9050:9050 -p 9051:9051 go-tor:$(VERSION)
+	docker run --rm -p 9050:9050 -p 9051:9051 $(IMAGE):$(VERSION)
 
 help: ## Show this help message
 	@echo "Usage: make [target]"

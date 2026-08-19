@@ -8,18 +8,18 @@ services:
       args:
         VERSION: ${VERSION:-dev}
         BUILD_TIME: ${BUILD_TIME:-unknown}
-    image: go-tor:${VERSION:-latest}
+    image: ghcr.io/chenjia404/gotor:${VERSION:-latest}
     container_name: go-tor-client
     
-    # Port mappings
+    # 控制口与 metrics 仅绑定本机，避免公网暴露管理面
     ports:
-      - "9050:9050"  # SOCKS5 proxy
-      - "9051:9051"  # Control protocol
-      - "9052:9052"  # HTTP metrics (optional)
+      - "9050:9050"        # SOCKS5 proxy
+      - "127.0.0.1:9051:9051"  # Control protocol
+      - "127.0.0.1:9052:9052"  # HTTP metrics (optional)
     
-    # Volume for persistent Tor data
+    # 数据持久化挂载到本地 data 目录，避免 named volume
     volumes:
-      - tor-data:/home/nonroot/.tor
+      - ./data:/home/nonroot/.tor
       # Optional: mount custom config
       # - ./torrc:/home/nonroot/.tor/torrc:ro
     
@@ -78,6 +78,3 @@ services:
     tmpfs:
       - /tmp:size=10M,mode=1777
 
-volumes:
-  tor-data:
-    driver: local

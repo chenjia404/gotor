@@ -30,6 +30,7 @@ go.work
 .DS_Store
 
 # Data directories
+/data/
 /var/
 *.db
 *.log

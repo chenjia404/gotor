@@ -7,10 +7,10 @@ replicaCount: 1
 
 # Container image configuration
 # NOTE: You must provide a fully qualified image name with your registry.
-# Example: image.repository = "ghcr.io/opd-ai/go-tor"
-# Build the image using: docker build -t your-registry/go-tor:tag .
+# Example: image.repository = "ghcr.io/chenjia404/gotor"
+# Build the image using: docker build -t your-registry/gotor:tag .
 image:
-  repository: go-tor
+  repository: ghcr.io/chenjia404/gotor
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""

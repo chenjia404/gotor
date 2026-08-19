@@ -48,10 +48,12 @@ The compiled binary will be available at `bin/gotor`.
 ### Docker Installation
 
 ```bash
-# Build Docker image
-docker build -t go-tor:latest .
+# 从 GitHub Container Registry 拉取
+docker pull ghcr.io/chenjia404/gotor:latest
+docker run -d --name tor-client -p 9050:9050 ghcr.io/chenjia404/gotor:latest
 
-# Run with SOCKS proxy on port 9050
+# 或本地构建
+docker build -t go-tor:latest .
 docker run -d --name tor-client -p 9050:9050 go-tor:latest
 ```
 

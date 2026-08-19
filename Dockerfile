@@ -14,9 +14,11 @@ COPY . .
 # go build will automatically download dependencies
 # -ldflags: inject version info and strip debug symbols for smaller binary
 # CGO_ENABLED=0: build static binary (no external C dependencies)
+# TARGETARCH 由 buildx 注入，本地 docker build 默认 amd64
+ARG TARGETARCH=amd64
 ARG VERSION=docker-dev
 ARG BUILD_TIME
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags="-w -s -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
     -a -installsuffix cgo \
     -o gotor \
@@ -31,9 +33,10 @@ FROM gcr.io/distroless/static-debian12:nonroot
 # Labels for container metadata
 LABEL maintainer="go-tor project" \
       description="Pure Go Tor client implementation" \
-      org.opencontainers.image.source="https://github.com/opd-ai/go-tor" \
-      org.opencontainers.image.documentation="https://github.com/opd-ai/go-tor/blob/main/docs/CONTAINERIZATION.md" \
-      org.opencontainers.image.title="go-tor" \
+      org.opencontainers.image.source="https://github.com/chenjia404/gotor" \
+      org.opencontainers.image.url="https://github.com/chenjia404/gotor" \
+      org.opencontainers.image.documentation="https://github.com/chenjia404/gotor/blob/main/docs/CONTAINERIZATION.md" \
+      org.opencontainers.image.title="gotor" \
       org.opencontainers.image.description="Educational Tor client implementation in Go"
 
 # Copy CA certificates for TLS connections

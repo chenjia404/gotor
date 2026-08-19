@@ -40,7 +40,24 @@ This repository uses a multi-file GitHub Actions workflow setup for automated te
 - Download artifacts from the workflow run to test binaries
 - Verify cross-platform compatibility
 
-### 3. release.yml - Automated Releases
+### 3. docker.yml - GitHub Container Registry
+
+**Triggers:**
+- Pushes to `main` branch
+- Version tags matching `v*.*.*`
+- Manual trigger via GitHub Actions UI
+
+**What it does:**
+- Builds linux/amd64 and linux/arm64 images
+- Pushes to `ghcr.io/chenjia404/gotor`
+- Tags `latest` on main, plus git SHA and semver tags
+
+**How to use:**
+```bash
+docker pull ghcr.io/chenjia404/gotor:latest
+```
+
+### 4. release.yml - Automated Releases
 
 **Triggers:**
 1. **Nightly builds:** Daily at 00:00 UTC (via cron schedule)
@@ -161,6 +178,7 @@ All workflows use appropriate minimal permissions:
 
 - **test.yml**: `contents: read` - Read-only access
 - **build.yml**: `contents: read` - Read-only access
+- **docker.yml**: `contents: read`, `packages: write` - Push images to GHCR
 - **release.yml**: `contents: write` - Write access for creating releases
 
 ## Common Issues and Solutions
