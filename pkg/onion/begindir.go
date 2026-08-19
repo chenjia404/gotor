@@ -61,9 +61,26 @@ func (f *BegindirFetcher) Fetch(ctx context.Context, relay *directory.Relay, htt
 	if err != nil {
 		return nil, err
 	}
-	circ, err := f.builder.BuildCircuit(ctx, p, timeout)
-	if err != nil {
-		return nil, fmt.Errorf("build 3-hop for BEGIN_DIR: %w", err)
+
+	var circ *circuit.Circuit
+	var lastBuild error
+	for attempt := 0; attempt < 4; attempt++ {
+		if attempt > 0 {
+			p, err = f.selectAnonPath(relay)
+			if err != nil {
+				return nil, err
+			}
+		}
+		circ, lastBuild = f.builder.BuildCircuit(ctx, p, timeout)
+		if lastBuild == nil {
+			break
+		}
+		f.logger.Debug("3-hop build failed, retrying",
+			"attempt", attempt+1, "error", lastBuild,
+			"guard", p.Guard.Nickname, "middle", p.Middle.Nickname)
+	}
+	if circ == nil {
+		return nil, fmt.Errorf("build 3-hop for BEGIN_DIR: %w", lastBuild)
 	}
 	defer circ.Close()
 

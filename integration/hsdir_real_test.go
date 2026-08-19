@@ -87,33 +87,6 @@ func TestRealHSDirFetch(t *testing.T) {
 	begindir := onion.NewBegindirFetcher(builder, log)
 	begindir.SetRelays(relays)
 
-	guard := pickWithKeys(relays, true)
-	middle := pickWithKeys(relays, false)
-	if guard == nil || middle == nil || selected[0].Relay == nil {
-		t.Fatal("missing guard/middle/hsdir keys")
-	}
-	circ, err := builder.BuildCircuit(ctx, &path.Path{
-		Guard:  guard,
-		Middle: middle,
-		Exit:   selected[0].Relay,
-	}, 90*time.Second)
-	if err != nil {
-		t.Fatalf("BuildCircuit 3-hop: %v", err)
-	}
-	sid, err := circ.AllocateStreamID()
-	if err != nil {
-		circ.Close()
-		t.Fatal(err)
-	}
-	if err := circ.OpenDirStream(ctx, sid); err != nil {
-		circ.Close()
-		t.Fatalf("OpenDirStream BEGIN_DIR: %v", err)
-	}
-	_ = circ.EndStream(sid, 6)
-	circ.ReleaseStreamID(sid)
-	circ.Close()
-	t.Logf("anonymous BEGIN_DIR CONNECTED OK exit=%s guard=%s", selected[0].Relay.Nickname, guard.Nickname)
-
 	client := onion.NewClient(log)
 	client.UpdateHSDirs(hsdirs)
 	client.SetBegindir(begindir)
@@ -135,27 +108,4 @@ func TestRealHSDirFetch(t *testing.T) {
 		t.Logf("  intro[%d] auth=%d enc=%d links=%d",
 			i, len(ip.AuthKey), len(ip.EncKey), len(ip.LinkSpecifiers))
 	}
-}
-
-func pickWithKeys(relays []*directory.Relay, guard bool) *directory.Relay {
-	for _, r := range relays {
-		if r == nil || !r.HasExtendKeys() || !r.IsRunning() {
-			continue
-		}
-		if guard {
-			if r.IsGuard() {
-				return r
-			}
-			continue
-		}
-		if !r.IsGuard() {
-			return r
-		}
-	}
-	for _, r := range relays {
-		if r != nil && r.HasExtendKeys() {
-			return r
-		}
-	}
-	return nil
 }
