@@ -25,6 +25,10 @@ const (
 	RelayBeginDir          byte = 13
 	RelayExtend2           byte = 14
 	RelayExtended2         byte = 15
+	RelayConfluxLink       byte = 19 // proposal 329：绑定两条电路
+	RelayConfluxLinked     byte = 20
+	RelayConfluxLinkedAck  byte = 21
+	RelayConfluxSwitch     byte = 22
 	RelayIntroduce1        byte = 32 // INTRODUCE1 cell for onion services
 	RelayIntroduce2        byte = 33 // INTRODUCE2 cell for onion services
 	RelayRendezvous1       byte = 34 // RENDEZVOUS1 cell for onion services
@@ -187,6 +191,14 @@ func RelayCmdString(cmd byte) string {
 		return "RELAY_EXTEND2"
 	case RelayExtended2:
 		return "RELAY_EXTENDED2"
+	case RelayConfluxLink:
+		return "RELAY_CONFLUX_LINK"
+	case RelayConfluxLinked:
+		return "RELAY_CONFLUX_LINKED"
+	case RelayConfluxLinkedAck:
+		return "RELAY_CONFLUX_LINKED_ACK"
+	case RelayConfluxSwitch:
+		return "RELAY_CONFLUX_SWITCH"
 	case RelayPaddingNegotiate:
 		return "RELAY_PADDING_NEGOTIATE"
 	case RelayPaddingNegotiated:

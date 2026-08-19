@@ -431,6 +431,94 @@ func TestRealRelayResolve(t *testing.T) {
 	t.Logf("expected failure for .invalid: %v", err)
 }
 
+// TestRealConflux 验收两条 3-hop LINK 成功，且 SOCKS 拉到 IsTor=true。
+// 缺握手时不得把单电路当成功。
+func TestRealConflux(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+
+	tor, err := client.ConnectWithContext(ctx)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer tor.Close()
+	if err := tor.WaitUntilReady(4 * time.Minute); err != nil {
+		t.Fatalf("WaitUntilReady: %v", err)
+	}
+
+	circ, err := tor.GetCircuit(ctx)
+	if err != nil {
+		t.Fatalf("GetCircuit: %v", err)
+	}
+	defer tor.ReturnCircuit(circ)
+
+	if !circ.ConfluxLinked() {
+		t.Fatalf("单电路不得标成 Conflux：ConfluxLinked=false info=%+v", circ.ConfluxInfo())
+	}
+	info := circ.ConfluxInfo()
+	if len(info.Legs) != 2 {
+		t.Fatalf("want 2 legs, got %+v", info)
+	}
+	a, b := info.Legs[0], info.Legs[1]
+	if a.GuardFP == "" || b.GuardFP == "" || a.GuardFP == b.GuardFP {
+		t.Fatalf("legs must use distinct guards: %+v", info)
+	}
+	if a.MiddleFP == "" || b.MiddleFP == "" || a.MiddleFP == b.MiddleFP {
+		t.Fatalf("legs must use distinct middles: %+v", info)
+	}
+	if a.ExitFP == "" || a.ExitFP != b.ExitFP {
+		t.Fatalf("legs must share one exit: %+v", info)
+	}
+	t.Logf("Conflux LINKED\n  leg0 circ=%d guard=%s middle=%s exit=%s rtt=%s\n  leg1 circ=%d guard=%s middle=%s exit=%s rtt=%s",
+		a.CircuitID, a.GuardFP, a.MiddleFP, a.ExitFP, a.RTT,
+		b.CircuitID, b.GuardFP, b.MiddleFP, b.ExitFP, b.RTT)
+
+	httpClient, err := helpers.NewHTTPClient(tor, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpClient.Timeout = 90 * time.Second
+
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, err := httpClient.Get("https://check.torproject.org/api/ip")
+		if err != nil {
+			lastErr = fmt.Errorf("attempt %d GET: %w", attempt, err)
+			t.Logf("%v", lastErr)
+			continue
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("attempt %d read: %w", attempt, err)
+			t.Logf("%v", lastErr)
+			continue
+		}
+		t.Logf("attempt %d check.torproject.org/api/ip status=%d raw=%s", attempt, resp.StatusCode, body)
+		if resp.StatusCode != 200 {
+			lastErr = fmt.Errorf("attempt %d HTTP %d", attempt, resp.StatusCode)
+			continue
+		}
+		var out struct {
+			IsTor bool   `json:"IsTor"`
+			IP    string `json:"IP"`
+		}
+		if err := json.Unmarshal(body, &out); err != nil {
+			lastErr = fmt.Errorf("attempt %d json: %w", attempt, err)
+			continue
+		}
+		if !out.IsTor || out.IP == "" {
+			lastErr = fmt.Errorf("attempt %d IsTor=%v IP=%s", attempt, out.IsTor, out.IP)
+			continue
+		}
+		t.Logf("Conflux SOCKS IsTor=true ExitIP=%s", out.IP)
+		return
+	}
+	t.Fatalf("check.torproject.org failed after %d attempts: %v", maxAttempts, lastErr)
+}
+
 func buildLiveCircuit(t *testing.T) (*circuit.Circuit, *path.Path) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)

@@ -88,6 +88,7 @@ type Circuit struct {
 	destroyCh      chan struct{}
 	destroyOnce    sync.Once
 	destroyReason  byte
+	conflux        *ConfluxSet // 非 nil 表示本电路正在或已经参与 Conflux 套
 }
 
 // Hop represents a single hop in a circuit (one relay)
@@ -240,6 +241,8 @@ func (c *Circuit) Close() {
 		return
 	}
 	c.State = StateClosed
+	set := c.conflux
+	c.conflux = nil
 	mux := c.mux
 	c.mux = nil
 	conn := c.conn
@@ -248,6 +251,10 @@ func (c *Circuit) Close() {
 		c.relayReceiveChan = nil
 	}
 	c.mu.Unlock()
+
+	if set != nil {
+		set.onLegClosed(c)
+	}
 
 	if mux != nil {
 		mux.Close()
@@ -1137,6 +1144,15 @@ func (c *Circuit) deliverToStream(relayCell *cell.RelayCell) error {
 // SendRelayCell sends a relay cell through the circuit
 // This encrypts the relay cell with per-hop cryptography and sends it through the connection
 func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
+	if relayCell != nil && cell.ConfluxShouldMultiplex(relayCell.Command) {
+		if set := c.confluxSet(); set != nil && c.ConfluxLinked() {
+			return set.sendMultiplexed(relayCell)
+		}
+	}
+	return c.sendRelayCellLocal(relayCell)
+}
+
+func (c *Circuit) sendRelayCellLocal(relayCell *cell.RelayCell) error {
 	c.mu.Lock()
 	conn := c.conn
 	state := c.State
@@ -1367,6 +1383,28 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 	// Record activity
 	c.RecordActivity()
 
+	if set := c.confluxSet(); set != nil {
+		handled, err := set.onRelayCell(c, relayCell)
+		if err != nil {
+			c.SetState(StateFailed)
+			c.NotifyDestroyed(1)
+			return fmt.Errorf("conflux: %w", err)
+		}
+		if handled {
+			return nil
+		}
+	}
+
+	return c.enqueueRelayCell(relayCell)
+}
+
+func (c *Circuit) enqueueRelayCell(relayCell *cell.RelayCell) error {
+	c.mu.RLock()
+	ch := c.relayReceiveChan
+	c.mu.RUnlock()
+	if ch == nil {
+		return fmt.Errorf("circuit closed")
+	}
 	// Deliver to receive channel (non-blocking with timeout)
 	// AUDIT-MED-4 FIX: Use reusable timer instead of time.After to avoid GC pressure
 	c.deliverTimerMu.Lock()
@@ -1374,7 +1412,7 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 	stopAndDrainTimer(c.deliverTimer)
 	c.deliverTimer.Reset(deliverRelayCellTimeout)
 	select {
-	case c.relayReceiveChan <- relayCell:
+	case ch <- relayCell:
 		stopAndDrainTimer(c.deliverTimer)
 		return nil
 	case <-c.deliverTimer.C:
@@ -1481,13 +1519,10 @@ func (c *Circuit) ReadFromStream(ctx context.Context, streamID uint16) ([]byte, 
 // RelayDataMax 返回本电路目的跳上一条 RELAY_DATA 能装的最大字节。
 // CGO/v1 带 stream_id 时是 488，不是 v0 的 498。
 func (c *Circuit) RelayDataMax() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	dest := len(c.Hops) - 1
-	if dest >= 0 && c.Hops[dest].usesCGO() {
-		return cell.RelayCellMaxDataV1(cell.RelayData)
+	if set := c.confluxSet(); set != nil && c.ConfluxLinked() {
+		return set.relayDataMax()
 	}
-	return cell.PayloadLen - cell.RelayCellHeaderLen
+	return c.relayDataMaxLocal()
 }
 
 // WriteToStream writes data to a specific stream
