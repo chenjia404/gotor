@@ -24,3 +24,9 @@ TOR_INTEGRATION_TEST=1 go test -tags=integration -run TestRealOnionConnect -v
 ## 结果
 
 `RELAY_BEGIN CONNECTED on rendezvous stream=1` — PASS。
+
+## HTTP 数据面
+
+`GET /` → `HTTP/1.1 200 OK`，约 14KB（Tor Project onion）。
+
+证明应用数据经会合电路 RELAY_DATA 可双向转发。

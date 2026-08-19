@@ -3,6 +3,13 @@
 This directory contains test vectors used to verify go-tor's protocol compliance
 against reference Tor implementations: **C Tor** (ctor) and **Arti** (Rust).
 
+
+## Official upstream copies
+
+See [`ctor-official/`](ctor-official/) for **verbatim** files copied from C Tor
+(`cgo_vectors.inc`, `test_ntor_v3.c`). Those are the Phase 3 “no regeneration”
+sources. The JSON trees below remain independently computed from specs.
+
 ## Directory Structure
 
 ```
