@@ -57,7 +57,7 @@
 | Circuit padding (Padding=2) | WORKING | 协商+HS setup+直方图 DROP；**真实验收** `TestRealCircpadNegotiate`：PADDING_NEGOTIATE→PADDING_NEGOTIATED OK（middle Padding=2） |
 | Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB） |
 | Onion Service v3（托管） | PARTIAL | ESTABLISH_INTRO；ntor rend_circ_nonce；BEGIN_DIR 上传；**type-8 致盲证书 + 双层加密密封**；torrc HiddenService*。剩余：真网发布/INTRODUCE2 回路验收 |
-| Relay / Bridge | PARTIAL | ORPort；入站 VERSIONS 已按 CIRCID_LEN(v_in=0)=2 解析（权威才能完成 link handshake）；**ExitRelay 1 出口流（BEGIN/DATA/RESOLVE + 真实策略描述符）**；CREATE2 ntor/ntor-v3；**EXTEND2→CREATE2→EXTENDED2 加密回传 + 剥层转发**；描述符含 onion-key-crosscert / ntor-onion-key-crosscert 与 dir-spec Ed25519 摘要签名。真网 Running 待镜像更新后观察。未做：进共识、网桥、真网多跳中继/出口收录验收 |
+| Relay / Bridge | PARTIAL | ORPort；入站 VERSIONS 已按 CIRCID_LEN(v_in=0)=2 解析；DirCache 可提供 consensus-microdesc / micro/all / `/tor/keys/fp`（未宣告 DirCache=2，仍缺 consdiff）；**ExitRelay 1 出口流**；CREATE2 ntor/ntor-v3；EXTEND2 剥层转发；描述符交叉证书与 Ed25519 摘要签名。真网 Running 待镜像更新后观察。未做：进共识、网桥、真网多跳中继/出口收录验收 |
 | Control Protocol | WORKING | GETINFO/SETCONF/SETEVENTS/SIGNAL/MAPADDRESS；**AUTHCHALLENGE SAFECOOKIE**；COOKIE/HASHEDPASSWORD；事件 CIRC/STREAM/BW/…/NOTICE |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
 

@@ -123,10 +123,10 @@ proto Link=3-5 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ### 3. DirCache 对外服务
 
-- [ ] **状态**：PARTIAL（客户端 **拉** consdiff 已对齐；中继 **提供** 目录缓存：`main` 上无实现）
-- **现有代码**：客户端 `pkg/directory/consdiff.go`、`pkg/directory/directory.go`。中继描述符可写 `DirPort` 字段（`pkg/relay/descriptor.go`）。[`RELAY.md`](RELAY.md) 仍列 DirPort 未完成。**不要**把未合入 `main` 的草稿（例如功能分支上的 `dirport.go`）写成已有路径。
-- **要做**：BEGIN_DIR + 可选明文 DirPort；服务 `consensus-microdesc`、microdesc、**consdiff**、`/tor/keys/fp`；通过权威 V2Dir 且被其他客户端当缓存使用。
-- **禁止**：只开 DirPort 回 200 空体；宣告 `DirCache=2` 却不会 limited-ed diff；用明文 DirPort 拉 HS 描述符并宣称安全；把未合并草稿当 WORKING。
+- [ ] **状态**：PARTIAL（客户端 **拉** consdiff 已对齐；中继可 BEGIN_DIR / 明文 DirPort 提供 consensus-microdesc、micro/all、**`/tor/keys/fp` 与 `/tor/keys/all`**；仍缺 consdiff / limited-ed。未宣告 DirCache=2）
+- **现有代码**：客户端 `pkg/directory/consdiff.go`、`pkg/directory/directory.go`、`pkg/directory/authcert.go`。中继 `pkg/relay/dirport.go`、`pkg/relay/server.go`（`DirCache` / `DirPort` 接线）、描述符 `DirPort` 字段（`pkg/relay/descriptor.go`）。
+- **要做**：服务 **consdiff**（limited-ed）；通过权威 V2Dir 且被其他客户端当缓存使用。实现 consdiff 之前 **禁止** 在 `proto` 写 `DirCache=2`。
+- **禁止**：只开 DirPort 回 200 空体；宣告 `DirCache=2` 却不会 limited-ed diff；用明文 DirPort 拉 HS 描述符并宣称安全。
 
 ### 4. HSDir / intro / rend 中继角色
 

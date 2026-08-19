@@ -50,6 +50,6 @@ gotor ORPort 9001 ExitRelay 1 ReduceExitPolicy 1 SocksPort 0 \
 - 真网权威落库与 Exit flag 收录：**未验证**，不标 WORKING
 - PT / Bridge / ExtORPort / ServerTransportPlugin 生产路径：明确不做
 - Directory Authority：不做
-- DirPort 仅服务已缓存的 `cached-microdesc-consensus` / `cached-microdescs`，不是完整目录缓存实现
+- DirPort / BEGIN_DIR 可服务已缓存的 `cached-microdesc-consensus` / `cached-microdescs` / `cached-certs`（`/tor/keys/fp`、`/tor/keys/all`）；仍缺 consdiff，未宣告 DirCache=2
 - FlowCtrl=2 出口侧使用 `sendme_inc=31` 与初始 cwnd=124，未实现完整 Vegas 自适应
 - 客户端 SOCKS 流量不会被当成出口
