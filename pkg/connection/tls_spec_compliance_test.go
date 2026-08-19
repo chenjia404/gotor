@@ -141,8 +141,11 @@ func TestTLSConfigSpecCompliance_CertificateVerification(t *testing.T) {
 	t.Run("has custom verification function", func(t *testing.T) {
 		cfg := createTorTLSConfig()
 
-		if cfg.VerifyPeerCertificate == nil {
-			t.Error("VerifyPeerCertificate = nil, want custom verification function")
+		if cfg.VerifyConnection == nil {
+			t.Error("VerifyConnection = nil, want custom verification function")
+		}
+		if cfg.VerifyPeerCertificate != nil {
+			t.Error("VerifyPeerCertificate must be unset; session resume skips it (G123)")
 		}
 	})
 
@@ -173,11 +176,14 @@ func TestTLSConfigSpecCompliance_CertificateVerification(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create certificate: %v", err)
 		}
-
-		// Verify custom verification accepts valid certificate
-		err = cfg.VerifyPeerCertificate([][]byte{certDER}, nil)
+		parsed, err := x509.ParseCertificate(certDER)
 		if err != nil {
-			t.Errorf("VerifyPeerCertificate rejected valid self-signed certificate: %v", err)
+			t.Fatalf("failed to parse certificate: %v", err)
+		}
+
+		err = cfg.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{parsed}})
+		if err != nil {
+			t.Errorf("VerifyConnection rejected valid self-signed certificate: %v", err)
 		}
 	})
 }
@@ -188,8 +194,11 @@ func TestTLSConfigSpecCompliance_IdentityPinning(t *testing.T) {
 		identity := make([]byte, 32) // 32-byte Ed25519 identity
 		cfg := createTorTLSConfigWithPinning(identity, "test-fingerprint")
 
-		if cfg.VerifyPeerCertificate == nil {
-			t.Error("VerifyPeerCertificate = nil, want custom verification with pinning")
+		if cfg.VerifyConnection == nil {
+			t.Error("VerifyConnection = nil, want custom verification with pinning")
+		}
+		if cfg.VerifyPeerCertificate != nil {
+			t.Error("VerifyPeerCertificate must be unset; session resume skips it (G123)")
 		}
 	})
 
