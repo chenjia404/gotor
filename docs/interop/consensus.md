@@ -1,6 +1,6 @@
 # 共识签名（dir-spec / C Tor）
 
-**状态**：生产 `FetchConsensus` 强制验签。真实网络由 `TOR_INTEGRATION_TEST=1` 的 `TestRealConsensusSignatures` 验收。
+**状态**：生产 `FetchConsensus` 强制验签。真实网络 `TestRealConsensusSignatures` 已通过（9/9 权威，10143 relays）。
 
 HTTP 目录端口仍可能 `InsecureSkipVerify`。没有密码学验签时，MITM 可喂假共识。验签后，攻击者必须同时掌握 **≥5 个** 硬编码权威的 identity 私钥。
 
