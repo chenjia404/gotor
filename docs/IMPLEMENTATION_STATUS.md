@@ -53,7 +53,7 @@
 | Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
-| Circuit padding (Padding=2) | PARTIAL | 协商单元已按 padding-spec 修正（8 字节 + machine_ctr）；HS setup 状态表对齐 C Tor；onion 接线待 Phase 4 |
+| Circuit padding (Padding=2) | PARTIAL | 协商+状态表+`CircpadController`+`SendRelayCellToHop`；共识 `circpad_*` 已注入 client；onion 自动触发待 Phase 4 |
 | Onion Service v3 | BROKEN / MISSING | **明确不做**，直到 client 主链路剩余缺口完成 |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
 | Control Protocol | PARTIAL | 框架存在，非本轮验收 |
@@ -176,16 +176,17 @@
 
 #### 8. Circuit padding machine（Padding=2 / proposal 302）
 
-- **状态**：PARTIAL（2026-08-19：协商 + 状态表已对齐；运行时/onion 接线未完）。
+- **状态**：PARTIAL（2026-08-19：电路层运行时已齐；onion 自动触发待 Phase 4）。
 - **已做**：
   - `PADDING_NEGOTIATE` / `NEGOTIATED`：STOP=1 START=2、CIRC_SETUP=1、machine_ctr u32、8 字节载荷
   - `ClientHideIntroCircuits` / `RelayHideIntroCircuits` / `ClientHideRendCircuits` 状态表（对照 C Tor）
-  - Intro DROPs 7–10；`circpad_padding_disabled` 读取
-  - 单测：编解码往返、状态转移、线值常量
-- **未做**：Onion INTRODUCE1 后自动 negotiate；完整直方图延迟运行时；真实验收
+  - `CircpadController`：intro/rend 转移、negotiate 构造、错误 ctr 忽略
+  - `SendRelayCellToHop`：协商发往第二跳（`encryptOnion` dest）
+  - `Client.refreshCircpadConfig` / `StartHSSetupPaddingOn`（读 `circpad_padding_disabled`）
+  - Intro DROPs 7–10；单测覆盖编解码与状态机
+- **未做**：Onion INTRODUCE1 后自动启动；完整直方图延迟定时器；真实验收
 - **Spec**：https://spec.torproject.org/padding-spec ；proposal 302
-- **现有代码**：`pkg/circuit/circpad.go`、`padding_machine.go`；`docs/interop/circuit-padding.md`
-- **验收**：对照 C Tor machine 状态表的单测已有。onion 路径真实验收待 Phase 4。
+- **现有代码**：`pkg/circuit/circpad.go`、`circpad_runtime.go`、`circuit.go`；`pkg/client`；`docs/interop/circuit-padding.md`
 - **禁止**：发明与 spec 不符的随机 padding 并宣称合规。
 
 #### 9. Consensus diff（DirCache=2）
