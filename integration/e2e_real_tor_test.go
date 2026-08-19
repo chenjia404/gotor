@@ -35,6 +35,30 @@ func requireRealTor(t *testing.T) {
 	}
 }
 
+func advertisesCGO(r *directory.Relay) bool {
+	return r != nil && r.SupportsSubprotoRequest() && r.Supports("Relay", 6) && r.RequestCongestionControl()
+}
+
+func pickRunningGuard(relays []*directory.Relay, preferCGO bool) *directory.Relay {
+	var fallback *directory.Relay
+	for _, r := range relays {
+		if r == nil || !r.IsGuard() || !r.IsRunning() || r.ORPort <= 0 {
+			continue
+		}
+		if fallback == nil {
+			fallback = r
+		}
+		if preferCGO && advertisesCGO(r) {
+			return r
+		}
+	}
+	return fallback
+}
+
+func hopCGO(h *circuit.Hop) bool {
+	return h != nil && h.CGO != nil
+}
+
 // TestRealConsensusSignatures 验收生产 FetchConsensus 强制校验权威签名。
 // HTTP 仍可能 InsecureSkipVerify，但假共识无法凑齐 KnownAuthorities 的 PKCS#1 签名。
 func TestRealConsensusSignatures(t *testing.T) {
@@ -64,13 +88,7 @@ func TestRealGuardCreate2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var guard *directory.Relay
-	for _, r := range relays {
-		if r.IsGuard() && r.IsRunning() && r.ORPort > 0 {
-			guard = r
-			break
-		}
-	}
+	guard := pickRunningGuard(relays, true)
 	if guard == nil {
 		t.Fatal("no guard in consensus")
 	}
@@ -87,9 +105,15 @@ func TestRealGuardCreate2(t *testing.T) {
 	if circ.Length() < 1 {
 		t.Fatalf("CREATE2 did not add guard hop")
 	}
-	t.Logf("CREATE2 OK guard=%s fp=%s circuit=%d hops=%d handshake=%v ntorv3=%v flowctrl2=%v",
+	hops := circ.GetHops()
+	usedCGO := len(hops) > 0 && hopCGO(hops[0])
+	if advertisesCGO(guard) && !usedCGO {
+		t.Fatalf("guard %s 宣告 Relay=5/6+FlowCtrl=2 但 hop 仍是 tor1", guard.Nickname)
+	}
+	t.Logf("CREATE2 OK guard=%s fp=%s circuit=%d hops=%d handshake=%v ntorv3=%v flowctrl2=%v cgo_ad=%v cgo=%v",
 		guard.Nickname, guard.GetFingerprintHex(), circ.ID, circ.Length(),
-		circuit.HandshakeTypeFor(guard), guard.UseNtorV3(), guard.RequestCongestionControl())
+		circuit.HandshakeTypeFor(guard), guard.UseNtorV3(), guard.RequestCongestionControl(),
+		advertisesCGO(guard), usedCGO)
 }
 
 // TestRealNtorV3 验收现行默认握手：HTYPE 0x0003、Ed25519 主身份、可选 FlowCtrl=2。
@@ -104,13 +128,7 @@ func TestRealNtorV3(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var guard *directory.Relay
-	for _, r := range relays {
-		if r.IsGuard() && r.IsRunning() && r.ORPort > 0 {
-			guard = r
-			break
-		}
-	}
+	guard := pickRunningGuard(relays, true)
 	if guard == nil {
 		t.Fatal("no guard in consensus")
 	}
@@ -133,10 +151,15 @@ func TestRealNtorV3(t *testing.T) {
 	if circ.Length() < 1 {
 		t.Fatal("ntor-v3 CREATE2 did not add guard hop")
 	}
-	t.Logf("ntor-v3 OK guard=%s fp=%s pr_relay4=%v flowctrl2=%v sendme_inc=%d",
+	hops := circ.GetHops()
+	usedCGO := len(hops) > 0 && hopCGO(hops[0])
+	if advertisesCGO(guard) && !usedCGO {
+		t.Fatalf("guard %s 宣告 CGO 但 CREATE2 未建 CGO hop", guard.Nickname)
+	}
+	t.Logf("ntor-v3 OK guard=%s fp=%s pr_relay4=%v flowctrl2=%v sendme_inc=%d cgo_ad=%v cgo=%v",
 		guard.Nickname, guard.GetFingerprintHex(),
 		guard.Protocols.Supports("Relay", 4), guard.RequestCongestionControl(),
-		circ.SendmeIncrement())
+		circ.SendmeIncrement(), advertisesCGO(guard), usedCGO)
 }
 
 // TestExtend2Probe 区分 DESTROY reason=1 是 digest/crypto 失败还是 EXTEND2 语义被拒。
@@ -227,10 +250,15 @@ func TestRealThreeHopCircuit(t *testing.T) {
 	if circ.Length() != 3 {
 		t.Fatalf("expected 3 hops, got %d", circ.Length())
 	}
-	t.Logf("3-hop READY\n  Guard  %s %s\n  Middle %s %s\n  Exit   %s %s",
-		p.Guard.Nickname, p.Guard.GetFingerprintHex(),
-		p.Middle.Nickname, p.Middle.GetFingerprintHex(),
-		p.Exit.Nickname, p.Exit.GetFingerprintHex())
+	hops := circ.GetHops()
+	cgoFlags := make([]bool, len(hops))
+	for i, h := range hops {
+		cgoFlags[i] = hopCGO(h)
+	}
+	t.Logf("3-hop READY\n  Guard  %s %s cgo_ad=%v hop_cgo=%v\n  Middle %s %s cgo_ad=%v hop_cgo=%v\n  Exit   %s %s cgo_ad=%v hop_cgo=%v",
+		p.Guard.Nickname, p.Guard.GetFingerprintHex(), advertisesCGO(p.Guard), cgoFlags[0],
+		p.Middle.Nickname, p.Middle.GetFingerprintHex(), advertisesCGO(p.Middle), cgoFlags[1],
+		p.Exit.Nickname, p.Exit.GetFingerprintHex(), advertisesCGO(p.Exit), cgoFlags[2])
 }
 
 func TestRealCheckTorProject(t *testing.T) {
