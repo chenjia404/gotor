@@ -18,7 +18,7 @@ import (
 func TestParseCERTSCell(t *testing.T) {
 	// Create a minimal CERTS cell with 1 certificate
 	payload := make([]byte, 200)
-	payload[0] = 1                               // Number of certificates
+	payload[0] = 1                                // Number of certificates
 	payload[1] = byte(CertTypeEd25519Signing)     // Cert type
 	binary.BigEndian.PutUint16(payload[2:4], 104) // Version+type+exp+keytype+key+n_ext+sig
 

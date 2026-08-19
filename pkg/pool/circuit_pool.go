@@ -120,8 +120,9 @@ func (p *CircuitPool) GetWithIsolation(ctx context.Context, isolationKey *circui
 			return circ, nil
 		}
 
-		// Circuit is not open, discard it
+		// Circuit is not open, discard it. Close 才能拆 Conflux 对腿。
 		p.logger.Debug("Discarding closed circuit from pool", "circuit_id", circ.ID, "state", circ.GetState())
+		circ.Close()
 	}
 
 	// No circuits available, build a new one
@@ -279,22 +280,18 @@ func (p *CircuitPool) Close() error {
 	p.wg.Wait()
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Close all circuits in main pool
-	for _, circ := range p.circuits {
-		p.logger.Debug("Closing pooled circuit", "circuit_id", circ.ID)
-		circ.SetState(circuit.StateClosed)
-	}
+	all := make([]*circuit.Circuit, 0, len(p.circuits))
+	all = append(all, p.circuits...)
 	p.circuits = nil
-
-	// Close all isolated circuits
 	for key, poolCircuits := range p.isolatedCircuits {
-		for _, circ := range poolCircuits {
-			p.logger.Debug("Closing isolated circuit", "circuit_id", circ.ID, "isolation_key", key)
-			circ.SetState(circuit.StateClosed)
-		}
+		all = append(all, poolCircuits...)
 		delete(p.isolatedCircuits, key)
+	}
+	p.mu.Unlock()
+
+	for _, circ := range all {
+		p.logger.Debug("Closing pooled circuit", "circuit_id", circ.ID)
+		circ.Close()
 	}
 
 	return nil

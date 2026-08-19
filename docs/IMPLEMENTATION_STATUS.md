@@ -132,7 +132,9 @@
 - **状态**：WORKING。纯 Go：`pkg/cell/conflux.go`、`pkg/circuit/conflux.go`、`pkg/path/conflux.go`。
 - **Spec**：https://spec.torproject.org/proposals/329-traffic-splitting.html
 - **要点**：命令 19–22；LINK/LINKED 50 字节大端；UX=3 + LowRTT；OOO 上限 256。
-- **选择**：两条腿 Guard/Middle/Exit 均宣告 `Conflux=1` **或** `Conflux=2`（mainnet 常见只写 2；flag 不蕴含），且都已协商 FlowCtrl=2。同一 Exit，不同 Guard/Middle（身份键）。
+- **选择**：两条腿 Guard/Middle/Exit 均宣告 `Conflux=1` **或** `Conflux=2`（mainnet 常见只写 2；flag 不蕴含），且都已协商 FlowCtrl=2。同一 Exit，不同 Guard/Middle（身份键，且不得与第一腿 Guard/Middle 同 family 或同 /16）。
+- **关路**：`Close` / `CloseCircuit` / 池丢弃 / 远端 DESTROY / 协议错误都会拆掉两条腿；不得只 `SetState`。
+- **收包**：LINKED / SWITCH / 多路信元只接受 Exit hop；SWITCH 要求已 LINK、`rel>=1`、合法 gap，且不得来自当前 receive 领先腿；OOO 同序号不得覆盖。
 - **禁止**：未完成 LINK 把单电路标成 Conflux；日志写出 nonce；未协商 FlowCtrl=2 却 LINK。
 - **真实网络（2026-08-19 `TestRealConflux`）**：
   - LINK：`TorNode07dot4` → `pecord` → `r0cket08i3` 与 `cryzrelay01` → `Orrion` → `r0cket08i3`（同 Exit，不同 Guard/Middle）
