@@ -21,3 +21,9 @@ Tor Project onion：`onion connect OK rendezvous_circuit=…`，`hs-ntor rendezv
 
 - 在会合电路上发送 RELAY_BEGIN 并转发应用数据（SOCKS 数据面）
 - INTRODUCE_ACK 显式等待
+
+## 进度（续）
+
+- `AddHSHop`：OPEN 电路可追加 hs-ntor 末跳（SHA3-256 + AES-256-CTR）
+- SOCKS：`relayOnionServiceData` 先 `OpenStream`（RELAY_BEGIN）再转发
+- 真实验收：Connect PASS；RELAY_BEGIN 等待 CONNECTED 仍超时（待查摘要/填充）
