@@ -19,7 +19,11 @@ func (m *confluxCellSender) SendCell(c *cell.Cell) error {
 	return nil
 }
 
-func newOpenTestCircuit(id uint32, sender *confluxCellSender) *Circuit {
+func (m *confluxCellSender) ReceiveCell() (*cell.Cell, error) {
+	return nil, fmt.Errorf("test sender has no receive")
+}
+
+func newOpenTestCircuit(id uint32, sender interface{ SendCell(*cell.Cell) error }) *Circuit {
 	c := NewCircuit(id)
 	_ = c.AddHop(&Hop{Fingerprint: "G"})
 	_ = c.AddHop(&Hop{Fingerprint: "M"})
@@ -301,6 +305,10 @@ func (m *failAfterSender) SendCell(*cell.Cell) error {
 		return fmt.Errorf("send fail")
 	}
 	return nil
+}
+
+func (m *failAfterSender) ReceiveCell() (*cell.Cell, error) {
+	return nil, fmt.Errorf("test sender has no receive")
 }
 
 func TestConfluxDataFailAfterSwitchUpdatesCurrent(t *testing.T) {
