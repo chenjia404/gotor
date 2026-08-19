@@ -49,7 +49,7 @@
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family-ids（Desc=4）已用于避让，待真实验收 |
-| Exit policy | PARTIAL | 已解析 `p`/`p6` 与完整 accept/reject；IPv6 字面量按 p6 选路。真实验收待 `TestRealExitPolicyP6` |
+| Exit policy | WORKING | 已解析 `p`/`p6` 与完整 accept/reject；IPv6 字面量按 p6 选路。`TestRealExitPolicyP6` 通过（2026-08-19：抽样 64 Exit，p=64 p6=51，选路 Exit=`eisbaer`） |
 | Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
@@ -158,14 +158,17 @@
 
 #### 7. Exit policy IPv6 `p6` + 完整 `p` 行
 
-- **状态**：PARTIAL（实现已接线；真实 microdesc / IPv6 选路待 `TestRealExitPolicyP6`）。
+- **状态**：WORKING（2026-08-19 真实验收）。
 - **已做**：
   - microdesc / 共识解析 `p6`；缺 p6 ≡ `reject 1-65535`
   - server descriptor 完整 `accept`/`reject`（CIDR、点分掩码、`[IPv6]`、`*`/`*4`/`*6`）；无匹配则接受
   - `ipv6-policy` 摘要；`CanExitTo` 按地址族分流，IPv4 `*` 不得放行 IPv6
   - `SelectPathFor` / Conflux / 预建补齐 microdesc 后按目标重选
   - 电路绑定 ExitFilter；SOCKS IPv6 用 `[addr]:port`，池中按策略取电路
-- **验收**：选路不会把只放行 80 的 exit 用于 443；IPv6-only 目标走 `p6`。
+- **真实网络（2026-08-19 `TestRealExitPolicyP6`）**：
+  - 共识约 10193 中继；抽样 64 Exit：`p=64`、`p6=51`、`allow_ipv6_443=51`
+  - `SelectPathFor(2001:db8::1:443)` → Exit `eisbaer`，`p6=true` 且允许 443
+  - 审计：缺 p6 拒绝 IPv6；`*`/`*4` 不放行 IPv6；`encodeBeginAddrPort` 对 IPv6 带方括号
 - **现有代码**：`pkg/directory/exitpolicy.go`、`exitrules.go`；`pkg/path`；`pkg/circuit/exitfilter.go`；`docs/interop/exit-policy.md`
 
 #### 8. Circuit padding machine（Padding=2 / proposal 302）

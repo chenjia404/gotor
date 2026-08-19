@@ -40,4 +40,4 @@
 
 `TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration -run TestRealExitPolicyP6`
 
-未跑过真实 microdesc + 选路之前，本项保持 PARTIAL，不得标 WORKING。
+**结果（2026-08-19）**：PASS。共识约 10193 中继；抽样 64 Exit 得 `p=64`、`p6=51`、`allow_ipv6_443=51`；`SelectPathFor(2001:db8::1:443)` 选中 Exit `eisbaer`（`p6=true`，允许 443）。本项已标 WORKING。

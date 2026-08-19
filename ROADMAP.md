@@ -1,5 +1,9 @@
 # Go-Tor Roadmap
 
+> **⚠️ 过期警告（2026-08-19）**：下文中的「~98% 完成」「Onion/Bridge 已完成」等表述**不可信**。  
+> 现行进度与互操作缺口以 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) 为准。  
+> Onion Service v3 仍缺 hs-ntor；Bridge/Relay 服务端路径未按最新协议验收。
+
 ## Current Status (January 2026)
 
 The go-tor implementation has achieved **~98% protocol compliance** with all critical components implemented and functional. See [PLAN.md](PLAN.md) for the comprehensive compliance audit report.
