@@ -254,7 +254,7 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 - 真实 RELAY_DROP 不再触发 DESTROY。
 - **缺口**：官方 relay-cell 向量；CGO 见上文 P1。
 
-### SENDME / Flow control — PARTIAL
+### SENDME / Flow control — WORKING（Vegas + 1MB soak；更大流量见 P0.2）
 
 - 未协商 CC：circuit window 1000 / +100；stream 500 / +50。
 - 电路级 SENDME v1：DIGEST=触发 cell 的完整 20 字节滚动 SHA-1；FIFO 匹配失败拆路。
