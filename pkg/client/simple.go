@@ -173,7 +173,10 @@ func (c *SimpleClient) ProxyAddr() string {
 // IsReady returns true if the client has active circuits and is ready to proxy traffic.
 func (c *SimpleClient) IsReady() bool {
 	stats := c.client.GetStats()
-	return stats.ActiveCircuits > 0
+	if stats.ActiveCircuits > 0 {
+		return true
+	}
+	return stats.CircuitPoolEnabled && stats.CircuitPoolOpen > 0
 }
 
 // WaitUntilReady blocks until the client has active circuits or the timeout expires.

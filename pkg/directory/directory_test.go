@@ -94,6 +94,33 @@ s Running Valid
 	}
 }
 
+func TestParseConsensusExitPolicy(t *testing.T) {
+	consensusData := `network-status-version 3
+vote-status consensus
+r TestExit AAAAAAAAAAAAAAAAAAAAAA BBBBBBBBBBBBB 2024-01-01 00:00:00 192.168.1.2 9002 9030
+s Exit Fast Running Stable Valid
+p accept 80,443
+`
+
+	client := NewClient(nil)
+	relays, err := client.parseConsensus(strings.NewReader(consensusData))
+	if err != nil {
+		t.Fatalf("parseConsensus() error = %v", err)
+	}
+	if len(relays) != 1 {
+		t.Fatalf("got %d relays, want 1", len(relays))
+	}
+	if !relays[0].HasParsedPolicy() {
+		t.Fatal("consensus p line was not parsed")
+	}
+	if !relays[0].CanExitToPort(443) {
+		t.Fatal("accept 80,443 should allow 443")
+	}
+	if relays[0].CanExitToPort(25) {
+		t.Fatal("accept 80,443 should reject 25")
+	}
+}
+
 func TestParseBandwidthWeights(t *testing.T) {
 	// Test parsing of "w" lines (bandwidth weights) per path-spec.txt §2.2
 	consensusData := `network-status-version 3

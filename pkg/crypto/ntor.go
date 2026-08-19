@@ -16,10 +16,19 @@
 //	auth_input   = verify | ID | B | Y | X | PROTOID | "Server"
 //	AUTH         = H(auth_input, t_mac)
 //
-// 电路密钥用 KDF-RFC5869：HKDF-SHA256(IKM=KEY_SEED, salt=t_key, info=m_expand)。
+// 电路密钥必须按 C Tor onion_ntor.c / Arti Ntor1Kdf：
+//
+//	HKDF-SHA256(IKM=secret_input, salt=t_key, info=m_expand)
+//
+// 这等于 HKDF-Expand(PRK=KEY_SEED, info=m_expand)。
+// 禁止再对 KEY_SEED 做一次 Extract（IKM=KEY_SEED, salt=t_key）：
+// AUTH 仍会通过，但 Df/Db/Kf/Kb 与 Guard 不一致，第一个 RELAY 会被 DESTROY reason=1。
 //
 // C Tor: src/core/crypto/onion_ntor.c
+//        crypto_expand_key_material_rfc5869_sha256(secret_input, t_key, m_expand)
 // Arti: crates/tor-proto/src/crypto/handshake/ntor.rs
+//        Ntor1Kdf::derive(secret_input)
+// Spec：https://spec.torproject.org/tor-spec/setting-circuit-keys.html （IKM == secret_input）
 package crypto
 
 import (
@@ -53,9 +62,9 @@ func ntorHMAC(key string, msg []byte) []byte {
 	return mac.Sum(nil)
 }
 
-func ntorExpandKeyMaterial(keySeed []byte) ([]byte, error) {
-	// C Tor crypto_expand_key_material_rfc5869_sha256(key_seed, t_key, m_expand)
-	reader := hkdf.New(sha256.New, keySeed, []byte(ntorTKey), []byte(ntorMExpand))
+func ntorExpandKeyMaterial(secretInput []byte) ([]byte, error) {
+	// C Tor / Arti：IKM 是 secret_input，不是 KEY_SEED。
+	reader := hkdf.New(sha256.New, secretInput, []byte(ntorTKey), []byte(ntorMExpand))
 	out := make([]byte, NtorKeyMaterialLen)
 	if _, err := io.ReadFull(reader, out); err != nil {
 		return nil, fmt.Errorf("ntor HKDF-Expand failed: %w", err)
@@ -174,14 +183,14 @@ func NtorProcessResponse(response, clientPrivate, serverNtorKey, serverNodeID []
 	curve25519.ScalarBaseMult(&clientPub, &clientX)
 
 	secretInput := ntorBuildSecretInput(sharedXY[:], sharedXB[:], serverNodeID, serverNtorKey, clientPub[:], serverY[:])
-	keySeed, verify := ntorDerive(secretInput)
+	_, verify := ntorDerive(secretInput)
 	expectedAuth := ntorComputeAuth(verify, serverNodeID, serverNtorKey, serverY[:], clientPub[:])
 
 	if subtle.ConstantTimeCompare(auth[:], expectedAuth) != 1 {
 		return nil, fmt.Errorf("ntor AUTH verification failed: server authentication invalid")
 	}
 
-	return ntorExpandKeyMaterial(keySeed)
+	return ntorExpandKeyMaterial(secretInput)
 }
 
 // ntorServerHandshakeCore 是服务端 ntor。onion service 的 hs-ntor 不走这里。
@@ -236,10 +245,10 @@ func ntorServerHandshakeCore(clientHandshake, serverNtorPrivate, serverNodeID, e
 	}
 
 	secretInput := ntorBuildSecretInput(sharedXY[:], sharedXB[:], serverNodeID, serverPublic[:], clientPK[:], serverEphemeral.Public[:])
-	keySeed, verify := ntorDerive(secretInput)
+	_, verify := ntorDerive(secretInput)
 	auth := ntorComputeAuth(verify, serverNodeID, serverPublic[:], serverEphemeral.Public[:], clientPK[:])
 
-	keyMaterial, err = ntorExpandKeyMaterial(keySeed)
+	keyMaterial, err = ntorExpandKeyMaterial(secretInput)
 	if err != nil {
 		return nil, nil, err
 	}

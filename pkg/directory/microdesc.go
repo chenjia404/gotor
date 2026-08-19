@@ -242,17 +242,20 @@ func (c *Client) parseMicrodescriptors(data []byte, digestMap map[string][]*Rela
 		if !ok {
 			continue
 		}
-		ntorKey, identityKey, family := parseMicrodescriptorFields(doc)
-		if len(ntorKey) != 32 {
+		fields := parseMicrodescriptorFields(doc)
+		if len(fields.ntorKey) != 32 {
 			continue
 		}
 		for _, relay := range relays {
-			relay.NtorOnionKey = ntorKey
-			if len(identityKey) == 32 {
-				relay.IdentityKey = identityKey
+			relay.NtorOnionKey = fields.ntorKey
+			if len(fields.identityKey) == 32 {
+				relay.IdentityKey = fields.identityKey
 			}
-			if len(family) > 0 {
-				relay.Family = family
+			if len(fields.family) > 0 {
+				relay.Family = fields.family
+			}
+			if fields.policy != nil {
+				relay.ExitPolicy = fields.policy
 			}
 		}
 		matched++
@@ -288,7 +291,15 @@ func mustSHA256(doc []byte) []byte {
 	return sum[:]
 }
 
-func parseMicrodescriptorFields(doc []byte) (ntorKey, identityKey []byte, family []string) {
+type microdescFields struct {
+	ntorKey     []byte
+	identityKey []byte
+	family      []string
+	policy      *ExitPolicySummary
+}
+
+func parseMicrodescriptorFields(doc []byte) microdescFields {
+	var out microdescFields
 	scanner := bufio.NewScanner(strings.NewReader(string(doc)))
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -300,22 +311,26 @@ func parseMicrodescriptorFields(doc []byte) (ntorKey, identityKey []byte, family
 		case "ntor-onion-key":
 			if len(fields) >= 2 {
 				if key, err := decodeTorBase64(fields[1]); err == nil && len(key) == 32 {
-					ntorKey = key
+					out.ntorKey = key
 				}
 			}
 		case "id":
 			if len(fields) >= 3 && fields[1] == "ed25519" && fields[2] != "none" {
 				if key, err := decodeTorBase64(fields[2]); err == nil && len(key) == 32 {
-					identityKey = key
+					out.identityKey = key
 				}
 			}
 		case "family":
 			if len(fields) > 1 {
-				family = append([]string{}, fields[1:]...)
+				out.family = append([]string{}, fields[1:]...)
+			}
+		case "p":
+			if pol, err := ParseExitPolicySummary(line); err == nil {
+				out.policy = pol
 			}
 		}
 	}
-	return ntorKey, identityKey, family
+	return out
 }
 
 func decodeTorBase64(s string) ([]byte, error) {

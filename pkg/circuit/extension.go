@@ -6,9 +6,11 @@ import (
 	"crypto/rand"
 	"crypto/sha1" // #nosec G505 - SHA-1 required by Tor protocol (tor-spec.txt §6.1)
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
@@ -143,7 +145,8 @@ func (e *Extension) ExtendCircuit(ctx context.Context, target string, handshakeT
 		"nspec", extend2Data[0],
 		"data_size", len(extend2Data),
 		"htype", handshakeType,
-		"hdata_len", len(handshakeData))
+		"hdata_len", len(handshakeData),
+		"dump", DescribeExtend2(extend2Data))
 
 	// Send EXTEND2 relay cell through the circuit
 	if err := e.circuit.SendRelayCell(relayCell); err != nil {
@@ -265,20 +268,19 @@ func (e *Extension) buildExtend2Data(target string, handshakeType HandshakeType,
 		specs = append(specs, spec)
 	}
 
-	if rsaID, edID, err := e.getRelayIdentities(); err == nil {
-		if len(rsaID) == 20 {
-			spec := []byte{2, 20}
-			spec = append(spec, rsaID...)
-			specs = append(specs, spec)
-		}
-		if len(edID) == 32 {
-			spec := []byte{3, 32}
-			spec = append(spec, edID...)
-			specs = append(specs, spec)
-		}
-	} else {
+	rsaID, edID, err := e.getRelayIdentities()
+	if err != nil {
 		return nil, fmt.Errorf("EXTEND2 requires target identity keys: %w", err)
 	}
+	if err := e.rejectExtendToPreviousHop(rsaID, edID); err != nil {
+		return nil, err
+	}
+	spec := []byte{2, 20}
+	spec = append(spec, rsaID...)
+	specs = append(specs, spec)
+	spec = []byte{3, 32}
+	spec = append(spec, edID...)
+	specs = append(specs, spec)
 
 	data = append(data, byte(len(specs)))
 	for _, spec := range specs {
@@ -370,6 +372,89 @@ func allZeroBytes(b []byte) bool {
 		acc |= v
 	}
 	return acc == 0
+}
+
+// rejectExtendToPreviousHop 对应 C Tor circuit_extend_lspec_valid_helper：
+// 禁止要求 Guard 连回上一跳（同一 RSA 或同一 Ed25519）。
+func (e *Extension) rejectExtendToPreviousHop(rsaID, edID []byte) error {
+	if e.circuit == nil {
+		return nil
+	}
+	for _, hop := range e.circuit.GetHops() {
+		if hop == nil {
+			continue
+		}
+		if fp := strings.ToUpper(strings.TrimSpace(hop.Fingerprint)); fp != "" && len(rsaID) == 20 {
+			if fp == strings.ToUpper(hex.EncodeToString(rsaID)) {
+				return fmt.Errorf("EXTEND2 target RSA identity matches previous hop %s", hop.Fingerprint)
+			}
+		}
+	}
+	_ = edID
+	return nil
+}
+
+// DescribeExtend2 把 EXTEND2 负载解析成可读摘要。
+// 只记录 specifier 类型/长度、IPv4/端口、RSA hex、Ed25519 hex、HTYPE/HLEN；
+// HDATA 只记长度，不输出握手私钥。
+func DescribeExtend2(data []byte) string {
+	if len(data) < 1 {
+		return "empty"
+	}
+	nspec := int(data[0])
+	parts := []string{fmt.Sprintf("nspec=%d", nspec)}
+	off := 1
+	for i := 0; i < nspec; i++ {
+		if off+2 > len(data) {
+			parts = append(parts, fmt.Sprintf("spec%d=truncated", i))
+			return strings.Join(parts, " ")
+		}
+		lstype := data[off]
+		lslen := int(data[off+1])
+		off += 2
+		if off+lslen > len(data) {
+			parts = append(parts, fmt.Sprintf("t=%d l=%d truncated", lstype, lslen))
+			return strings.Join(parts, " ")
+		}
+		body := data[off : off+lslen]
+		off += lslen
+		switch lstype {
+		case 0:
+			if lslen == 6 {
+				ip := net.IP(body[:4]).String()
+				port := binary.BigEndian.Uint16(body[4:6])
+				parts = append(parts, fmt.Sprintf("[00] %s:%d", ip, port))
+			} else {
+				parts = append(parts, fmt.Sprintf("[00] l=%d", lslen))
+			}
+		case 1:
+			if lslen == 18 {
+				ip := net.IP(body[:16]).String()
+				port := binary.BigEndian.Uint16(body[16:18])
+				parts = append(parts, fmt.Sprintf("[01] [%s]:%d", ip, port))
+			} else {
+				parts = append(parts, fmt.Sprintf("[01] l=%d", lslen))
+			}
+		case 2:
+			parts = append(parts, fmt.Sprintf("[02] rsa=%s", strings.ToUpper(hex.EncodeToString(body))))
+		case 3:
+			parts = append(parts, fmt.Sprintf("[03] ed=%s", hex.EncodeToString(body)))
+		default:
+			parts = append(parts, fmt.Sprintf("[0x%02x] l=%d", lstype, lslen))
+		}
+	}
+	if off+4 > len(data) {
+		parts = append(parts, "handshake=truncated")
+		return strings.Join(parts, " ")
+	}
+	htype := binary.BigEndian.Uint16(data[off : off+2])
+	hlen := binary.BigEndian.Uint16(data[off+2 : off+4])
+	off += 4
+	parts = append(parts, fmt.Sprintf("htype=0x%04x hlen=%d leftover=%d", htype, hlen, len(data)-off))
+	if int(hlen) <= len(data)-off && hlen >= 20 {
+		parts = append(parts, fmt.Sprintf("hdata_nodeid=%s", strings.ToUpper(hex.EncodeToString(data[off:off+20]))))
+	}
+	return strings.Join(parts, " ")
 }
 
 // ProcessCreated2 processes a CREATED2 response from the first hop

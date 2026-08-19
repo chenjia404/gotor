@@ -189,6 +189,9 @@ func (p *CircuitPool) Put(circ *circuit.Circuit) {
 func (p *CircuitPool) prebuildLoop(interval time.Duration) {
 	defer p.wg.Done()
 
+	// 立即预建，而不是等第一个 ticker（默认 30s）才动手。
+	p.ensureMinCircuits()
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -205,6 +208,10 @@ func (p *CircuitPool) prebuildLoop(interval time.Duration) {
 
 // ensureMinCircuits builds circuits if we're below the minimum
 func (p *CircuitPool) ensureMinCircuits() {
+	if p.buildFunc == nil {
+		return
+	}
+
 	p.mu.RLock()
 	currentCount := len(p.circuits)
 	p.mu.RUnlock()

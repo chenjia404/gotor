@@ -215,3 +215,25 @@ func TestCircuitPoolPrebuildDisabled(t *testing.T) {
 		t.Errorf("Expected 0 circuits (prebuild disabled), got %d", stats.Total)
 	}
 }
+
+func TestCircuitPoolImmediatePrebuild(t *testing.T) {
+	log := logger.NewDefault()
+	cfg := &CircuitPoolConfig{
+		MinCircuits:     2,
+		MaxCircuits:     4,
+		PrebuildEnabled: true,
+		RebuildInterval: time.Hour,
+	}
+
+	pool := NewCircuitPool(cfg, mockCircuitBuilder, log)
+	defer pool.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if pool.Stats().Open >= 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("prebuild did not start immediately: %+v", pool.Stats())
+}

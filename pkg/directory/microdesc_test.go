@@ -34,6 +34,32 @@ func TestParseMicrodescriptorSameLineIdentity(t *testing.T) {
 	}
 }
 
+func TestParseMicrodescriptorExitPolicy(t *testing.T) {
+	ntor := base64.StdEncoding.EncodeToString(bytesRepeat(0x42, 32))
+	ed := base64.StdEncoding.EncodeToString(bytesRepeat(0x24, 32))
+	doc := "onion-key\n-----BEGIN RSA PUBLIC KEY-----\nMIIB\n-----END RSA PUBLIC KEY-----\n" +
+		"ntor-onion-key " + ntor + "\n" +
+		"id ed25519 " + ed + "\n" +
+		"p accept 80,443\n"
+
+	sum := sha256.Sum256([]byte(doc))
+	digest := base64.RawStdEncoding.EncodeToString(sum[:])
+	relay := &Relay{Nickname: "ExitMD", MicrodescDigest: digest, Flags: []string{"Exit"}}
+	client := NewClient(nil)
+	if err := client.parseMicrodescriptors([]byte(doc), map[string][]*Relay{digest: {relay}}); err != nil {
+		t.Fatal(err)
+	}
+	if !relay.HasParsedPolicy() {
+		t.Fatal("microdescriptor p line was not parsed")
+	}
+	if !relay.CanExitToPort(443) || !relay.CanExitToPort(80) {
+		t.Fatal("accept 80,443 should allow both ports")
+	}
+	if relay.CanExitToPort(22) {
+		t.Fatal("accept 80,443 must reject 22")
+	}
+}
+
 func TestDecodeRSAIdentityBase64(t *testing.T) {
 	raw := bytesRepeat(0xab, 20)
 	b64 := base64.RawStdEncoding.EncodeToString(raw)
