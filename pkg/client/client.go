@@ -5,6 +5,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"net"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -201,6 +202,9 @@ func (c *Client) Start(ctx context.Context) error {
 
 		// Wire circuit pool to SOCKS server for stream isolation
 		c.socksServer.SetCircuitPool(c.circuitPool)
+		c.socksServer.SetCircuitForExit(func(ctx context.Context, ip net.IP, port int) (*circuit.Circuit, error) {
+			return c.buildCircuitForTarget(ctx, path.ExitTarget{IP: ip, Port: port})
+		})
 	}
 
 	// Step 4: Build initial circuits
@@ -341,7 +345,7 @@ func (c *Client) Stop() error {
 // circuitBuilderFunc returns a circuit builder function for the circuit pool
 func (c *Client) circuitBuilderFunc() pool.CircuitBuilder {
 	return func(ctx context.Context) (*circuit.Circuit, error) {
-		return c.buildCircuitForPool(ctx)
+		return c.buildCircuitForTarget(ctx, path.ExitTarget{Port: generalPurposeExitPort})
 	}
 }
 
@@ -374,15 +378,23 @@ func (c *Client) buildInitialCircuits(ctx context.Context) error {
 	return nil
 }
 
-// buildCircuitForPool builds a single circuit and returns it for pool management
+// buildCircuitForPool 预建通用电路（IPv4/主机名 443）。
 func (c *Client) buildCircuitForPool(ctx context.Context) (*circuit.Circuit, error) {
+	return c.buildCircuitForTarget(ctx, path.ExitTarget{Port: generalPurposeExitPort})
+}
+
+// buildCircuitForTarget 按出口目标选路并建路。IPv6 字面量只接受 p6 放行的 exit。
+func (c *Client) buildCircuitForTarget(ctx context.Context, target path.ExitTarget) (*circuit.Circuit, error) {
+	if target.Port < 1 || target.Port > 65535 {
+		return nil, fmt.Errorf("invalid exit port %d", target.Port)
+	}
 	var selectedPath *path.Path
 	var err error
 	for attempt := 1; attempt <= maxCircuitPathAttempts; attempt++ {
-		selectedPath, err = c.pathSelector.SelectConfluxPath(generalPurposeExitPort)
+		selectedPath, err = c.pathSelector.SelectConfluxPathFor(target)
 		if err != nil {
 			c.logger.Debug("Conflux-capable path unavailable, falling back", "error", err, "attempt", attempt)
-			selectedPath, err = c.pathSelector.SelectPath(generalPurposeExitPort)
+			selectedPath, err = c.pathSelector.SelectPathFor(target)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to select path: %w", err)
@@ -392,7 +404,7 @@ func (c *Client) buildCircuitForPool(ctx context.Context) (*circuit.Circuit, err
 			"guard", selectedPath.Guard.Nickname,
 			"middle", selectedPath.Middle.Nickname,
 			"exit", selectedPath.Exit.Nickname,
-			"exit_port", generalPurposeExitPort,
+			"exit_target", target.String(),
 			"attempt", attempt)
 
 		if err := c.directory.FetchMicrodescriptorsFor(ctx, []*directory.Relay{
@@ -401,14 +413,14 @@ func (c *Client) buildCircuitForPool(ctx context.Context) (*circuit.Circuit, err
 			return nil, fmt.Errorf("failed to fetch path microdescriptors: %w", err)
 		}
 
-		// microdesc 的 p 行补齐后，丢掉不允许 443 的 exit 并重选（同一 Relay 指针会留下 policy）。
-		if selectedPath.Exit.HasParsedPolicy() && !selectedPath.Exit.CanExitToPort(generalPurposeExitPort) {
-			c.logger.Warn("Exit policy rejects target port, selecting another path",
+		// microdesc 补齐 p/p6 后，丢掉不允许该目标的 exit 并重选。
+		if !selectedPath.Exit.AllowsExitTarget(target.Port, target.IP) {
+			c.logger.Warn("Exit policy rejects target, selecting another path",
 				"exit", selectedPath.Exit.Nickname,
-				"port", generalPurposeExitPort,
+				"target", target.String(),
 				"attempt", attempt)
 			if attempt == maxCircuitPathAttempts {
-				return nil, fmt.Errorf("no exit allows port %d after %d attempts", generalPurposeExitPort, maxCircuitPathAttempts)
+				return nil, fmt.Errorf("no exit allows %s after %d attempts", target.String(), maxCircuitPathAttempts)
 			}
 			continue
 		}

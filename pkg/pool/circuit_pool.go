@@ -83,6 +83,70 @@ func (p *CircuitPool) Get(ctx context.Context) (*circuit.Circuit, error) {
 	return p.GetWithIsolation(ctx, nil)
 }
 
+// GetIf 取出第一条仍 OPEN 且 allow 为真的电路；不匹配的仍留在池里。
+// allow == nil 时与 GetWithIsolation 相同。池空则走 buildFunc。
+func (p *CircuitPool) GetIf(ctx context.Context, isolationKey *circuit.IsolationKey, allow func(*circuit.Circuit) bool) (*circuit.Circuit, error) {
+	if allow == nil {
+		return p.GetWithIsolation(ctx, isolationKey)
+	}
+
+	p.mu.Lock()
+
+	var poolCircuits []*circuit.Circuit
+	var poolKey string
+	isolated := isolationKey != nil && isolationKey.Level != circuit.IsolationNone
+	if isolated {
+		poolKey = isolationKey.Key()
+		poolCircuits = p.isolatedCircuits[poolKey]
+	} else {
+		poolCircuits = p.circuits
+	}
+
+	kept := make([]*circuit.Circuit, 0, len(poolCircuits))
+	var found *circuit.Circuit
+	for _, circ := range poolCircuits {
+		if circ == nil {
+			continue
+		}
+		if circ.GetState() != circuit.StateOpen {
+			p.logger.Debug("Discarding closed circuit from pool", "circuit_id", circ.ID, "state", circ.GetState())
+			circ.Close()
+			continue
+		}
+		if found == nil && allow(circ) {
+			found = circ
+			continue
+		}
+		kept = append(kept, circ)
+	}
+	if isolated {
+		if len(kept) == 0 {
+			delete(p.isolatedCircuits, poolKey)
+		} else {
+			p.isolatedCircuits[poolKey] = kept
+		}
+	} else {
+		p.circuits = kept
+	}
+
+	if found != nil {
+		p.mu.Unlock()
+		p.logger.Debug("Retrieved matching circuit from pool", "circuit_id", found.ID)
+		return found, nil
+	}
+	p.mu.Unlock()
+
+	p.logger.Debug("No matching circuit in pool, building new circuit")
+	circ, err := p.buildFunc(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if isolationKey != nil {
+		circ.SetIsolationKey(isolationKey)
+	}
+	return circ, nil
+}
+
 // GetWithIsolation retrieves a circuit from the pool with the specified isolation key
 // If isolationKey is nil or has level IsolationNone, uses the default non-isolated pool
 func (p *CircuitPool) GetWithIsolation(ctx context.Context, isolationKey *circuit.IsolationKey) (*circuit.Circuit, error) {

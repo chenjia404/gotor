@@ -90,6 +90,7 @@ type Circuit struct {
 	destroyReason  byte
 	conflux        *ConfluxSet   // 非 nil 表示本电路正在或已经参与 Conflux 套
 	sendWake       chan struct{} // SENDME / 拆路时叫醒等窗的发送方
+	exitFilter     ExitFilter    // Exit 的 p / p6 / 完整策略；IPv6 字面量必须检查
 }
 
 // Hop represents a single hop in a circuit (one relay)

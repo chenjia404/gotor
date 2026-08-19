@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -71,6 +72,41 @@ func TestCircuitPoolGetPut(t *testing.T) {
 
 	if circ2.ID != circ1.ID {
 		t.Errorf("Expected to reuse circuit %d, got %d", circ1.ID, circ2.ID)
+	}
+}
+
+type allowAllExit struct{}
+
+func (allowAllExit) AllowsExit(net.IP, int) bool { return true }
+
+func TestCircuitPoolGetIf(t *testing.T) {
+	log := logger.NewDefault()
+	cfg := DefaultCircuitPoolConfig()
+	cfg.PrebuildEnabled = false
+
+	p := NewCircuitPool(cfg, mockCircuitBuilder, log)
+	defer p.Close()
+
+	reject := &circuit.Circuit{ID: 11}
+	reject.SetState(circuit.StateOpen)
+	accept := &circuit.Circuit{ID: 22}
+	accept.SetState(circuit.StateOpen)
+	accept.SetExitFilter(allowAllExit{})
+	p.Put(reject)
+	p.Put(accept)
+
+	dest := net.ParseIP("2001:db8::1")
+	got, err := p.GetIf(context.Background(), nil, func(c *circuit.Circuit) bool {
+		return c.AllowsExit(dest, 443)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != accept.ID {
+		t.Fatalf("GetIf should skip IPv6-rejecting circuit, got %d want %d", got.ID, accept.ID)
+	}
+	if p.Stats().Total != 1 {
+		t.Fatalf("non-matching circuit should remain in pool, got %d", p.Stats().Total)
 	}
 }
 

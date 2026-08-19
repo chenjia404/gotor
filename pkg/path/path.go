@@ -7,12 +7,27 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"net"
 	"strings"
 	"sync"
 
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
+
+// ExitTarget 描述出口流的目的。IP 为 nil 表示主机名或预建，走 IPv4 / 未知地址策略。
+// IPv6 字面量必须按 p6 选路，缺 p6 的 exit 不得入选。
+type ExitTarget struct {
+	Port int
+	IP   net.IP
+}
+
+func (t ExitTarget) String() string {
+	if t.IP != nil {
+		return net.JoinHostPort(t.IP.String(), fmt.Sprintf("%d", t.Port))
+	}
+	return fmt.Sprintf("*:%d", t.Port)
+}
 
 // Path represents a selected path through the Tor network
 type Path struct {
@@ -115,9 +130,13 @@ func (s *Selector) GetRelays() []*directory.Relay {
 	return relays
 }
 
-// SelectPath selects a complete path (guard, middle, exit) for a circuit
-// Uses diversity analysis to prefer paths with good geographic and network distribution
+// SelectPath 按 IPv4/主机名端口选一条三跳路径。
 func (s *Selector) SelectPath(exitPort int) (*Path, error) {
+	return s.SelectPathFor(ExitTarget{Port: exitPort})
+}
+
+// SelectPathFor 按目的地址族选路。IPv6 字面量只接受 p6 放行该端口的 exit。
+func (s *Selector) SelectPathFor(target ExitTarget) (*Path, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -137,8 +156,8 @@ func (s *Selector) SelectPath(exitPort int) (*Path, error) {
 			return nil, fmt.Errorf("failed to select guard: %w", err)
 		}
 
-		// Select exit (must allow the port and not be the guard)
-		exit, err := s.selectExit(exitPort, guard)
+		// Select exit (must allow the target and not be the guard)
+		exit, err := s.selectExitFor(target, guard)
 		if err != nil {
 			return nil, fmt.Errorf("failed to select exit: %w", err)
 		}
@@ -279,9 +298,13 @@ func (s *Selector) ConfirmGuard(fingerprint string) {
 	}
 }
 
-// selectExit selects an exit relay that allows the specified port
-// Ensures the exit is not in the same family or subnet as the guard (path-spec.txt §2.2.1)
+// selectExit 按 IPv4/主机名端口选 exit（兼容现有单测）。
 func (s *Selector) selectExit(port int, avoid *directory.Relay) (*directory.Relay, error) {
+	return s.selectExitFor(ExitTarget{Port: port}, avoid)
+}
+
+// selectExitFor 选允许该目标的 exit，并避开与 guard 同 family / 同 /16。
+func (s *Selector) selectExitFor(target ExitTarget, avoid *directory.Relay) (*directory.Relay, error) {
 	// Select exit that's not the guard and doesn't share family/subnet
 	exits := make([]*directory.Relay, 0)
 
@@ -309,14 +332,14 @@ func (s *Selector) selectExit(port int, avoid *directory.Relay) (*directory.Rela
 			}
 		}
 
-		// 有 p 行时按端口过滤；否则退回 Exit flag（path-spec §2.2）
-		if relay.CanExitToPort(port) {
+		// 有策略时按地址族+端口过滤；否则退回 Exit flag（path-spec §2.2）
+		if relay.AllowsExitTarget(target.Port, target.IP) {
 			exits = append(exits, relay)
 		}
 	}
 
 	if len(exits) == 0 {
-		return nil, fmt.Errorf("no suitable exit relays available for port %d (family/subnet/policy constraints)", port)
+		return nil, fmt.Errorf("no suitable exit relays available for %s (family/subnet/policy constraints)", target)
 	}
 
 	idx, err := weightedRandomIndex(exits)

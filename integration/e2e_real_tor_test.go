@@ -755,6 +755,74 @@ func TestRealExtend2IPv6(t *testing.T) {
 		selected.Exit.Nickname, selected.Exit.GetFingerprintHex(), selected.Exit.IPv6, selected.Exit.IPv6Port)
 }
 
+// TestRealExitPolicyP6 验收真实 microdesc 含 p6，且 IPv6 字面量选路不会选上缺 p6 的 exit。
+func TestRealExitPolicyP6(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	log := logger.NewDefault()
+	dirClient := directory.NewClient(log)
+	guardMgr, err := path.NewGuardManager(t.TempDir(), log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := path.NewSelectorWithGuards(dirClient, guardMgr, log)
+	if err := selector.UpdateConsensus(ctx); err != nil {
+		t.Fatalf("UpdateConsensus: %v", err)
+	}
+	relays := selector.GetRelays()
+	exits := make([]*directory.Relay, 0)
+	for _, r := range relays {
+		if r.IsExit() && r.IsRunning() && r.IsValid() {
+			exits = append(exits, r)
+		}
+	}
+	if len(exits) < 20 {
+		t.Fatalf("too few exits: %d", len(exits))
+	}
+	sample := exits
+	if len(sample) > 64 {
+		sample = exits[:64]
+	}
+	if err := dirClient.FetchMicrodescriptorsFor(ctx, sample); err != nil {
+		t.Fatalf("FetchMicrodescriptorsFor: %v", err)
+	}
+	var withP, withP6, ipv6OK int
+	for _, r := range sample {
+		if r.ExitPolicy != nil {
+			withP++
+		}
+		if r.HasParsedIPv6Policy() {
+			withP6++
+		}
+		if r.CanExitTo(net.ParseIP("2001:db8::1"), 443) {
+			ipv6OK++
+		}
+	}
+	t.Logf("sampled exits=%d p=%d p6=%d allow_ipv6_443=%d", len(sample), withP, withP6, ipv6OK)
+	if withP == 0 {
+		t.Fatal("expected some microdescriptors to contain p")
+	}
+	if withP6 == 0 {
+		t.Fatal("expected some microdescriptors to contain p6")
+	}
+
+	dest := path.ExitTarget{Port: 443, IP: net.ParseIP("2001:db8::1")}
+	selected, err := selector.SelectPathFor(dest)
+	if err != nil {
+		t.Fatalf("SelectPathFor IPv6:443: %v", err)
+	}
+	if err := dirClient.FetchMicrodescriptorsFor(ctx, []*directory.Relay{selected.Exit}); err != nil {
+		t.Fatalf("fetch selected exit: %v", err)
+	}
+	if !selected.Exit.CanExitTo(dest.IP, dest.Port) {
+		t.Fatalf("selected exit %s rejects IPv6:443 (p6 missing or reject)", selected.Exit.Nickname)
+	}
+	t.Logf("IPv6 path exit=%s p6=%v allow443=%v",
+		selected.Exit.Nickname, selected.Exit.HasParsedIPv6Policy(), selected.Exit.CanExitTo(dest.IP, 443))
+}
+
 func pickIPv6ExtendPathFromSelector(selector *path.Selector, relays []*directory.Relay, port int) (*path.Path, error) {
 	var last error
 	for i := 0; i < 24; i++ {

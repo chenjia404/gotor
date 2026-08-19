@@ -2,6 +2,7 @@ package path
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -294,6 +295,75 @@ func TestSelectExitRespectsPolicy(t *testing.T) {
 	_, err = selector.selectExit(22, guard)
 	if err == nil {
 		t.Fatal("expected error when no exit allows port 22")
+	}
+}
+
+func TestSelectExitIPv6UsesP6(t *testing.T) {
+	log := logger.NewDefault()
+	v4Only, err := directory.ParseExitPolicySummary("p accept 80,443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v6HTTP, err := directory.ParseExitPolicySummary("p6 accept 80")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v6HTTPS, err := directory.ParseExitPolicySummary("p6 accept 80,443")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	guard := &directory.Relay{
+		Nickname:    "Guard",
+		Fingerprint: "GUARD1",
+		Address:     "10.0.1.1",
+		ORPort:      9001,
+		Flags:       []string{"Running", "Valid", "Guard"},
+	}
+	ipv4Exit := &directory.Relay{
+		Nickname:    "IPv4Only",
+		Fingerprint: "EXITV4",
+		Address:     "192.168.3.1",
+		ORPort:      9001,
+		Flags:       []string{"Running", "Valid", "Exit"},
+		ExitPolicy:  v4Only,
+	}
+	http6Exit := &directory.Relay{
+		Nickname:       "HTTP6",
+		Fingerprint:    "EXIT80V6",
+		Address:        "192.168.4.1",
+		ORPort:         9001,
+		Flags:          []string{"Running", "Valid", "Exit"},
+		ExitPolicy:     v4Only,
+		ExitPolicyIPv6: v6HTTP,
+	}
+	https6Exit := &directory.Relay{
+		Nickname:       "HTTPS6",
+		Fingerprint:    "EXIT443V6",
+		Address:        "192.169.4.2",
+		ORPort:         9001,
+		Flags:          []string{"Running", "Valid", "Exit"},
+		ExitPolicy:     v4Only,
+		ExitPolicyIPv6: v6HTTPS,
+	}
+
+	selector := NewSelector(directory.NewClient(log), log)
+	selector.relays = []*directory.Relay{guard, ipv4Exit, http6Exit, https6Exit}
+
+	dest := ExitTarget{Port: 443, IP: net.ParseIP("2001:db8::10")}
+	for i := 0; i < 20; i++ {
+		exit, err := selector.selectExitFor(dest, guard)
+		if err != nil {
+			t.Fatalf("selectExitFor(IPv6:443): %v", err)
+		}
+		if exit.Fingerprint != https6Exit.Fingerprint {
+			t.Fatalf("trial %d: expected HTTPS6 exit, got %s", i, exit.Nickname)
+		}
+	}
+
+	_, err = selector.selectExitFor(ExitTarget{Port: 22, IP: net.ParseIP("2001:db8::10")}, guard)
+	if err == nil {
+		t.Fatal("expected error when no exit allows IPv6:22")
 	}
 }
 
