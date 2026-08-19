@@ -137,6 +137,7 @@ type Relay struct {
 	IdentityKey     []byte             // Ed25519 identity key (32 bytes)
 	NtorOnionKey    []byte             // Curve25519 ntor onion key (32 bytes)
 	MicrodescDigest string             // SHA256 digest of microdescriptor (base64, no padding)
+	microdescRaw    []byte             // 最近一次匹配的 microdescriptor 原文（落盘用）
 	Family          []string           // microdesc / descriptor 的 family 列表（$HEX 或 nickname）
 	FamilyIDs       []string           // microdesc family-ids（Desc=4 / happy families）
 	Bandwidth       uint64             // Advertised bandwidth in bytes/sec (from "w" line) - path-spec.txt §2.2
@@ -160,6 +161,9 @@ type Client struct {
 	sharedRandCurrent   []byte         // shared-rand-current-value（32 字节）
 	sharedRandPrev      []byte         // shared-rand-previous-value（32 字节）
 	consensusValidAfter time.Time
+	consensusDiskPath   string // CacheDirectory/cached-microdesc-consensus
+	avoidDiskWrites     bool
+	microdescDisk       *microdescDiskCache
 }
 
 // AuthorityCertCache caches authority signing certificates for consensus verification
@@ -218,6 +222,12 @@ func NewClient(log *logger.Logger) *Client {
 // and populates relay cryptographic keys from microdescriptors (SPEC-001)
 func (c *Client) FetchConsensus(ctx context.Context) ([]*Relay, error) {
 	c.logger.Info("Fetching network consensus")
+
+	if c.copyLastConsensusRaw() == "" {
+		if relays, err := c.tryLoadConsensusDisk(ctx); err == nil && len(relays) > 0 {
+			return relays, nil
+		}
+	}
 
 	// Try each authority until one succeeds
 	var lastErr error
@@ -496,6 +506,7 @@ func (c *Client) ingestConsensusDocument(ctx context.Context, doc string) ([]*Re
 		"valid_until", metadata.ValidUntil)
 
 	c.rememberVerifiedConsensus(doc, sha3_256Hex(signedBody), metadata)
+	c.persistConsensusDisk(doc)
 	return relays, nil
 }
 

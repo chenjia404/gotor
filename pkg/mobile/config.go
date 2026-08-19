@@ -32,20 +32,26 @@ func buildMobileConfig(dataDir string, socksPort int) *config.Config {
 	cfg := config.DefaultConfig()
 
 	cfg.DataDirectory = dataDir
+	cfg.CacheDirectory = ""
 	cfg.SocksPort = socksPort
 	cfg.SocksListenAddr = socksBindAddr
+	cfg.SocksUnixPath = ""
 
-	// Control / Metrics 默认全关。
+	// Control / Metrics / DNSPort / HTTPTunnel 默认全关。
 	cfg.ControlPort = 0
 	cfg.ControlListenAddr = socksBindAddr
+	cfg.ControlSocket = ""
 	cfg.ControlPassword = ""
 	cfg.HashedControlPassword = ""
 	cfg.CookieAuthentication = false
 	cfg.MetricsPort = 0
 	cfg.EnableMetrics = false
 	cfg.EnableProfiling = false
+	cfg.DNSPort = 0
+	cfg.HTTPTunnelPort = 0
 
 	// 禁止中继与洋葱托管。
+	cfg.ClientOnly = true
 	cfg.ORPort = 0
 	cfg.OnionServices = nil
 	cfg.PublishServerDescriptor = false

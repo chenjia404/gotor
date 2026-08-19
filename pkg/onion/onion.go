@@ -448,6 +448,14 @@ func (c *Client) RemoveRendezvousState(circuitID uint32) {
 
 // AddClientAuth adds a client authorization credential for a private onion service
 // The privateKey should be a 32-byte x25519 private key provided by the onion service operator
+// LoadClientAuthDir 从 ClientOnionAuthDir 加载 *.auth_private。
+func (c *Client) LoadClientAuthDir(dir string) (int, error) {
+	if c.authStore == nil {
+		c.authStore = NewClientAuthStore()
+	}
+	return LoadClientAuthDir(dir, c.authStore)
+}
+
 func (c *Client) AddClientAuth(onionAddress string, privateKey [32]byte) error {
 	if c.authStore == nil {
 		c.authStore = NewClientAuthStore()

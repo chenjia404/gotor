@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -87,6 +90,18 @@ type Config struct {
 	IsolateDestinations bool                   // Isolate by destination
 	IsolateSOCKSAuth    bool                   // Isolate by SOCKS5 credentials
 	IsolateClientPort   bool                   // Isolate by client port
+	// Network 为 "unix" 时 Listen unix socket；Address 为路径。
+	Network string
+	// UnixGroupWritable 为 true 时 unix socket 权限 0660，否则 0600。
+	UnixGroupWritable bool
+	// SafeSocks 拒绝以 IP 字面量为目标的 CONNECT（要求主机名）。
+	SafeSocks bool
+	// TestSocks 记录目标是否为 IP 字面量（便于发现 DNS 泄漏测试）。
+	TestSocks bool
+	// RejectInternal 拒绝 RFC1918 / loopback / link-local。
+	RejectInternal bool
+	// AddressMap 是 MapAddress 主机名映射（小写 key）。
+	AddressMap map[string]string
 
 	// Stream isolation enforcement (ROADMAP Phase 2.2)
 	// IsolationMode controls how isolation violations are handled.
@@ -334,6 +349,14 @@ func (s *Server) SetOnionNetwork(
 		"relays", len(relays))
 }
 
+// LoadOnionAuthDir 加载 ClientOnionAuthDir。
+func (s *Server) LoadOnionAuthDir(dir string) (int, error) {
+	if s == nil || s.onionClient == nil || dir == "" {
+		return 0, nil
+	}
+	return s.onionClient.LoadClientAuthDir(dir)
+}
+
 // buildIsolationPolicy creates an isolation policy from SOCKS server config.
 func buildIsolationPolicy(cfg *Config, log *logger.Logger) *stream.IsolationPolicy {
 	mode, err := stream.ParseIsolationMode(cfg.IsolationMode)
@@ -409,9 +432,31 @@ func (s *Server) SetMetrics(m *metrics.Metrics) {
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.logger.Info("Starting SOCKS5 server", "address", s.address)
 
-	listener, err := net.Listen("tcp", s.address)
+	network := "tcp"
+	if s.config != nil && s.config.Network != "" {
+		network = s.config.Network
+	}
+	if network == "unix" {
+		if err := os.Remove(s.address); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale socks socket: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(s.address), 0o700); err != nil {
+			return fmt.Errorf("socks unix dir: %w", err)
+		}
+	}
+	listener, err := net.Listen(network, s.address)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
+	}
+	if network == "unix" {
+		mode := os.FileMode(0o600)
+		if s.config != nil && s.config.UnixGroupWritable {
+			mode = 0o660
+		}
+		if err := os.Chmod(s.address, mode); err != nil {
+			_ = listener.Close()
+			return fmt.Errorf("chmod socks unix socket: %w", err)
+		}
 	}
 
 	// Use mutex to protect listener assignment
@@ -607,6 +652,11 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 	// CONNECT command handling
 	targetAddr := request.targetAddr
+	if s.config != nil && len(s.config.AddressMap) > 0 {
+		if mapped := applyAddressMap(s.config.AddressMap, targetAddr); mapped != "" {
+			targetAddr = mapped
+		}
+	}
 
 	// Extract hostname from targetAddr（IPv6 必须是 [addr]:port）
 	host := targetAddr
@@ -674,6 +724,21 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 	destIP := net.ParseIP(hostStr)
+	if s.config != nil {
+		if s.config.TestSocks && destIP != nil {
+			s.logger.Info("TestSocks: destination is an IP literal", "target", targetAddr)
+		}
+		if s.config.SafeSocks && destIP != nil {
+			s.logger.Warn("SafeSocks rejected IP literal", "target", targetAddr)
+			_ = s.sendReply(conn, replyConnectionNotAllowed, nil)
+			return
+		}
+		if s.config.RejectInternal && destIP != nil && isInternalIP(destIP) {
+			s.logger.Warn("ClientRejectInternalAddresses", "target", targetAddr)
+			_ = s.sendReply(conn, replyConnectionNotAllowed, nil)
+			return
+		}
+	}
 
 	s.mu.Lock()
 	circuitPool := s.circuitPool
@@ -1533,4 +1598,38 @@ func (s *Server) ListenerAddr() net.Addr {
 		return s.listener.Addr()
 	}
 	return nil
+}
+
+// ApplyAddressMap 按 C Tor MapAddress 查找（主机名大小写不敏感）。
+func ApplyAddressMap(m map[string]string, targetAddr string) string {
+	return applyAddressMap(m, targetAddr)
+}
+
+func applyAddressMap(m map[string]string, targetAddr string) string {
+	host, port, err := net.SplitHostPort(targetAddr)
+	if err != nil {
+		if to, ok := m[strings.ToLower(targetAddr)]; ok {
+			return to
+		}
+		return ""
+	}
+	if to, ok := m[strings.ToLower(host)]; ok {
+		if _, _, err := net.SplitHostPort(to); err == nil {
+			return to
+		}
+		return net.JoinHostPort(to, port)
+	}
+	return ""
+}
+
+// IsInternalIP 判断是否为回环/私网/链路本地/未指定地址。
+func IsInternalIP(ip net.IP) bool {
+	return isInternalIP(ip)
+}
+
+func isInternalIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }

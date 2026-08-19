@@ -42,14 +42,20 @@ func TestBuildMobileConfigConstraints(t *testing.T) {
 	if cfg.SocksListenAddr != "127.0.0.1" {
 		t.Fatalf("SocksListenAddr=%q, 必须为 127.0.0.1", cfg.SocksListenAddr)
 	}
-	if cfg.ControlPort != 0 {
-		t.Fatalf("ControlPort 应关闭, got %d", cfg.ControlPort)
+	if cfg.ControlPort != 0 || cfg.ControlSocket != "" {
+		t.Fatalf("Control 应关闭: port=%d socket=%q", cfg.ControlPort, cfg.ControlSocket)
+	}
+	if cfg.SocksUnixPath != "" {
+		t.Fatalf("SocksUnixPath 应为空, got %q", cfg.SocksUnixPath)
 	}
 	if cfg.MetricsPort != 0 || cfg.EnableMetrics {
 		t.Fatal("Metrics 应关闭")
 	}
-	if cfg.ORPort != 0 {
-		t.Fatalf("中继应关闭: ORPort=%d", cfg.ORPort)
+	if cfg.DNSPort != 0 || cfg.HTTPTunnelPort != 0 {
+		t.Fatalf("DNSPort/HTTPTunnel 应关闭: %d/%d", cfg.DNSPort, cfg.HTTPTunnelPort)
+	}
+	if cfg.ORPort != 0 || !cfg.ClientOnly {
+		t.Fatalf("中继应关闭: ORPort=%d ClientOnly=%v", cfg.ORPort, cfg.ClientOnly)
 	}
 	if len(cfg.OnionServices) != 0 {
 		t.Fatalf("洋葱托管应关闭, got %d", len(cfg.OnionServices))

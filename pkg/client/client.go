@@ -17,9 +17,12 @@ import (
 	"github.com/opd-ai/go-tor/pkg/circuit"
 	"github.com/opd-ai/go-tor/pkg/config"
 	"github.com/opd-ai/go-tor/pkg/control"
+	"github.com/opd-ai/go-tor/pkg/datadir"
 	"github.com/opd-ai/go-tor/pkg/directory"
+	"github.com/opd-ai/go-tor/pkg/dnsport"
 	"github.com/opd-ai/go-tor/pkg/health"
 	"github.com/opd-ai/go-tor/pkg/httpmetrics"
+	"github.com/opd-ai/go-tor/pkg/httptunnel"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/metrics"
 	"github.com/opd-ai/go-tor/pkg/path"
@@ -64,6 +67,11 @@ type Client struct {
 	pathSelector  *path.Selector
 	guardManager  *path.GuardManager
 	metrics       *metrics.Metrics
+	dirLock       *datadir.Lock
+	dirLockMu     sync.Mutex
+	httpTunnel    *httptunnel.Server
+	dnsServer     *dnsport.Server
+	pidFile       string
 
 	// Circuit management with advanced pooling (Phase 9.4)
 	circuitPool        *pool.CircuitPool
@@ -102,6 +110,8 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
+	// DataDirectory lock 在 Start 获取，避免仅 New() 的测试在 Windows 上无法删除 lock 文件。
+
 	// Cleanup any temporary files from previous runs
 	if err := autoconfig.CleanupTempFiles(cfg.DataDirectory); err != nil {
 		log.Warn("Failed to cleanup temporary files", "error", err)
@@ -111,10 +121,21 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 
 	// Initialize directory client
 	dirClient := directory.NewClient(log)
+	cacheDir := cfg.EffectiveCacheDirectory()
 	if err := dirClient.EnableCertDiskCache(cfg.DataDirectory); err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to enable authority cert disk cache: %w", err)
 	}
+	if err := dirClient.EnableConsensusDiskCache(cacheDir); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to enable consensus disk cache: %w", err)
+	}
+	if err := dirClient.EnableMicrodescDiskCache(cacheDir); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to enable microdesc disk cache: %w", err)
+	}
+	dirClient.SetAvoidDiskWrites(cfg.AvoidDiskWrites)
+	dirClient.ApplyFallbackDirs(cfg.FallbackDirs, cfg.UseDefaultFallbackDirs)
 
 	// Initialize circuit manager
 	circuitMgr := circuit.NewManager()
@@ -141,6 +162,15 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 		IsolateSOCKSAuth:    cfg.IsolateSOCKSAuth,
 		IsolateClientPort:   cfg.IsolateClientPort,
 		IsolationMode:       isolationModeFor(cfg),
+		SafeSocks:           cfg.SafeSocks,
+		TestSocks:           cfg.TestSocks,
+		RejectInternal:      cfg.ClientRejectInternalAddresses,
+		AddressMap:          mapAddressToMap(cfg.MapAddress),
+	}
+	if cfg.SocksUnixPath != "" {
+		socksAddr = cfg.SocksUnixPath
+		socksConfig.Network = "unix"
+		socksConfig.UnixGroupWritable = cfg.UnixSocksGroupWritable
 	}
 	socksServer := socks.NewServerWithConfig(socksAddr, circuitMgr, log, socksConfig)
 
@@ -165,6 +195,7 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 		ctx:                ctx,
 		cancel:             cancel,
 		shutdown:           make(chan struct{}),
+		pidFile:            cfg.PidFile,
 	}
 
 	// Initialize control protocol server
@@ -173,19 +204,27 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 		controlHost = "127.0.0.1"
 	}
 	controlAddr := net.JoinHostPort(controlHost, strconv.Itoa(cfg.ControlPort))
-	if ip := net.ParseIP(controlHost); ip != nil && !ip.IsLoopback() {
+	if cfg.ControlSocket != "" && cfg.ControlPort <= 0 {
+		controlAddr = cfg.ControlSocket
+	}
+	if ip := net.ParseIP(controlHost); ip != nil && !ip.IsLoopback() && cfg.ControlPort > 0 {
 		log.Warn("ControlPort 绑定非回环地址，必须启用 Cookie 或口令认证", "addr", controlAddr)
 	}
+	cfg.EnsureControlAuth()
 	auth := control.AuthOptions{
 		Password:              cfg.ControlPassword,
 		HashedControlPassword: cfg.HashedControlPassword,
 		CookieAuthentication:  cfg.CookieAuthentication,
 		CookieAuthFile:        cfg.CookieAuthFile,
+		RequireAuth:           !cfg.AllowUnauthenticatedControl,
 	}
 	if auth.CookieAuthFile == "" && cfg.CookieAuthentication && cfg.DataDirectory != "" {
 		auth.CookieAuthFile = filepath.Join(cfg.DataDirectory, "control_auth_cookie")
 	}
 	client.controlServer = control.NewServerWithAuth(controlAddr, &clientStatsAdapter{client: client}, auth, log)
+	if cfg.ControlSocket != "" && cfg.ControlPort <= 0 {
+		client.controlServer.SetNetwork("unix")
+	}
 	client.controlServer.SetNewnymHandler(func() {
 		client.handleNewnym()
 	})
@@ -212,28 +251,64 @@ func (c *Client) Start(ctx context.Context) error {
 	// Merge contexts - respect both parent context and internal context
 	ctx = c.mergeContexts(ctx, c.ctx)
 
+	lock, err := datadir.TryLock(c.config.DataDirectory)
+	if err != nil {
+		return err
+	}
+	c.dirLockMu.Lock()
+	c.dirLock = lock
+	c.dirLockMu.Unlock()
+	started := false
+	defer func() {
+		if !started {
+			if c.pidFile != "" {
+				_ = datadir.RemovePidFile(c.pidFile)
+			}
+			c.releaseDirLock()
+		}
+	}()
+
+	if c.pidFile != "" {
+		if err := datadir.WritePidFile(c.pidFile); err != nil {
+			return fmt.Errorf("write PidFile: %w", err)
+		}
+	}
+
 	// Step 1: Fetch network consensus (path selector will do this)
 	c.logger.Info("Initializing path selector...")
 
 	// Step 2: Initialize path selector with guard persistence and update consensus
 	c.pathSelector = path.NewSelectorWithGuards(c.directory, c.guardManager, c.logger)
-	if err := c.pathSelector.UpdateConsensus(ctx); err != nil {
+	if c.config.DisableNetwork {
+		c.logger.Info("DisableNetwork: skipping consensus and circuit build")
+	} else if err := c.pathSelector.UpdateConsensus(ctx); err != nil {
 		return fmt.Errorf("failed to update consensus: %w", err)
 	}
-	c.refreshCircpadConfig()
+	if !c.config.DisableNetwork {
+		c.refreshCircpadConfig()
+	}
 	c.logger.Info("Path selector initialized")
 
 	// 配置 SOCKS 侧洋葱客户端（HSDir / BEGIN_DIR / 电路适配器）
-	if relays := c.pathSelector.GetRelays(); len(relays) > 0 {
-		onionBuilder := circuit.NewBuilder(c.circuitMgr, c.logger)
-		onionBuilder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
-		c.socksServer.SetOnionNetwork(relays, onionBuilder, c.circuitMgr, c.directory)
-	}
+	if !c.config.DisableNetwork {
+		if relays := c.pathSelector.GetRelays(); len(relays) > 0 {
+			onionBuilder := circuit.NewBuilder(c.circuitMgr, c.logger)
+			onionBuilder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
+			c.socksServer.SetOnionNetwork(relays, onionBuilder, c.circuitMgr, c.directory)
+		}
+		if c.config.ClientOnionAuthDir != "" && c.socksServer != nil {
+			if n, err := c.socksServer.LoadOnionAuthDir(c.config.ClientOnionAuthDir); err != nil {
+				c.logger.Warn("ClientOnionAuthDir", "error", err)
+			} else if n > 0 {
+				c.logger.Info("loaded onion client auth", "count", n)
+			}
+		}
 
-	// Publish NS and NEWDESC events for the new consensus
-	if relays := c.pathSelector.GetRelays(); len(relays) > 0 {
-		c.publishNewDescEvents(relays)
-		c.publishConsensusEvents(relays)
+		// Publish NS and NEWDESC events for the new consensus
+		if relays := c.pathSelector.GetRelays(); len(relays) > 0 {
+			c.publishNewDescEvents(relays)
+			c.publishConsensusEvents(relays)
+		}
 	}
 
 	// Step 3: Clean up expired guards
@@ -245,7 +320,7 @@ func (c *Client) Start(ctx context.Context) error {
 	c.metrics.GuardsConfirmed.Set(int64(guardStats.ConfirmedGuards))
 
 	// Step 3.6: Initialize circuit pool if prebuilding is enabled (Phase 9.4)
-	if c.config.EnableCircuitPrebuilding {
+	if c.config.EnableCircuitPrebuilding && !c.config.DisableNetwork {
 		c.logger.Info("Initializing circuit pool with prebuilding",
 			"min_size", c.config.CircuitPoolMinSize,
 			"max_size", c.config.CircuitPoolMaxSize)
@@ -266,44 +341,50 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 
 	// Step 4: Build initial circuits
-	c.logger.Info("Building initial circuits...")
-	if err := c.buildInitialCircuits(ctx); err != nil {
-		return fmt.Errorf("failed to build initial circuits: %w", err)
-	}
-	c.logger.Info("Initial circuits built successfully")
+	if !c.config.DisableNetwork {
+		c.logger.Info("Building initial circuits...")
+		if err := c.buildInitialCircuits(ctx); err != nil {
+			return fmt.Errorf("failed to build initial circuits: %w", err)
+		}
+		c.logger.Info("Initial circuits built successfully")
 
-	// Step 4.5: 托管洋葱服务（HiddenServiceDir/Port）
-	if err := c.startConfiguredOnionServices(ctx); err != nil {
-		c.logger.Warn("configured onion service start failed", "error", err)
+		// Step 4.5: 托管洋葱服务（HiddenServiceDir/Port）
+		if err := c.startConfiguredOnionServices(ctx); err != nil {
+			c.logger.Warn("configured onion service start failed", "error", err)
+		}
 	}
 
 	// Step 5: Start SOCKS5 proxy server
-	c.logger.Info("Starting SOCKS5 proxy server", "port", c.config.SocksPort)
-	c.wg.Add(1)
-	go func() {
-		// AUDIT-R-005: Add panic recovery for goroutine resilience
-		defer func() {
-			if r := recover(); r != nil {
-				c.logger.Error("SOCKS5 server goroutine panic recovered", "panic", r)
-				// Log full stack trace at Debug level only to avoid information disclosure
-				c.logger.Debug("Panic stack trace", "stack", string(debug.Stack()))
+	if c.config.SocksEnabled() {
+		c.logger.Info("Starting SOCKS5 proxy server", "port", c.config.SocksPort, "unix", c.config.SocksUnixPath)
+		c.wg.Add(1)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.logger.Error("SOCKS5 server goroutine panic recovered", "panic", r)
+					c.logger.Debug("Panic stack trace", "stack", string(debug.Stack()))
+				}
+			}()
+			defer c.wg.Done()
+			if err := c.socksServer.ListenAndServe(ctx); err != nil {
+				c.logger.Error("SOCKS5 server error", "error", err)
 			}
 		}()
-		defer c.wg.Done()
-		if err := c.socksServer.ListenAndServe(ctx); err != nil {
-			c.logger.Error("SOCKS5 server error", "error", err)
-		}
-	}()
+	} else {
+		c.logger.Info("SocksPort disabled (0 and no unix socket)")
+	}
 
-	// Step 6: Start control protocol server（ControlPort=0 表示关闭，供移动端 SDK 使用）
-	if c.config.ControlPort > 0 {
-		c.logger.Info("Starting control protocol server", "port", c.config.ControlPort)
+	// Step 6: Start control protocol server（ControlPort=0 且无 ControlSocket 则不监听）
+	if c.config.ControlEnabled() {
+		c.logger.Info("Starting control protocol server", "port", c.config.ControlPort, "socket", c.config.ControlSocket)
 		if err := c.controlServer.Start(); err != nil {
 			return fmt.Errorf("failed to start control server: %w", err)
 		}
 	} else {
-		c.logger.Info("ControlPort disabled (0)")
+		c.logger.Info("ControlPort disabled (0 and no ControlSocket)")
 	}
+
+	c.startExtraListeners(ctx)
 
 	// Step 6.5: Start HTTP metrics server if enabled
 	if c.metricsServer != nil {
@@ -314,37 +395,53 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 
 	// Step 7: Start circuit maintenance loop
-	c.wg.Add(1)
-	go func() {
-		// AUDIT-R-005: Add panic recovery for goroutine resilience
-		defer func() {
-			if r := recover(); r != nil {
-				c.logger.Error("Circuit maintenance goroutine panic recovered", "panic", r)
-				// Log full stack trace at Debug level only to avoid information disclosure
-				c.logger.Debug("Panic stack trace", "stack", string(debug.Stack()))
-			}
+	if !c.config.DisableNetwork {
+		c.wg.Add(1)
+		go func() {
+			// AUDIT-R-005: Add panic recovery for goroutine resilience
+			defer func() {
+				if r := recover(); r != nil {
+					c.logger.Error("Circuit maintenance goroutine panic recovered", "panic", r)
+					// Log full stack trace at Debug level only to avoid information disclosure
+					c.logger.Debug("Panic stack trace", "stack", string(debug.Stack()))
+				}
+			}()
+			defer c.wg.Done()
+			c.maintainCircuits(ctx)
 		}()
-		defer c.wg.Done()
-		c.maintainCircuits(ctx)
-	}()
 
-	// Step 8: Start bandwidth monitoring (publishes BW events)
-	c.wg.Add(1)
-	go func() {
-		// AUDIT-R-005: Add panic recovery for goroutine resilience
-		defer func() {
-			if r := recover(); r != nil {
-				c.logger.Error("Bandwidth monitoring goroutine panic recovered", "panic", r)
-				// Log full stack trace at Debug level only to avoid information disclosure
-				c.logger.Debug("Panic stack trace", "stack", string(debug.Stack()))
-			}
+		// Step 8: Start bandwidth monitoring (publishes BW events)
+		c.wg.Add(1)
+		go func() {
+			// AUDIT-R-005: Add panic recovery for goroutine resilience
+			defer func() {
+				if r := recover(); r != nil {
+					c.logger.Error("Bandwidth monitoring goroutine panic recovered", "panic", r)
+					// Log full stack trace at Debug level only to avoid information disclosure
+					c.logger.Debug("Panic stack trace", "stack", string(debug.Stack()))
+				}
+			}()
+			defer c.wg.Done()
+			c.monitorBandwidth(ctx)
 		}()
-		defer c.wg.Done()
-		c.monitorBandwidth(ctx)
-	}()
+	}
 
 	c.logger.Info("Tor client started successfully")
+	started = true
 	return nil
+}
+
+func (c *Client) releaseDirLock() {
+	c.dirLockMu.Lock()
+	lock := c.dirLock
+	c.dirLock = nil
+	c.dirLockMu.Unlock()
+	if lock == nil {
+		return
+	}
+	if err := lock.Unlock(); err != nil {
+		c.logger.Warn("Failed to release DataDirectory lock", "error", err)
+	}
 }
 
 // handleNewnym 实现 SIGNAL NEWNYM：轮换预建/遗留电路，迫使后续流新建。
@@ -410,14 +507,32 @@ func (c *Client) Stop() error {
 	// AUDIT-R-009: Use timeout context for shutdown instead of Background
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
-	if err := c.socksServer.Shutdown(shutdownCtx); err != nil {
-		c.logger.Warn("Failed to shutdown SOCKS server", "error", err)
+	if c.socksServer != nil {
+		if err := c.socksServer.Shutdown(shutdownCtx); err != nil {
+			c.logger.Warn("Failed to shutdown SOCKS server", "error", err)
+		}
 	}
 
 	// Stop control server
-	if err := c.controlServer.Stop(); err != nil {
-		c.logger.Warn("Failed to stop control server", "error", err)
+	if c.controlServer != nil {
+		if err := c.controlServer.Stop(); err != nil {
+			c.logger.Warn("Failed to stop control server", "error", err)
+		}
 	}
+	if c.httpTunnel != nil {
+		if err := c.httpTunnel.Close(); err != nil {
+			c.logger.Warn("Failed to stop HTTP tunnel", "error", err)
+		}
+	}
+	if c.dnsServer != nil {
+		if err := c.dnsServer.Close(); err != nil {
+			c.logger.Warn("Failed to stop DNSPort", "error", err)
+		}
+	}
+	if c.pidFile != "" {
+		_ = datadir.RemovePidFile(c.pidFile)
+	}
+	c.releaseDirLock()
 
 	// Stop metrics server
 	if c.metricsServer != nil {

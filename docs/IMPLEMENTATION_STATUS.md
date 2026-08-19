@@ -449,3 +449,18 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 6. ✅ ROADMAP/GAPS/AUDIT 已加过期警告，不再声称 Onion 托管/Bridge 服务端已完成
 
 **明确仍非目标**：Exit 中继、DirAuth、Tor Browser、洋葱服务托管、PT 生产路径。
+
+---
+
+## C Tor 二进制 drop-in（2026-08-20）
+
+- **状态**：PARTIAL（CLI / torrc / DataDirectory / 启动接线已落地并有离线单测；**未**用真实 C Tor 脚本/发行包装验收，故不标 WORKING）
+- **已做**：
+  - `DefaultCLIConfig()`：SocksPort=9050、**ControlPort=0**、`~/.tor`（Windows `%APPDATA%\tor`）；开启控制口则默认 Cookie；**不改** `DefaultConfig()` 库行为
+  - CLI：`-f`/`--torrc-file`/`-f -`、`--allow-missing-torrc`（仅文件不存在）、`--defaults-torrc`、`--verify-config`、`--dump-config`、`--quiet`/`--hush`、`--list-*`、`--list-fingerprint`（不自动写钥）、`--keygen`、`--service` 明确未实现、`--dbg-*` 忽略
+  - `--version` 输出 `Tor version 0.4.9.11 (gotor).`
+  - torrc：CacheDirectory、PidFile、RunAsDaemon、ClientOnly、DisableNetwork、HTTPTunnelPort、DNSPort、ControlSocket、SocksPort `auto`/`0`/`unix:`、ControlPort `0`、MapAddress、Automap*、SafeSocks/TestSocks、padding、FallbackDir、AvoidDiskWrites、`%include` 通配/目录、引号路径
+  - DataDirectory：`lock`、`state` Guard、`cached-microdesc-consensus`、`cached-microdescs`+`.new`
+  - `ExitRelay 1` / 非 0 TransPort/NATDPort 拒绝启动
+- **不做**：PT 生产、出口中继、TransPort、完整 NT service
+- **现有代码**：`pkg/config/cli.go`、`pkg/datadir`、`pkg/httptunnel`、`pkg/dnsport`、`pkg/directory/consensus_disk.go`、`cmd/gotor`；文档 `docs/TOR_DROPIN.md`

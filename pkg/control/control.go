@@ -23,6 +23,7 @@ import (
 // Server represents a Tor control protocol server
 type Server struct {
 	address      string
+	network      string // tcp 或 unix
 	listener     net.Listener
 	logger       *logger.Logger
 	clientGetter ClientInfoGetter
@@ -31,6 +32,7 @@ type Server struct {
 	cookieAuth   bool
 	cookieFile   string
 	cookieBytes  []byte
+	requireAuth  bool // CLI：无认证方式时拒绝空 AUTHENTICATE
 
 	// Connection management
 	conns   map[net.Conn]*connection
@@ -59,6 +61,9 @@ type AuthOptions struct {
 	HashedControlPassword string // 16:...
 	CookieAuthentication  bool
 	CookieAuthFile        string
+	// RequireAuth 为 true 时，无 cookie/口令不得接受空 AUTHENTICATE（CLI drop-in）。
+	// 库 NewServer / DefaultConfig 保持 false。
+	RequireAuth bool
 }
 
 // authRateLimiter tracks authentication attempts per IP
@@ -130,6 +135,7 @@ func NewServerWithAuth(address string, clientGetter ClientInfoGetter, auth AuthO
 		hashedPass:   auth.HashedControlPassword,
 		cookieAuth:   auth.CookieAuthentication,
 		cookieFile:   auth.CookieAuthFile,
+		requireAuth:  auth.RequireAuth,
 		conns:        make(map[net.Conn]*connection),
 		dispatcher:   NewEventDispatcher(),
 		authAttempts: make(map[string]*authRateLimiter),
@@ -143,6 +149,11 @@ func (s *Server) GetEventDispatcher() *EventDispatcher {
 	return s.dispatcher
 }
 
+// SetNetwork 设置监听网络（tcp 或 unix）。须在 Start 前调用。
+func (s *Server) SetNetwork(network string) {
+	s.network = network
+}
+
 // Start starts the control protocol server
 func (s *Server) Start() error {
 	if s.cookieAuth {
@@ -151,9 +162,27 @@ func (s *Server) Start() error {
 		}
 	}
 
-	listener, err := net.Listen("tcp", s.address)
+	network := s.network
+	if network == "" {
+		network = "tcp"
+	}
+	if network == "unix" {
+		if err := os.Remove(s.address); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale control socket: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(s.address), 0o700); err != nil {
+			return fmt.Errorf("control unix dir: %w", err)
+		}
+	}
+	listener, err := net.Listen(network, s.address)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", s.address, err)
+	}
+	if network == "unix" {
+		if err := os.Chmod(s.address, 0o600); err != nil {
+			_ = listener.Close()
+			return fmt.Errorf("chmod control socket 0600: %w", err)
+		}
 	}
 
 	s.listener = listener
@@ -428,6 +457,11 @@ func (s *Server) handleMapAddress(conn *connection, args []string) {
 func (s *Server) handleAuthenticate(conn *connection, args []string) {
 	needAuth := s.password != "" || s.hashedPass != "" || s.cookieAuth
 	if !needAuth {
+		if s.requireAuth {
+			conn.writeReply(515, "Authentication required")
+			s.logger.Warn("拒绝空 AUTHENTICATE：控制口已监听但未配置认证", "remote", conn.conn.RemoteAddr())
+			return
+		}
 		conn.mu.Lock()
 		conn.authenticated = true
 		conn.mu.Unlock()

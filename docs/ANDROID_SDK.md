@@ -60,7 +60,7 @@ StatusListener
 
 - `dataDir` **必须**由调用方传入；空值会报错，不会回退到 `~/.config/go-tor`
 - SOCKS **只绑定** `127.0.0.1`，禁止 `0.0.0.0`
-- Control / Metrics / 中继 / 洋葱托管：默认全关（ControlPort=0 不监听；当前主线无 DNSPort / HTTPTunnel）
+- Control / Metrics / DNSPort / HTTPTunnel / 中继 / 洋葱托管：默认全关（ControlPort=0 且无 ControlSocket）
 - 电路池按移动端缩小（min=1，max=3）
 - `Start` 会阻塞至电路可用且本机 SOCKS 已监听，或失败；**不要在主线程调用**。`OnReady` 只在此时触发，不要把它理解成 `client.Start` 一返回就可以发流量。
 

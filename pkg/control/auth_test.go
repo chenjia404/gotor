@@ -62,6 +62,38 @@ func TestAuthenticationNoPassword(t *testing.T) {
 	}
 }
 
+func TestCLIRequireAuthRejectsEmptyAuthenticate(t *testing.T) {
+	mockClient := &mockClientGetter{socksPort: 9050, controlPort: 9051}
+	server := NewServerWithAuth("127.0.0.1:0", mockClient, AuthOptions{RequireAuth: true}, logger.NewDefault())
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	conn, err := net.DialTimeout("tcp", server.listener.Addr().String(), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+	if _, err := reader.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = writer.WriteString("AUTHENTICATE\r\n")
+	_ = writer.Flush()
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(response, "250") {
+		t.Fatalf("CLI 无认证不得接受空 AUTHENTICATE，得到 %s", response)
+	}
+	if !strings.HasPrefix(response, "515") {
+		t.Fatalf("期望 515，得到 %s", response)
+	}
+}
+
 // TestAuthenticationWithCorrectPassword tests successful password authentication
 func TestAuthenticationWithCorrectPassword(t *testing.T) {
 	mockClient := &mockClientGetter{

@@ -4,11 +4,15 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/opd-ai/go-tor/pkg/autoconfig"
 )
 
 // loadState 跟踪 HiddenService 块与 Include 深度。
@@ -28,6 +32,25 @@ const maxIncludeDepth = 16
 // 未知键静默忽略（与 C Tor 客户端兼容策略一致）。
 func LoadFromFile(path string, cfg *Config) error {
 	return loadFromFileDepth(path, cfg, &loadState{depth: 0})
+}
+
+// LoadFromReader 从 io.Reader 加载 torrc（用于 -f -）。
+func LoadFromReader(r io.Reader, cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config cannot be nil")
+	}
+	st := &loadState{depth: 0}
+	if err := loadFromReader(r, cfg, st); err != nil {
+		return err
+	}
+	flushPendingHS(cfg, st)
+	if err := parseBridges(cfg); err != nil {
+		return fmt.Errorf("failed to parse bridges: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
+	}
+	return nil
 }
 
 func loadFromFileDepth(path string, cfg *Config, st *loadState) error {
@@ -53,30 +76,8 @@ func loadFromFileDepth(path string, cfg *Config, st *loadState) error {
 	st.baseDir = filepath.Dir(abs)
 	defer func() { st.baseDir = prevBase }()
 
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-
-	for scanner.Scan() {
-		lineNum++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.Fields(line)
-		if len(parts) < 1 {
-			continue
-		}
-		key := parts[0]
-		value := ""
-		if len(parts) > 1 {
-			value = strings.Join(parts[1:], " ")
-		}
-		if err := processConfigOption(cfg, key, value, st); err != nil {
-			return fmt.Errorf("line %d: %w", lineNum, err)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading config file: %w", err)
+	if err := loadFromReader(file, cfg, st); err != nil {
+		return err
 	}
 
 	flushPendingHS(cfg, st)
@@ -90,6 +91,86 @@ func loadFromFileDepth(path string, cfg *Config, st *loadState) error {
 		}
 	}
 	return nil
+}
+
+func loadFromReader(r io.Reader, cfg *Config, st *loadState) error {
+	scanner := bufio.NewScanner(r)
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, err := splitTorrcLine(line)
+		if err != nil {
+			return fmt.Errorf("line %d: %w", lineNum, err)
+		}
+		if key == "" {
+			continue
+		}
+		if err := processConfigOption(cfg, key, value, st); err != nil {
+			return fmt.Errorf("line %d: %w", lineNum, err)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading config file: %w", err)
+	}
+	return nil
+}
+
+// splitTorrcLine 解析 `Key Value`，支持 DataDirectory "/path with spaces"。
+func splitTorrcLine(line string) (key, value string, err error) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", "", nil
+	}
+	fields, err := tokenizeQuoted(line)
+	if err != nil {
+		return "", "", err
+	}
+	if len(fields) == 0 {
+		return "", "", nil
+	}
+	return fields[0], strings.Join(fields[1:], " "), nil
+}
+
+func tokenizeQuoted(s string) ([]string, error) {
+	var out []string
+	var cur strings.Builder
+	inQuote := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			cur.WriteByte(c)
+			escaped = false
+			continue
+		}
+		if c == '\\' && inQuote && i+1 < len(s) && s[i+1] == '"' {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if !inQuote && (c == ' ' || c == '\t') {
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+			continue
+		}
+		cur.WriteByte(c)
+	}
+	if inQuote {
+		return nil, fmt.Errorf("unclosed quote")
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out, nil
 }
 
 func flushPendingHS(cfg *Config, st *loadState) {
@@ -118,6 +199,125 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 
 	case "DataDirectory":
 		cfg.DataDirectory = value
+
+	case "CacheDirectory":
+		cfg.CacheDirectory = value
+
+	case "PidFile":
+		cfg.PidFile = value
+
+	case "RunAsDaemon":
+		cfg.RunAsDaemon = parseBool(value)
+
+	case "ClientOnly":
+		cfg.ClientOnly = parseBool(value)
+
+	case "DisableNetwork":
+		cfg.DisableNetwork = parseBool(value)
+
+	case "HTTPTunnelPort":
+		return parseHTTPTunnelPort(cfg, value)
+
+	case "DNSPort":
+		return parseDNSPort(cfg, value)
+
+	case "ControlSocket":
+		cfg.ControlSocket = strings.TrimPrefix(value, "unix:")
+		if f := strings.Fields(cfg.ControlSocket); len(f) > 0 {
+			cfg.ControlSocket = f[0]
+		}
+
+	case "ClientUseIPv4":
+		cfg.ClientUseIPv4 = parseBool(value)
+
+	case "ClientUseIPv6":
+		cfg.ClientUseIPv6 = parseBool(value)
+
+	case "ClientPreferIPv6ORPort":
+		cfg.ClientPreferIPv6ORPort = parseBool(value)
+
+	case "MapAddress":
+		from, to, err := parseMapAddress(value)
+		if err != nil {
+			return err
+		}
+		cfg.MapAddress = append(cfg.MapAddress, MapAddressEntry{From: from, To: to})
+
+	case "AutomapHostsOnResolve":
+		cfg.AutomapHostsOnResolve = parseBool(value)
+
+	case "AutomapHostsSuffixes":
+		cfg.AutomapHostsSuffixes = splitNodeList(strings.ReplaceAll(value, ",", " "))
+
+	case "VirtualAddrNetworkIPv4":
+		cfg.VirtualAddrNetworkIPv4 = value
+
+	case "VirtualAddrNetworkIPv6":
+		cfg.VirtualAddrNetworkIPv6 = value
+
+	case "ClientOnionAuthDir":
+		cfg.ClientOnionAuthDir = value
+
+	case "UnixSocksGroupWritable":
+		cfg.UnixSocksGroupWritable = parseBool(value)
+
+	case "SafeSocks":
+		cfg.SafeSocks = parseBool(value)
+
+	case "TestSocks":
+		cfg.TestSocks = parseBool(value)
+
+	case "ClientRejectInternalAddresses":
+		cfg.ClientRejectInternalAddresses = parseBool(value)
+
+	case "CircuitPadding":
+		cfg.EnableCircuitPadding = parseBool(value)
+
+	case "ReducedCircuitPadding":
+		cfg.ReducedCircuitPadding = parseBool(value)
+
+	case "ConnectionPadding":
+		v := strings.ToLower(strings.TrimSpace(value))
+		switch v {
+		case "0", "1", "auto":
+			cfg.ConnectionPadding = v
+		default:
+			if parseBool(value) {
+				cfg.ConnectionPadding = "1"
+			} else {
+				cfg.ConnectionPadding = "0"
+			}
+		}
+
+	case "SocksTimeout":
+		d, err := parseDuration(value)
+		if err != nil {
+			return fmt.Errorf("invalid SocksTimeout: %w", err)
+		}
+		cfg.SocksTimeout = d
+
+	case "FallbackDir":
+		cfg.FallbackDirs = append(cfg.FallbackDirs, value)
+
+	case "UseDefaultFallbackDirs":
+		cfg.UseDefaultFallbackDirs = parseBool(value)
+
+	case "AvoidDiskWrites":
+		cfg.AvoidDiskWrites = parseBool(value)
+
+	case "TransPort":
+		p, _, err := parsePortOrAddr(value)
+		if err != nil {
+			return fmt.Errorf("invalid TransPort: %w", err)
+		}
+		cfg.TransPort = p
+
+	case "NATDPort":
+		p, _, err := parsePortOrAddr(value)
+		if err != nil {
+			return fmt.Errorf("invalid NATDPort: %w", err)
+		}
+		cfg.NATDPort = p
 
 	case "CookieAuthentication":
 		cfg.CookieAuthentication = parseBool(value)
@@ -346,11 +546,17 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 		if !filepath.IsAbs(incPath) && st.baseDir != "" {
 			incPath = filepath.Join(st.baseDir, incPath)
 		}
-		child := &loadState{depth: st.depth + 1, baseDir: st.baseDir, pendingHS: st.pendingHS}
-		if err := loadFromFileDepth(incPath, cfg, child); err != nil {
+		files, err := expandIncludePath(incPath)
+		if err != nil {
 			return fmt.Errorf("include %s: %w", value, err)
 		}
-		st.pendingHS = child.pendingHS
+		for _, f := range files {
+			child := &loadState{depth: st.depth + 1, baseDir: st.baseDir, pendingHS: st.pendingHS}
+			if err := loadFromFileDepth(f, cfg, child); err != nil {
+				return fmt.Errorf("include %s: %w", value, err)
+			}
+			st.pendingHS = child.pendingHS
+		}
 
 	default:
 		// 未知键静默忽略
@@ -372,30 +578,147 @@ func splitNodeList(value string) []string {
 	return out
 }
 
-// parseSocksPort 支持：9050 | 127.0.0.1:9050 | 9050 IsolateDestinations ...
-func parseSocksPort(cfg *Config, value string) error {
+// expandIncludePath 展开 %include：通配符按词法排序；目录内忽略点文件。
+func expandIncludePath(pattern string) ([]string, error) {
+	if st, err := os.Stat(pattern); err == nil && st.IsDir() {
+		entries, err := os.ReadDir(pattern)
+		if err != nil {
+			return nil, err
+		}
+		var files []string
+		for _, e := range entries {
+			if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			files = append(files, filepath.Join(pattern, e.Name()))
+		}
+		sort.Strings(files)
+		return files, nil
+	}
+	if strings.ContainsAny(pattern, "*?[]") {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, err
+		}
+		var files []string
+		for _, m := range matches {
+			base := filepath.Base(m)
+			if strings.HasPrefix(base, ".") {
+				continue
+			}
+			info, err := os.Stat(m)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			files = append(files, m)
+		}
+		sort.Strings(files)
+		return files, nil
+	}
+	return []string{pattern}, nil
+}
+
+func parseMapAddress(value string) (from, to string, err error) {
+	fields, err := tokenizeQuoted(value)
+	if err != nil {
+		return "", "", err
+	}
+	if len(fields) < 2 {
+		return "", "", fmt.Errorf("MapAddress requires FROM TO")
+	}
+	return fields[0], fields[1], nil
+}
+
+func parseHTTPTunnelPort(cfg *Config, value string) error {
+	p, host, err := parsePortOrAddr(value)
+	if err != nil {
+		return fmt.Errorf("invalid HTTPTunnelPort: %w", err)
+	}
+	cfg.HTTPTunnelPort = p
+	if host != "" {
+		cfg.HTTPTunnelListenAddr = host
+	}
+	return nil
+}
+
+func parseDNSPort(cfg *Config, value string) error {
+	p, host, err := parsePortOrAddr(value)
+	if err != nil {
+		return fmt.Errorf("invalid DNSPort: %w", err)
+	}
+	cfg.DNSPort = p
+	if host != "" {
+		cfg.DNSPortListenAddr = host
+	}
+	return nil
+}
+
+func parsePortOrAddr(value string) (port int, host string, err error) {
 	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return 0, "", fmt.Errorf("empty value")
+	}
+	addrPort := fields[0]
+	if strings.EqualFold(addrPort, "auto") {
+		return autoconfig.FindAvailablePort(0), "", nil
+	}
+	if strings.Contains(addrPort, ":") && !strings.HasPrefix(addrPort, "unix:") {
+		h, portStr, err := splitHostPortLoose(addrPort)
+		if err != nil {
+			return 0, "", err
+		}
+		p, err := strconv.Atoi(portStr)
+		if err != nil {
+			return 0, "", fmt.Errorf("invalid port: %s", portStr)
+		}
+		return p, h, nil
+	}
+	p, err := strconv.Atoi(addrPort)
+	if err != nil {
+		return 0, "", fmt.Errorf("invalid port: %s", addrPort)
+	}
+	return p, "", nil
+}
+
+// parseSocksPort 支持：9050 | 0 | auto | 127.0.0.1:9050 | unix:/path | Isolate*
+func parseSocksPort(cfg *Config, value string) error {
+	fields, err := tokenizeQuoted(value)
+	if err != nil {
+		return err
+	}
 	if len(fields) == 0 {
 		return fmt.Errorf("empty SocksPort")
 	}
 	addrPort := fields[0]
-	if strings.Contains(addrPort, ":") {
+	if strings.HasPrefix(addrPort, "unix:") {
+		cfg.SocksUnixPath = strings.TrimPrefix(addrPort, "unix:")
+		cfg.SocksPort = 0
+	} else if strings.EqualFold(addrPort, "auto") {
+		cfg.SocksPort = autoconfig.FindAvailablePort(9050)
+	} else if strings.Contains(addrPort, ":") {
 		host, portStr, err := splitHostPortLoose(addrPort)
 		if err != nil {
 			return fmt.Errorf("invalid SocksPort: %w", err)
 		}
 		cfg.SocksListenAddr = host
-		p, err := strconv.Atoi(portStr)
-		if err != nil {
-			return fmt.Errorf("invalid SocksPort port: %s", portStr)
+		if strings.EqualFold(portStr, "auto") {
+			cfg.SocksPort = autoconfig.FindAvailablePort(9050)
+		} else {
+			p, err := strconv.Atoi(portStr)
+			if err != nil {
+				return fmt.Errorf("invalid SocksPort port: %s", portStr)
+			}
+			cfg.SocksPort = p
 		}
-		cfg.SocksPort = p
 	} else {
 		p, err := strconv.Atoi(addrPort)
 		if err != nil {
 			return fmt.Errorf("invalid SocksPort value: %s", addrPort)
 		}
 		cfg.SocksPort = p
+		if p == 0 {
+			cfg.SocksUnixPath = ""
+		}
 	}
 	for _, f := range fields[1:] {
 		switch strings.ToLower(f) {
@@ -425,11 +748,23 @@ func parseSocksListenAddress(cfg *Config, value string) error {
 // parseORPort 支持：9001 | 0.0.0.0:9001 | [::<]:9001
 // parseControlPort 支持：9051 | 127.0.0.1:9051 | [::1]:9051
 func parseControlPort(cfg *Config, value string) error {
-	fields := strings.Fields(value)
+	fields, err := tokenizeQuoted(value)
+	if err != nil {
+		return err
+	}
 	if len(fields) == 0 {
 		return fmt.Errorf("empty ControlPort")
 	}
 	addrPort := fields[0]
+	if strings.HasPrefix(addrPort, "unix:") {
+		cfg.ControlSocket = strings.TrimPrefix(addrPort, "unix:")
+		cfg.ControlPort = 0
+		return nil
+	}
+	if strings.EqualFold(addrPort, "auto") {
+		cfg.ControlPort = autoconfig.FindAvailablePort(9051)
+		return nil
+	}
 	if strings.Contains(addrPort, ":") {
 		host, portStr, err := splitHostPortLoose(addrPort)
 		if err != nil {
