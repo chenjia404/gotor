@@ -109,14 +109,17 @@ func DefaultConfig(address string) *Config {
 // - We accept self-signed certificates (Tor relays don't use CA-signed certs)
 // - We verify the certificate signature is valid
 // - Additional validation happens via directory consensus (relay identity keys)
+//
+// gosec G123：InsecureSkipVerify + VerifyPeerCertificate 在 TLS 会话恢复时会跳过校验。
+// 因此禁用 session tickets，并把自定义校验挂在 VerifyConnection（恢复路径也会调用）。
 func createTorTLSConfig() *tls.Config {
 	return &tls.Config{
-		// Tor relays use self-signed certificates, so we can't verify against root CAs
-		// We use InsecureSkipVerify=true to bypass the default CA verification,
-		// but we still perform custom verification via VerifyPeerCertificate
+		// Tor 中继使用自签证书，无法走系统 CA；InsecureSkipVerify 只跳过默认 CA 链，
+		// 真正的结构/有效期校验在 VerifyConnection（会话恢复也会走）。
 		InsecureSkipVerify: true,
-		// Custom verification function for Tor-specific certificate handling
-		VerifyPeerCertificate: verifyTorRelayCertificate,
+		VerifyConnection:   verifyTorRelayConnection,
+		// 客户端 OR 连接不依赖会话恢复；关掉 tickets 避免恢复路径绕过校验。
+		SessionTicketsDisabled: true,
 		// Require TLS 1.2 minimum for security
 		MinVersion: tls.VersionTLS12,
 		// Use only AEAD cipher suites with forward secrecy (no CBC mode)
@@ -137,19 +140,36 @@ func createTorTLSConfig() *tls.Config {
 // This enforces that the relay's certificate matches the identity from the directory consensus.
 func createTorTLSConfigWithPinning(expectedIdentity []byte, expectedFingerprint string) *tls.Config {
 	cfg := createTorTLSConfig()
+	cfg.VerifyConnection = verifyTorRelayConnectionWithPinning(expectedIdentity, expectedFingerprint)
+	return cfg
+}
 
-	// Override verification to include identity pinning
-	cfg.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-		// First perform standard Tor certificate validation
-		if err := verifyTorRelayCertificate(rawCerts, verifiedChains); err != nil {
+// rawPeerCertificates 从已解析证书提取 DER，供既有校验函数复用。
+func rawPeerCertificates(certs []*x509.Certificate) [][]byte {
+	raw := make([][]byte, len(certs))
+	for i, cert := range certs {
+		if cert != nil {
+			raw[i] = cert.Raw
+		}
+	}
+	return raw
+}
+
+// verifyTorRelayConnection 在完整握手（含会话恢复）后校验对端证书。
+// 必须挂在 VerifyConnection：VerifyPeerCertificate 在 session ticket 恢复时会被跳过。
+func verifyTorRelayConnection(cs tls.ConnectionState) error {
+	return verifyTorRelayCertificate(rawPeerCertificates(cs.PeerCertificates), cs.VerifiedChains)
+}
+
+// verifyTorRelayConnectionWithPinning 在结构校验之后再做身份钉扎（AUDIT-004）。
+func verifyTorRelayConnectionWithPinning(expectedIdentity []byte, expectedFingerprint string) func(tls.ConnectionState) error {
+	return func(cs tls.ConnectionState) error {
+		raw := rawPeerCertificates(cs.PeerCertificates)
+		if err := verifyTorRelayCertificate(raw, cs.VerifiedChains); err != nil {
 			return err
 		}
-
-		// AUDIT-004: Additional pinning validation
-		return verifyRelayIdentityPinning(rawCerts, expectedIdentity, expectedFingerprint)
+		return verifyRelayIdentityPinning(raw, expectedIdentity, expectedFingerprint)
 	}
-
-	return cfg
 }
 
 // verifyRelayIdentityPinning verifies the relay's certificate contains valid key material.

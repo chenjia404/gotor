@@ -465,8 +465,14 @@ func TestCertificatePinningInfrastructure(t *testing.T) {
 		if tlsCfg.MinVersion != tls.VersionTLS12 {
 			t.Errorf("Expected TLS 1.2 minimum, got %x", tlsCfg.MinVersion)
 		}
-		if tlsCfg.VerifyPeerCertificate == nil {
-			t.Error("Expected non-nil verification function")
+		if tlsCfg.VerifyConnection == nil {
+			t.Error("Expected non-nil VerifyConnection")
+		}
+		if tlsCfg.VerifyPeerCertificate != nil {
+			t.Error("VerifyPeerCertificate must be unset; session resume skips it (G123)")
+		}
+		if !tlsCfg.SessionTicketsDisabled {
+			t.Error("SessionTicketsDisabled = false, want true")
 		}
 	})
 
