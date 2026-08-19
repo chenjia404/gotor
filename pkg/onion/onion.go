@@ -180,6 +180,7 @@ type Descriptor struct {
 	RevisionCounter          uint64              // Revision counter for freshness
 	Signature                []byte              // Descriptor signature
 	DescriptorSigningKeyCert []byte              // Descriptor signing key certificate (AUDIT-002)
+	SuperencryptedBlob       []byte              // 已密封的 superencrypted 二进制（盐||密文||MAC）
 	RawDescriptor            []byte              // Raw descriptor content
 	CreatedAt                time.Time           // When descriptor was created
 	Lifetime                 time.Duration       // Descriptor validity lifetime
@@ -1216,81 +1217,57 @@ func EncodeDescriptor(desc *Descriptor) ([]byte, error) {
 
 	var buf bytes.Buffer
 
-	// Write descriptor header
 	fmt.Fprintf(&buf, "hs-descriptor %d\n", desc.Version)
 
-	// Write descriptor lifetime (in minutes)
 	lifetimeMinutes := int(desc.Lifetime.Minutes())
 	if lifetimeMinutes <= 0 {
-		lifetimeMinutes = 180 // Default to 3 hours
+		lifetimeMinutes = 180
 	}
 	fmt.Fprintf(&buf, "descriptor-lifetime %d\n", lifetimeMinutes)
 
-	// Write descriptor-signing-key-cert if available
-	// This would be a multi-line base64-encoded Ed25519 certificate
-	// For now, we'll skip this in the basic implementation
-
-	// Write revision counter
-	fmt.Fprintf(&buf, "revision-counter %d\n", desc.RevisionCounter)
-
-	// Write superencrypted section marker
-	// In a full implementation, this would contain the encrypted descriptor content
-	// For now, we'll write a placeholder
-	fmt.Fprintf(&buf, "superencrypted\n")
-	fmt.Fprintf(&buf, "-----BEGIN MESSAGE-----\n")
-
-	// Encode introduction points
-	for i, intro := range desc.IntroPoints {
-		fmt.Fprintf(&buf, "introduction-point %d\n", i)
-
-		// Write link specifiers
-		for _, ls := range intro.LinkSpecifiers {
-			// Link specifiers are encoded as: type (1 byte) || length (1 byte) || data
-			lsEncoded := base64.StdEncoding.EncodeToString(append([]byte{ls.Type, byte(len(ls.Data))}, ls.Data...))
-			fmt.Fprintf(&buf, "link-specifier %s\n", lsEncoded)
-		}
-
-		// Write onion key
-		if len(intro.OnionKey) > 0 {
-			fmt.Fprintf(&buf, "onion-key ntor %s\n", base64.StdEncoding.EncodeToString(intro.OnionKey))
-		}
-
-		// Write auth key
-		if len(intro.AuthKey) > 0 {
-			fmt.Fprintf(&buf, "auth-key\n")
-			fmt.Fprintf(&buf, "%s\n", base64.StdEncoding.EncodeToString(intro.AuthKey))
-		}
-
-		// Write enc key（描述符中为公钥 B）
-		if len(intro.EncKey) > 0 {
-			fmt.Fprintf(&buf, "enc-key ntor %s\n", base64.StdEncoding.EncodeToString(intro.EncKey))
-		}
-
-		// Write enc-key-cert if available
-		if len(intro.EncKeyCert) > 0 {
-			fmt.Fprintf(&buf, "enc-key-cert\n")
-			fmt.Fprintf(&buf, "-----BEGIN ED25519 CERT-----\n")
-			// Split cert into 64-character lines
-			cert := base64.StdEncoding.EncodeToString(intro.EncKeyCert)
-			for i := 0; i < len(cert); i += 64 {
-				end := i + 64
-				if end > len(cert) {
-					end = len(cert)
-				}
-				fmt.Fprintf(&buf, "%s\n", cert[i:end])
-			}
-			fmt.Fprintf(&buf, "-----END ED25519 CERT-----\n")
-		}
-
-		// Write legacy key ID if available
-		if len(intro.LegacyKeyID) > 0 {
-			fmt.Fprintf(&buf, "legacy-key %s\n", base64.StdEncoding.EncodeToString(intro.LegacyKeyID))
-		}
+	if len(desc.DescriptorSigningKeyCert) > 0 {
+		fmt.Fprintf(&buf, "descriptor-signing-key-cert\n")
+		fmt.Fprintf(&buf, "-----BEGIN ED25519 CERT-----\n")
+		writeB64Lines(&buf, desc.DescriptorSigningKeyCert)
+		fmt.Fprintf(&buf, "-----END ED25519 CERT-----\n")
 	}
 
+	fmt.Fprintf(&buf, "revision-counter %d\n", desc.RevisionCounter)
+
+	fmt.Fprintf(&buf, "superencrypted\n")
+	fmt.Fprintf(&buf, "-----BEGIN MESSAGE-----\n")
+	if len(desc.SuperencryptedBlob) > 0 {
+		writeB64Lines(&buf, desc.SuperencryptedBlob)
+	} else {
+		for i, intro := range desc.IntroPoints {
+			fmt.Fprintf(&buf, "introduction-point %d\n", i)
+			for _, ls := range intro.LinkSpecifiers {
+				lsEncoded := base64.StdEncoding.EncodeToString(append([]byte{ls.Type, byte(len(ls.Data))}, ls.Data...))
+				fmt.Fprintf(&buf, "link-specifier %s\n", lsEncoded)
+			}
+			if len(intro.OnionKey) > 0 {
+				fmt.Fprintf(&buf, "onion-key ntor %s\n", base64.StdEncoding.EncodeToString(intro.OnionKey))
+			}
+			if len(intro.AuthKey) > 0 {
+				fmt.Fprintf(&buf, "auth-key\n")
+				fmt.Fprintf(&buf, "%s\n", base64.StdEncoding.EncodeToString(intro.AuthKey))
+			}
+			if len(intro.EncKey) > 0 {
+				fmt.Fprintf(&buf, "enc-key ntor %s\n", base64.StdEncoding.EncodeToString(intro.EncKey))
+			}
+			if len(intro.EncKeyCert) > 0 {
+				fmt.Fprintf(&buf, "enc-key-cert\n")
+				fmt.Fprintf(&buf, "-----BEGIN ED25519 CERT-----\n")
+				writeB64Lines(&buf, intro.EncKeyCert)
+				fmt.Fprintf(&buf, "-----END ED25519 CERT-----\n")
+			}
+			if len(intro.LegacyKeyID) > 0 {
+				fmt.Fprintf(&buf, "legacy-key %s\n", base64.StdEncoding.EncodeToString(intro.LegacyKeyID))
+			}
+		}
+	}
 	fmt.Fprintf(&buf, "-----END MESSAGE-----\n")
 
-	// Write signature if available
 	if len(desc.Signature) > 0 {
 		fmt.Fprintf(&buf, "signature %s\n", base64.StdEncoding.EncodeToString(desc.Signature))
 	}
