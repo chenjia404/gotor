@@ -226,18 +226,24 @@ func (c *Circuit) GetHops() []*Hop {
 // This is safe to call multiple times.
 func (c *Circuit) Close() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.State == StateClosed {
+		c.mu.Unlock()
 		return
 	}
-
 	c.State = StateClosed
-
-	// Close the relay receive channel if it exists
+	mux := c.mux
+	c.mux = nil
+	conn := c.conn
 	if c.relayReceiveChan != nil {
 		close(c.relayReceiveChan)
 		c.relayReceiveChan = nil
+	}
+	c.mu.Unlock()
+
+	if mux != nil {
+		mux.Close()
+	} else if closer, ok := conn.(interface{ Close() error }); ok && conn != nil {
+		_ = closer.Close()
 	}
 
 	c.deliverTimerMu.Lock()
@@ -1071,9 +1077,12 @@ func (c *Circuit) deliverToStream(relayCell *cell.RelayCell) error {
 func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
 	// Check flow control for DATA cells
 	// Per tor-spec.txt §7.4, only DATA cells count against the package window
+	recordSendme := false
 	if relayCell.Command == cell.RelayData {
-		// Circuit-level flow control
-		if err := c.decrementPackageWindow(); err != nil {
+		// Circuit-level flow control：减窗与「是否记 SENDME tag」同一把锁判定。
+		var err error
+		recordSendme, err = c.decrementPackageWindowForSendme()
+		if err != nil {
 			return fmt.Errorf("circuit flow control: %w", err)
 		}
 
@@ -1144,8 +1153,8 @@ func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
 		}
 	}
 
-	if relayCell.Command == cell.RelayData {
-		c.maybeRecordSendmeTag(forwardTag)
+	if recordSendme {
+		c.recordSendmeTag(forwardTag)
 	}
 
 	// Encrypt the payload with per-hop cryptography (onion encryption)
@@ -1254,13 +1263,11 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 		// 识别 hop 更新 backward digest 之后，20 字节 Sum 就是本 cell 的 SENDME tag。
 		cellTag := c.snapshotBackwardDigest(hopIdx)
 
-		// Circuit-level flow control: DATA cells count against our deliver window
-		if err := c.decrementDeliverWindow(); err != nil {
+		sendSendme, err := c.decrementDeliverWindowAndTakeSendme()
+		if err != nil {
 			return fmt.Errorf("circuit flow control: %w", err)
 		}
-
-		// Check if we should send a circuit-level SENDME
-		if c.shouldSendCircuitSendme() {
+		if sendSendme {
 			tag := cloneDigest(cellTag)
 			go func() {
 				if err := c.sendCircuitSendme(tag); err != nil {

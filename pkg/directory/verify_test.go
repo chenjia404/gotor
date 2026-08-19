@@ -163,6 +163,12 @@ func TestExtractConsensusSignedBody(t *testing.T) {
 	if _, err := extractConsensusSignedBody("network-status-version 3\nno signatures"); err == nil {
 		t.Fatal("expected error for missing directory-signature")
 	}
+
+	// 签名行出现在 version 之前不得 panic，应报错（或只认 version 之后的边界）。
+	early := "directory-signature sha256 AA BB\n-----BEGIN SIGNATURE-----\nxx\n-----END SIGNATURE-----\nnetwork-status-version 3\n"
+	if _, err := extractConsensusSignedBody(early); err == nil {
+		t.Fatal("directory-signature before version must not yield a signed body")
+	}
 }
 
 func TestParseAndVerifyGeneratedAuthorityCert(t *testing.T) {
@@ -336,6 +342,59 @@ func TestFetchFromAuthority_RequiresValidSignatures(t *testing.T) {
 	client.authorities = []string{bad.URL + "/tor/status-vote/current/consensus-microdesc"}
 	if _, err := client.FetchConsensus(context.Background()); err == nil {
 		t.Fatal("tampered consensus must be rejected by FetchConsensus")
+	}
+}
+
+func TestFetchFromAuthority_IgnoresUnsignedRelayInjection(t *testing.T) {
+	auths := make([]*testAuthority, 5)
+	for i := range auths {
+		auths[i] = generateTestAuthority(t, fmt.Sprintf("auth%d", i))
+	}
+	withTestAuthorities(t, auths)
+	core := buildSignedConsensus(t, auths)
+	injected := "r EvilPrefix BBBBBBBBBBBBBBBBBBBBBB 2026-01-01 00:00:00 198.51.100.1 9001 0\ns Exit Fast Guard Running Stable Valid\n" +
+		core +
+		"r EvilSuffix CCCCCCCCCCCCCCCCCCCCCC 2026-01-01 00:00:00 203.0.113.1 9001 0\ns Exit Fast Guard Running Stable Valid\n" +
+		"valid-until 2099-01-01 00:00:00\n"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tor/keys/fp/") {
+			id := strings.TrimPrefix(r.URL.Path, "/tor/keys/fp/")
+			for _, a := range auths {
+				if a.dir.V3Ident == id {
+					w.Write([]byte(a.certPEM))
+					return
+				}
+			}
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(injected))
+	}))
+	defer server.Close()
+
+	client := NewClient(logger.NewDefault())
+	client.httpClient = server.Client()
+	client.authorities = []string{server.URL + "/tor/status-vote/current/consensus-microdesc"}
+
+	relays, err := client.FetchConsensus(context.Background())
+	if err != nil {
+		t.Fatalf("FetchConsensus: %v", err)
+	}
+	if len(relays) != 1 || relays[0].Nickname != "TestRelay" {
+		t.Fatalf("unsigned injected relays leaked into result: %+v", relays)
+	}
+
+	signed, err := extractConsensusSignedBody(injected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, meta, err := client.parseConsensusWithMetadata(strings.NewReader(string(signed)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ValidUntil.Year() == 2099 {
+		t.Fatal("unsigned valid-until must not overwrite signed metadata")
 	}
 }
 

@@ -274,20 +274,36 @@ func (c *Client) fetchFromAuthority(ctx context.Context, authorityURL string) ([
 		return nil, fmt.Errorf("failed to read consensus: %w", err)
 	}
 
-	relays, metadata, err := c.parseConsensusWithMetadata(bytes.NewReader(raw))
+	doc := string(raw)
+	signedBody, err := extractConsensusSignedBody(doc)
+	if err != nil {
+		return nil, fmt.Errorf("consensus signed-body: %w", err)
+	}
+
+	// relays / valid-* / params 只能来自签名范围，否则 MITM 可在
+	// 前缀或 directory-signature 之后注入 r 行或改写有效期。
+	relays, metadata, err := c.parseConsensusWithMetadata(bytes.NewReader(signedBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse consensus: %w", err)
 	}
+
+	sigSection, err := consensusSignatureSection(doc)
+	if err != nil {
+		return nil, fmt.Errorf("consensus signatures: %w", err)
+	}
+	_, sigMeta, err := c.parseConsensusWithMetadata(strings.NewReader(sigSection))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse consensus signatures: %w", err)
+	}
+	metadata.Signatures = sigMeta.Signatures
+	metadata.SignatureCount = sigMeta.SignatureCount
+	metadata.AuthorityCount = sigMeta.AuthorityCount
 
 	if err := ValidateConsensusMetadata(metadata); err != nil {
 		c.logger.Error("Consensus metadata validation failed", "error", err)
 		return nil, fmt.Errorf("consensus validation failed: %w", err)
 	}
 
-	signedBody, err := extractConsensusSignedBody(string(raw))
-	if err != nil {
-		return nil, fmt.Errorf("consensus signed-body: %w", err)
-	}
 	c.prefetchAuthorityCerts(ctx, metadata)
 	if err := c.VerifyConsensusSignatures(ctx, signedBody, metadata); err != nil {
 		c.logger.Error("Consensus signature verification failed", "error", err)

@@ -174,6 +174,9 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 | 14 | HTTPS 选到只放行 80 的 exit | `SelectPath(80)` 且只看 Exit flag | 预建用 443；解析 `p` 行摘要 |
 | 15 | 大流量 DESTROY / hang | 电路级 SENDME 发空 v0，现代 exit 拒收 | flow-control SENDME v1；C Tor sendme.c；Arti SendmeValidator |
 | 16 | 共识只数签名个数 | `VerifyConsensusSignatures` 从未被 `FetchConsensus` 调用；证书取第一把 RSA（identity） | dir-spec consensus-formats / authority-key-certificates；C Tor signed boundaries |
+| 17 | 验签未绑定解析结果 | 整份 HTTP 文档都解析，签名只覆盖 prefix；可注入未签名 r 行 | 只解析 signed body；签名行另取 |
+| 18 | SENDME 竞态 / 重复发出 / window=0 漏 tag | 减窗与记 tag 分锁；inbound 突发重复 SENDME；`packageWindow > 0` | 原子减窗；凑满 100 立即占位；含 window=0 |
+| 19 | CREATE2 waiter 竞态与 mux 泄漏 | 先发 CREATE2 再登记 waiter；失败不关 mux | ExpectCreated2 在发送前；Close 停 mux |
 
 ---
 

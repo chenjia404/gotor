@@ -93,8 +93,17 @@ func (e *Extension) CreateFirstHop(ctx context.Context, handshakeType HandshakeT
 		"circuit_id", e.circuit.ID,
 		"handshake_size", len(handshakeData))
 
-	// Send CREATE2 cell
+	e.circuit.mu.RLock()
+	mux := e.circuit.mux
+	e.circuit.mu.RUnlock()
+	if mux != nil {
+		mux.ExpectCreated2(e.circuit.ID)
+	}
+
 	if err := conn.SendCell(create2Cell); err != nil {
+		if mux != nil {
+			mux.ForgetCreated2(e.circuit.ID)
+		}
 		return fmt.Errorf("failed to send CREATE2 cell: %w", err)
 	}
 

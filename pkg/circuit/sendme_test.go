@@ -100,6 +100,54 @@ func TestSendCircuitSendmeRequiresDigest(t *testing.T) {
 	}
 }
 
+func TestMaybeRecordSendmeTagAtWindowZero(t *testing.T) {
+	c := NewCircuit(1)
+	tag := bytes.Repeat([]byte{0x11}, 20)
+	for c.packageWindow > 0 {
+		if err := c.decrementPackageWindow(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c.packageWindow != 0 {
+		t.Fatalf("packageWindow=%d want 0", c.packageWindow)
+	}
+	c.maybeRecordSendmeTag(tag)
+	if _, queued := c.SendmeStats(); queued != 1 {
+		t.Fatalf("1000th DATA (window=0) must record SENDME tag, queued=%d", queued)
+	}
+}
+
+func TestDecrementPackageWindowForSendmeIsAtomic(t *testing.T) {
+	c := NewCircuit(1)
+	c.packageWindow = 101
+	recordA, err := c.decrementPackageWindowForSendme()
+	if err != nil || !recordA {
+		t.Fatalf("101→100 是边界，应记 tag: record=%v err=%v", recordA, err)
+	}
+	recordB, err := c.decrementPackageWindowForSendme()
+	if err != nil || recordB {
+		t.Fatalf("100→99 不是边界: record=%v err=%v", recordB, err)
+	}
+}
+
+func TestDecrementDeliverWindowAndTakeSendmeOnce(t *testing.T) {
+	c := NewCircuit(1)
+	for i := 0; i < 99; i++ {
+		send, err := c.decrementDeliverWindowAndTakeSendme()
+		if err != nil || send {
+			t.Fatalf("cell %d: send=%v err=%v", i+1, send, err)
+		}
+	}
+	send, err := c.decrementDeliverWindowAndTakeSendme()
+	if err != nil || !send {
+		t.Fatalf("100th DATA must take SENDME: send=%v err=%v", send, err)
+	}
+	send, err = c.decrementDeliverWindowAndTakeSendme()
+	if err != nil || send {
+		t.Fatalf("101st DATA must not send another SENDME: send=%v err=%v", send, err)
+	}
+}
+
 func TestSendmeTagIsFullSHA1(t *testing.T) {
 	h := sha1.New()
 	_, _ = h.Write([]byte("cell-payload-with-zero-digest"))
