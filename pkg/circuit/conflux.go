@@ -456,9 +456,6 @@ func (s *ConfluxSet) reorder(from *Circuit, rc *cell.RelayCell) error {
 }
 
 func (s *ConfluxSet) sendMultiplexed(rc *cell.RelayCell) error {
-	s.sendMu.Lock()
-	defer s.sendMu.Unlock()
-
 	deadline := time.Now().Add(confluxSendWait)
 	var chosen *confluxLeg
 	for {
@@ -477,34 +474,56 @@ func (s *ConfluxSet) sendMultiplexed(rc *cell.RelayCell) error {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	circ := chosen.circ
+
+	// 等窗不能持 sendMu，否则整套 Conflux 发送被一条 DATA 卡住。
+	recordSendme := false
+	reserved := false
+	if rc.Command == cell.RelayData {
+		var err error
+		recordSendme, err = circ.reserveDataWindows(rc.StreamID, circ.destUsesCGO())
+		if err != nil {
+			return err
+		}
+		reserved = true
+	}
+
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
 
 	s.mu.Lock()
 	needSwitch := false
 	var rel uint32
-	if s.current != nil && s.current != chosen.circ {
+	if s.current != nil && s.current != circ {
 		gap := s.lastSent - chosen.lastSent
 		if gap > uint64(^uint32(0)) {
 			s.mu.Unlock()
+			if reserved {
+				circ.refundReservedWindows(rc.StreamID, circ.destUsesCGO())
+			}
 			return fmt.Errorf("conflux SWITCH relative seq overflows 32 bits")
 		}
-		// rel=0 的 SWITCH 非法；尚未发过序号时只改 current，不发 SWITCH。
 		if gap >= 1 {
 			needSwitch = true
 			rel = uint32(gap)
 		}
 	}
-	circ := chosen.circ
 	s.mu.Unlock()
 
 	if needSwitch {
 		sw, err := cell.NewRelayCell(0, cell.RelayConfluxSwitch, cell.EncodeConfluxSwitch(rel))
 		if err != nil {
+			if reserved {
+				circ.refundReservedWindows(rc.StreamID, circ.destUsesCGO())
+			}
 			return err
 		}
 		if err := circ.sendRelayCellLocal(sw); err != nil {
+			if reserved {
+				circ.refundReservedWindows(rc.StreamID, circ.destUsesCGO())
+			}
 			return fmt.Errorf("SWITCH: %w", err)
 		}
-		// Exit 已应用相对序号；即使随后 DATA 失败也不能再发同一 SWITCH。
 		s.mu.Lock()
 		s.current = circ
 		if leg := s.legOf(circ); leg != nil {
@@ -512,7 +531,7 @@ func (s *ConfluxSet) sendMultiplexed(rc *cell.RelayCell) error {
 		}
 		s.mu.Unlock()
 	}
-	if err := circ.sendRelayCellLocal(rc); err != nil {
+	if err := circ.emitRelayCell(rc, recordSendme, reserved); err != nil {
 		if needSwitch {
 			s.failAndClose()
 		}

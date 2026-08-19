@@ -272,6 +272,33 @@ func TestCloseWakesPackageWindowWaiter(t *testing.T) {
 	}
 }
 
+type soakDeadConn struct {
+	soakCellSender
+}
+
+func (soakDeadConn) IsOpen() bool { return false }
+
+func TestWaitAbortsWhenOrconnDead(t *testing.T) {
+	c := NewCircuit(1)
+	if err := c.AddHop(&Hop{Fingerprint: "E"}); err != nil {
+		t.Fatal(err)
+	}
+	c.SetConnection(soakDeadConn{})
+	c.SetState(StateOpen)
+	c.packageWindow = 0
+	rc, err := cell.NewRelayCell(1, cell.RelayData, []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := c.SendRelayCell(rc); err == nil {
+		t.Fatal("dead orconn must fail the wait")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("dead orconn must not wait the full packageWindowWait")
+	}
+}
+
 func TestProcessSendmeSamplesOrconnBlocked(t *testing.T) {
 	c := NewCircuit(1)
 	c.SetConnection(soakBlockedConn{blocked: true})

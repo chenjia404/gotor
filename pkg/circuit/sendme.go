@@ -267,9 +267,26 @@ func (c *Circuit) refundReservedWindows(streamID uint16, destCGO bool) {
 	}
 }
 
+func (c *Circuit) orconnDead() bool {
+	c.mu.RLock()
+	mux := c.mux
+	conn := c.conn
+	c.mu.RUnlock()
+	if mux != nil && mux.isClosed() {
+		return true
+	}
+	if o, ok := conn.(interface{ IsOpen() bool }); ok && !o.IsOpen() {
+		return true
+	}
+	return false
+}
+
 func (c *Circuit) waitForSendWake(deadline time.Time) error {
 	if st := c.GetState(); st == StateClosed || st == StateFailed {
 		return fmt.Errorf("circuit %s while waiting for SENDME", st)
+	}
+	if c.orconnDead() {
+		return fmt.Errorf("orconn dead while waiting for SENDME")
 	}
 	remain := time.Until(deadline)
 	if remain <= 0 {

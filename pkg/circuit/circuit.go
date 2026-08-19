@@ -1179,32 +1179,34 @@ func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
 	return c.sendRelayCellLocal(relayCell)
 }
 
-func (c *Circuit) sendRelayCellLocal(relayCell *cell.RelayCell) error {
-	c.mu.Lock()
-	conn := c.conn
-	state := c.State
+func (c *Circuit) destUsesCGO() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	dest := len(c.Hops) - 1
-	destCGO := dest >= 0 && c.Hops[dest].usesCGO()
-	c.mu.Unlock()
+	return dest >= 0 && c.Hops[dest].usesCGO()
+}
 
-	// Check flow control for DATA cells
-	// Per tor-spec.txt §7.4, only DATA cells count against the package window
+func (c *Circuit) sendRelayCellLocal(relayCell *cell.RelayCell) error {
 	recordSendme := false
 	reserved := false
 	if relayCell.Command == cell.RelayData {
-		// window=0 时等待 SENDME，而不是立刻失败（大上传 / Vegas cwnd 用尽）。
 		var err error
-		recordSendme, err = c.reserveDataWindows(relayCell.StreamID, destCGO)
+		recordSendme, err = c.reserveDataWindows(relayCell.StreamID, c.destUsesCGO())
 		if err != nil {
 			return err
 		}
 		reserved = true
 	}
+	return c.emitRelayCell(relayCell, recordSendme, reserved)
+}
 
-	// 等待期间电路可能已关；重新取 conn/state，失败则退还已预留窗口。
+// emitRelayCell 在窗口已预留（或非 DATA）后真正加密发出。
+func (c *Circuit) emitRelayCell(relayCell *cell.RelayCell, recordSendme, reserved bool) error {
 	c.mu.Lock()
-	conn = c.conn
-	state = c.State
+	conn := c.conn
+	state := c.State
+	dest := len(c.Hops) - 1
+	destCGO := dest >= 0 && c.Hops[dest].usesCGO()
 	c.mu.Unlock()
 
 	refund := func() {
