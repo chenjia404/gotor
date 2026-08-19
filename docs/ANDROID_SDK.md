@@ -62,7 +62,7 @@ StatusListener
 - SOCKS **只绑定** `127.0.0.1`，禁止 `0.0.0.0`
 - Control / Metrics / 中继 / 洋葱托管：默认全关（ControlPort=0 不监听；当前主线无 DNSPort / HTTPTunnel）
 - 电路池按移动端缩小（min=1，max=3）
-- `Start` 会阻塞至引导完成或失败，**不要在主线程调用**
+- `Start` 会阻塞至电路可用且本机 SOCKS 已监听，或失败；**不要在主线程调用**。`OnReady` 只在此时触发，不要把它理解成 `client.Start` 一返回就可以发流量。
 
 ---
 
@@ -255,6 +255,7 @@ SOCKS 只监听 `127.0.0.1`，不要改成 `0.0.0.0`，也不要把该端口暴�
 2. **后台保活**：进程在后台会被杀。若需要持续代理，请由**你的应用**自行实现前台服务（`FOREGROUND_SERVICE`）；本仓库不提供 `TorService`。
 3. **不要阻塞主线程**：`Start` / `Stop` 会阻塞。放到 `Dispatchers.IO`、`Executor` 或前台服务工作线程。
 4. **不要绑定 0.0.0.0**：SDK 强制 SOCKS 绑定 `127.0.0.1`。应用侧代理配置也必须指向本机。
+   Android 上回环地址由各 UID 共享：其它应用也能连接 `127.0.0.1:socksPort`。请使用应用自己选定的高位端口，不要把端口告诉其它 App；本 API 不提供 SOCKS 用户名口令。SDK 默认按目的地隔离电路，但不能阻止其它应用借用该代理。
 5. **首次引导**：第一次启动可能需要数十秒（共识与建路）。用 `StatusListener` 或 `BootstrapPercent()` / `StatusText()` 更新 UI。
 6. **重复 Start**：已经启动或正在启动时会返回明确错误；先 `Stop` 再 `Start`。
 7. **重复 Stop**：安全，可多次调用。

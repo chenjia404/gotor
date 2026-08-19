@@ -60,6 +60,9 @@ func TestBuildMobileConfigConstraints(t *testing.T) {
 	if cfg.CircuitPoolMinSize != 1 || cfg.CircuitPoolMaxSize != 3 {
 		t.Fatalf("电路池应为 min=1 max=3, got %d/%d", cfg.CircuitPoolMinSize, cfg.CircuitPoolMaxSize)
 	}
+	if cfg.IsolationLevel != "destination" || !cfg.IsolateDestinations {
+		t.Fatalf("应启用目的地隔离, level=%q isolate=%v", cfg.IsolationLevel, cfg.IsolateDestinations)
+	}
 	if cfg.EnableProfiling || cfg.EnableTracing {
 		t.Fatal("Profiling/Tracing 应关闭")
 	}

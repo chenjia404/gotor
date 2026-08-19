@@ -56,6 +56,10 @@ func buildMobileConfig(dataDir string, socksPort int) *config.Config {
 	cfg.CircuitPoolMinSize = mobileCircuitPoolMin
 	cfg.CircuitPoolMaxSize = mobileCircuitPoolMax
 
+	// 按目的地隔离，降低多应用误用同一回环代理时的电路混用。
+	cfg.IsolationLevel = "destination"
+	cfg.IsolateDestinations = true
+
 	cfg.EnableTracing = false
 	cfg.LogLevel = "info"
 

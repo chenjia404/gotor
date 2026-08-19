@@ -141,6 +141,36 @@ func (t *Tor) Start(dataDir string, socksPort int) error {
 		return errors.New(msg)
 	}
 
+	// client.Start 在启用电路池时会立刻返回，电路与 SOCKS 仍在后台就绪。
+	t.setStatus(50, "等待电路")
+	notifyBootstrap(t.snapshotListener(), 50, "等待电路")
+	if err := waitUntilReady(c, ctx, readyWaitTimeout); err != nil {
+		_ = c.Stop()
+		if t.consumeStopRequest() || ctx.Err() != nil {
+			t.finishCancelled()
+			return errors.New("启动已取消")
+		}
+		t.setStatus(0, "启动失败")
+		msg := fmt.Sprintf("等待电路就绪失败: %v", err)
+		notifyError(t.snapshotListener(), msg)
+		return errors.New(msg)
+	}
+
+	socksAddr := net.JoinHostPort(socksBindAddr, strconv.Itoa(socksPort))
+	t.setStatus(80, "等待本机 SOCKS")
+	notifyBootstrap(t.snapshotListener(), 80, "等待本机 SOCKS")
+	if err := waitSocksLoopback(ctx, socksAddr, socksWaitTimeout); err != nil {
+		_ = c.Stop()
+		if t.consumeStopRequest() || ctx.Err() != nil {
+			t.finishCancelled()
+			return errors.New("启动已取消")
+		}
+		t.setStatus(0, "启动失败")
+		msg := fmt.Sprintf("等待 SOCKS 监听失败: %v", err)
+		notifyError(t.snapshotListener(), msg)
+		return errors.New(msg)
+	}
+
 	t.mu.Lock()
 	if t.stopRequested {
 		t.mu.Unlock()
