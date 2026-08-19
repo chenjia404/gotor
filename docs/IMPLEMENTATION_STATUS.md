@@ -48,7 +48,7 @@
 | SENDME / flow control | WORKING | FlowCtrl=2 TOR_VEGAS；1MB **1059120** + 10MB **10497056** + 多流 **753152** 真实验收；电路未 DESTROY |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
-| Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family-ids（Desc=4）已用于避让，待真实验收 |
+| Guard / Path selection | WORKING | 选路存在；family-ids（Desc=4）避让已真实验收（抽样 128：with_ids=44；共享 ID 对 InSameFamily；8/8 多样路径） |
 | Exit policy | WORKING | 已解析 `p`/`p6` 与完整 accept/reject；IPv6 字面量按 p6 选路。`TestRealExitPolicyP6` 通过（2026-08-19：抽样 64 Exit，p=64 p6=51，选路 Exit=`eisbaer`） |
 | Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
@@ -223,18 +223,19 @@
 
 #### 12. Family ID（Desc=4）
 
-- **状态**：PARTIAL（microdesc `family-ids` + `InSameFamily`；未跑真实网络）。
+- **状态**：WORKING（2026-08-19 真实验收）。
 - **已做**：
   - 解析 `family-ids`（含未识别格式）；共享任一 ID 即同家族
   - 旧 `family` 列表仍要求双向；支持 `$HEX` / `$HEX=name` / `$HEX~name`
   - 共识 `use-family-ids` / `use-family-lists`（缺省 1）
   - 选路与 Conflux 第二腿走同一判断
   - 建路前（及 Conflux 第二腿）在 microdesc 补齐后重验，冲突则重选
-- **未做**：从 server descriptor 的 `family-cert` 本地导出 ID（microdesc 客户端不需要）
-- **Spec**：path-spec determining family membership；dir-spec family-ids；proposal 321
+- **真实网络（2026-08-19 `TestRealFamilyIds`）**：
+  - 抽样 128 Running：`with_family_ids=44`，`unique_ids=22`
+  - 共享 ID 例：`forest03`+`forest37`、`Quintex152`+`Quintex216`（InSameFamily=true）
+  - 选路补齐 microdesc 后重选：`diverse_paths=8/8`
 - **现有代码**：`pkg/directory/family.go`；文档 `docs/interop/family-ids.md`
-- **验收**：同一 family ID 不会出现在同一条电路的多个 hop。真实验收后标 WORKING。
-- **禁止**：忽略 family-ids 只靠 nickname；为过测试放松双向列表；C 库 / CGO。
+
 
 #### 13. 文档债务
 
@@ -401,4 +402,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准：** Desc=4 family-ids / authcert 重启真实验收（Phase 1.4–1.5）；其后 Padding=2（Phase 2）。
+**下一轮完成标准：** authcert 重启真实验收（Phase 1.5）；其后 Padding=2（Phase 2）。

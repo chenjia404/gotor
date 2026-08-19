@@ -1042,3 +1042,176 @@ func buildLiveCircuit(t *testing.T) (*circuit.Circuit, *path.Path) {
 	}
 	return circ, selected
 }
+
+// TestRealFamilyIds 验收真实 microdesc 的 family-ids：存在共享 ID 的继电器对，
+// 且 PathHopsShareFamily / 选路后补齐 microdesc 的路径不得含同家族 hop。
+func TestRealFamilyIds(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	log := logger.NewDefault()
+	dirClient := directory.NewClient(log)
+	guardMgr, err := path.NewGuardManager(t.TempDir(), log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := path.NewSelectorWithGuards(dirClient, guardMgr, log)
+	if err := selector.UpdateConsensus(ctx); err != nil {
+		t.Fatalf("UpdateConsensus: %v", err)
+	}
+	relays := selector.GetRelays()
+	if len(relays) < 1000 {
+		t.Fatalf("too few relays: %d", len(relays))
+	}
+
+	// 抽样一批 Running 节点拉 microdesc，统计 family-ids。
+	sample := make([]*directory.Relay, 0, 128)
+	for _, r := range relays {
+		if r == nil || !r.IsRunning() || !r.IsValid() {
+			continue
+		}
+		sample = append(sample, r)
+		if len(sample) >= 128 {
+			break
+		}
+	}
+	if err := dirClient.FetchMicrodescriptorsFor(ctx, sample); err != nil {
+		t.Fatalf("FetchMicrodescriptorsFor sample: %v", err)
+	}
+
+	withIDs := 0
+	idIndex := make(map[string][]*directory.Relay)
+	for _, r := range sample {
+		if len(r.FamilyIDs) == 0 {
+			continue
+		}
+		withIDs++
+		for _, id := range r.FamilyIDs {
+			idIndex[id] = append(idIndex[id], r)
+		}
+	}
+	t.Logf("sampled=%d with_family_ids=%d unique_ids=%d", len(sample), withIDs, len(idIndex))
+	if withIDs == 0 {
+		t.Fatal("expected some microdescriptors to contain family-ids on current network")
+	}
+
+	var sharedPairs int
+	for id, members := range idIndex {
+		if len(members) < 2 {
+			continue
+		}
+		a, b := members[0], members[1]
+		if !a.InSameFamily(b) {
+			t.Fatalf("shared family-id %q but InSameFamily=false (%s / %s)", id, a.Nickname, b.Nickname)
+		}
+		sharedPairs++
+		t.Logf("shared family-id members=%d example=%s+%s id=%s", len(members), a.Nickname, b.Nickname, truncateID(id))
+		if sharedPairs >= 3 {
+			break
+		}
+	}
+	if sharedPairs == 0 {
+		t.Log("no shared family-id within sample; expanding fetch")
+		more := make([]*directory.Relay, 0, 256)
+		for _, r := range relays {
+			if r == nil || !r.IsRunning() || !r.IsValid() {
+				continue
+			}
+			more = append(more, r)
+			if len(more) >= 256 {
+				break
+			}
+		}
+		if err := dirClient.FetchMicrodescriptorsFor(ctx, more); err != nil {
+			t.Fatalf("FetchMicrodescriptorsFor expand: %v", err)
+		}
+		for _, r := range more {
+			for _, id := range r.FamilyIDs {
+				idIndex[id] = append(idIndex[id], r)
+			}
+		}
+		for id, members := range idIndex {
+			uniq := uniqueRelays(members)
+			if len(uniq) < 2 {
+				continue
+			}
+			if !uniq[0].InSameFamily(uniq[1]) {
+				t.Fatalf("shared family-id %q but InSameFamily=false", id)
+			}
+			sharedPairs++
+			t.Logf("shared family-id after expand: %s+%s", uniq[0].Nickname, uniq[1].Nickname)
+			break
+		}
+	}
+	if sharedPairs == 0 {
+		t.Fatal("could not find two distinct relays sharing a family-id")
+	}
+
+	// 与 pkg/client 一致：选路时 microdesc 可能尚未补齐 family-ids，补齐后冲突则重选。
+	const trials = 8
+	okPaths := 0
+	var conflicts int
+	for i := 0; i < trials; i++ {
+		var selected *path.Path
+		for attempt := 0; attempt < 5; attempt++ {
+			pick, err := selector.SelectPath(443)
+			if err != nil {
+				t.Logf("SelectPath: %v", err)
+				break
+			}
+			if err := dirClient.FetchMicrodescriptorsFor(ctx, []*directory.Relay{
+				pick.Guard, pick.Middle, pick.Exit,
+			}); err != nil {
+				t.Logf("fetch path microdesc: %v", err)
+				break
+			}
+			if path.PathHopsShareFamily(dirClient, pick) {
+				conflicts++
+				t.Logf("family conflict after microdesc (reselect): %s / %s / %s",
+					pick.Guard.Nickname, pick.Middle.Nickname, pick.Exit.Nickname)
+				continue
+			}
+			selected = pick
+			break
+		}
+		if selected == nil {
+			continue
+		}
+		okPaths++
+	}
+	if okPaths == 0 {
+		t.Fatal("no successful family-diverse paths after reselect")
+	}
+	t.Logf("family-ids OK shared_pairs>=1 diverse_paths=%d/%d conflicts_seen=%d", okPaths, trials, conflicts)
+}
+
+func truncateID(id string) string {
+	if len(id) <= 24 {
+		return id
+	}
+	return id[:24] + "…"
+}
+
+func uniqueRelays(in []*directory.Relay) []*directory.Relay {
+	seen := make(map[string]struct{})
+	out := make([]*directory.Relay, 0, len(in))
+	for _, r := range in {
+		if r == nil {
+			continue
+		}
+		k := r.GetFingerprintHex()
+		if k == "" {
+			k = r.Fingerprint
+		}
+		if k == "" {
+			k = r.Nickname
+		}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, r)
+	}
+	return out
+}
