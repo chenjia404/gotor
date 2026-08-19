@@ -4,6 +4,7 @@ package relay
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -323,18 +324,34 @@ func ipv6PolicySummaryLine(pol *directory.ExitPolicy, _ *directory.ExitPolicySum
 	if pol == nil {
 		return "ipv6-policy reject 1-65535"
 	}
-	// 抽样常见端口生成 accept 列表
-	var ports []string
-	probe := []int{80, 443, 53, 6667, 9001}
-	for _, p := range probe {
-		if pol.Allows(net.ParseIP("2001:4860:4860::8888"), p) {
-			ports = append(ports, fmt.Sprintf("%d", p))
+	// 对公网 IPv6 探测全部端口，生成真实 accept 范围（启动时一次，禁止只抽样几个端口）。
+	probe := net.ParseIP("2001:4860:4860::8888")
+	var parts []string
+	start := 0
+	for p := 1; p <= 65535; p++ {
+		ok := pol.Allows(probe, p)
+		if ok && start == 0 {
+			start = p
+		}
+		if !ok && start != 0 {
+			parts = append(parts, formatPolicyPortRange(start, p-1))
+			start = 0
 		}
 	}
-	if len(ports) == 0 {
+	if start != 0 {
+		parts = append(parts, formatPolicyPortRange(start, 65535))
+	}
+	if len(parts) == 0 {
 		return "ipv6-policy reject 1-65535"
 	}
-	return "ipv6-policy accept " + strings.Join(ports, ",")
+	return "ipv6-policy accept " + strings.Join(parts, ",")
+}
+
+func formatPolicyPortRange(lo, hi int) string {
+	if lo == hi {
+		return strconv.Itoa(lo)
+	}
+	return strconv.Itoa(lo) + "-" + strconv.Itoa(hi)
 }
 
 func wouldAnnounceExit(p *ExitPolicy) bool {

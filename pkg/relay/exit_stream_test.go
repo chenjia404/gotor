@@ -5,6 +5,7 @@ import (
 	"context"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,9 +114,9 @@ func TestExitPolicyIPv6RequiresIPv6Exit(t *testing.T) {
 }
 
 func TestParseBeginAddrFlags(t *testing.T) {
-	h, p, flags, err := parseBeginAddr([]byte("example.com:443\x00\x00\x00\x00\x05"))
-	if err != nil || h != "example.com" || p != 443 {
-		t.Fatalf("%s %d %v", h, p, err)
+	h, p, flags, present, err := parseBeginAddr([]byte("example.com:443\x00\x00\x00\x00\x05"))
+	if err != nil || h != "example.com" || p != 443 || !present {
+		t.Fatalf("%s %d present=%v %v", h, p, present, err)
 	}
 	if flags != 5 { // IPv6 OK + preferred
 		t.Fatalf("flags=%d", flags)
@@ -264,9 +265,66 @@ func TestHandleResolveOnionRejected(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
-	go func() { _, _ = cell.DecodeCell(server) }()
+	go func() {
+		for {
+			if _, err := cell.DecodeCell(server); err != nil {
+				return
+			}
+		}
+	}()
 	if err := m.HandleResolve(context.Background(), circ, client, 1, []byte("abc.onion\x00")); err != nil {
 		t.Fatal(err)
+	}
+	if err := m.HandleResolve(context.Background(), circ, client, 2, []byte("abc.onion.\x00")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHandleResolveOmitsIPv6WhenDisabled(t *testing.T) {
+	p := NewExitPolicyFromConfig(true, []string{"accept *:*"}, false, false, logger.NewDefault())
+	if p.ipv6OK {
+		t.Fatal("IPv6Exit 默认关")
+	}
+	m := NewExitStreamManager(p, logger.NewDefault())
+	m.lookup = func(ctx context.Context, host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("1.1.1.1"), net.ParseIP("2606:4700:4700::1111")}, nil
+	}
+	ips, err := m.lookupIP(context.Background(), "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowV6 := p.ipv6OK
+	var filtered []net.IP
+	for _, ip := range ips {
+		if ip.To4() == nil && !allowV6 {
+			continue
+		}
+		if dangerousExitIP(ip) {
+			continue
+		}
+		filtered = append(filtered, ip)
+	}
+	if len(filtered) != 1 || filtered[0].String() != "1.1.1.1" {
+		t.Fatalf("未开 IPv6Exit 的 RESOLVE 不得返回 IPv6: %v", filtered)
+	}
+}
+
+func TestParseARPAName(t *testing.T) {
+	ip := parseARPAName("1.2.0.192.in-addr.arpa")
+	if ip == nil || ip.String() != "192.0.2.1" {
+		t.Fatalf("ipv4 arpa: %v", ip)
+	}
+	want := net.ParseIP("2001:db8::1")
+	name, err := circuit.PTRHostname(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parseARPAName(name)
+	if !got.Equal(want) {
+		t.Fatalf("ipv6 arpa %s -> %v", name, got)
+	}
+	if parseARPAName("not-arpa") != nil {
+		t.Fatal("非 arpa 应失败")
 	}
 }
 
@@ -369,6 +427,23 @@ func TestUserLinesWithoutCatchAllAppendDefault(t *testing.T) {
 	}
 }
 
+func TestIPv6PolicyLineListsReducedPorts(t *testing.T) {
+	p := NewExitPolicyFromOptions(ExitPolicyOptions{
+		ExitRelay:             true,
+		Reduce:                true,
+		IPv6Exit:              true,
+		RejectPrivate:         true,
+		RejectLocalInterfaces: false,
+	}, logger.NewDefault())
+	line := p.IPv6PolicyLine()
+	if !strings.Contains(line, "80") || !strings.Contains(line, "443") || !strings.Contains(line, "110") {
+		t.Fatalf("ipv6-policy 应列出精简策略端口，得到 %s", line)
+	}
+	if strings.HasPrefix(line, "ipv6-policy reject") {
+		t.Fatalf("IPv6Exit+Reduce 不应整段拒绝: %s", line)
+	}
+}
+
 func TestReducedPolicyAllowsHTTPRejectsSMTP(t *testing.T) {
 	p := NewExitPolicyFromOptions(ExitPolicyOptions{
 		ExitRelay:             true,
@@ -383,6 +458,56 @@ func TestReducedPolicyAllowsHTTPRejectsSMTP(t *testing.T) {
 	ok, _ = p.CheckExitAllowed("1.1.1.1", 25)
 	if ok {
 		t.Fatal("reduced 不得放行 25")
+	}
+}
+
+func TestFilterBeginIPsFlagsPresentZero(t *testing.T) {
+	ips := []net.IP{net.ParseIP("1.1.1.1"), net.ParseIP("2001:4860:4860::8888")}
+	got := filterBeginIPs(ips, 0, true)
+	if len(got) != 1 || got[0].To4() == nil {
+		t.Fatalf("FLAGS=0 只应保留 IPv4: %v", got)
+	}
+	got = filterBeginIPs(ips, 0, false)
+	if len(got) != 2 {
+		t.Fatalf("无 FLAGS 应保留双栈: %v", got)
+	}
+}
+
+func TestHandleBeginRejectsOnionFQDN(t *testing.T) {
+	p := NewExitPolicyFromConfig(true, []string{"accept *:*"}, false, false, logger.NewDefault())
+	m := NewExitStreamManager(p, logger.NewDefault())
+	m.lookup = func(ctx context.Context, host string) ([]net.IP, error) {
+		t.Fatal("BEGIN 不得解析 abc.onion.")
+		return nil, nil
+	}
+	circ := &ServerCircuit{CircuitID: 8, ctx: context.Background()}
+	cc, _ := newCircuitCrypto(bytes.Repeat([]byte{8}, 72))
+	circ.crypto = cc
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	go func() { _, _ = cell.DecodeCell(server) }()
+	if err := m.HandleBegin(context.Background(), circ, client, 1, []byte("abc.onion.:80\x00")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHandleSendmeDoesNotInflateFullWindow(t *testing.T) {
+	p := NewExitPolicyFromConfig(true, []string{"accept *:*"}, false, false, logger.NewDefault())
+	m := NewExitStreamManager(p, logger.NewDefault())
+	m.circOutWindow[1] = exitCircWindowInit
+	m.HandleSendme(1, 0, nil)
+	if m.circOutWindow[1] != exitCircWindowInit {
+		t.Fatalf("满窗多余 SENDME 不得放大: %d", m.circOutWindow[1])
+	}
+	m.circOutWindow[1] = exitCircWindowInit - 20
+	m.HandleSendme(1, 0, nil)
+	if m.circOutWindow[1] != exitCircWindowInit {
+		t.Fatalf("SENDME 应补到初值: %d", m.circOutWindow[1])
+	}
+	m.HandleSendme(1, 0, []byte{0x01})
+	if m.circOutWindow[1] != exitCircWindowInit {
+		t.Fatalf("非法 SENDME 不得改窗口: %d", m.circOutWindow[1])
 	}
 }
 

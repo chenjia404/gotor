@@ -28,7 +28,7 @@ func (m *ExitStreamManager) HandleResolve(ctx context.Context, circ *ServerCircu
 	if name == "" || len(name) > exitMaxDNSName {
 		return m.sendResolved(circ, clientConn, streamID, encodeResolvedError(false, "Error resolving hostname"))
 	}
-	if strings.HasSuffix(strings.ToLower(name), ".onion") {
+	if isOnionHost(name) {
 		return m.sendResolved(circ, clientConn, streamID, encodeResolvedError(false, "Error resolving hostname"))
 	}
 
@@ -38,7 +38,14 @@ func (m *ExitStreamManager) HandleResolve(ctx context.Context, circ *ServerCircu
 	}
 
 	if isPTRName(name) {
-		names, err := m.lookupPTR(rctx, name)
+		ip := parseARPAName(name)
+		if ip == nil {
+			return m.sendResolved(circ, clientConn, streamID, encodeResolvedError(false, "Error resolving hostname"))
+		}
+		if dangerousExitIP(ip) {
+			return m.sendResolved(circ, clientConn, streamID, encodeResolvedError(false, "Error resolving hostname"))
+		}
+		names, err := m.lookupPTR(rctx, ip.String())
 		if err != nil || len(names) == 0 {
 			return m.sendResolved(circ, clientConn, streamID, encodeResolvedError(false, "Error resolving hostname"))
 		}
@@ -49,9 +56,13 @@ func (m *ExitStreamManager) HandleResolve(ctx context.Context, circ *ServerCircu
 	if err != nil || len(ips) == 0 {
 		return m.sendResolved(circ, clientConn, streamID, encodeResolvedError(false, "Error resolving hostname"))
 	}
+	allowV6 := m.policy != nil && m.policy.ipv6OK
 	filtered := make([]net.IP, 0, len(ips))
 	for _, ip := range ips {
 		if ip == nil {
+			continue
+		}
+		if ip.To4() == nil && !allowV6 {
 			continue
 		}
 		// RESOLVE 不带端口：只滤掉私网/特殊用途地址，端口策略在 BEGIN 执行
@@ -87,8 +98,59 @@ func parseResolveName(data []byte) string {
 }
 
 func isPTRName(name string) bool {
-	n := strings.ToLower(name)
+	n := strings.ToLower(strings.Trim(name, "."))
 	return strings.HasSuffix(n, ".in-addr.arpa") || strings.HasSuffix(n, ".ip6.arpa")
+}
+
+// parseARPAName 把 in-addr.arpa / ip6.arpa 转成 IP。Go LookupAddr 要的是 IP，不是 arpa 主机名。
+func parseARPAName(name string) net.IP {
+	n := strings.ToLower(strings.Trim(name, "."))
+	if strings.HasSuffix(n, ".in-addr.arpa") {
+		parts := strings.Split(strings.TrimSuffix(n, ".in-addr.arpa"), ".")
+		if len(parts) != 4 {
+			return nil
+		}
+		host := parts[3] + "." + parts[2] + "." + parts[1] + "." + parts[0]
+		ip := net.ParseIP(host)
+		if ip == nil || ip.To4() == nil {
+			return nil
+		}
+		return ip
+	}
+	if strings.HasSuffix(n, ".ip6.arpa") {
+		parts := strings.Split(strings.TrimSuffix(n, ".ip6.arpa"), ".")
+		if len(parts) != 32 {
+			return nil
+		}
+		var raw [16]byte
+		for i := 0; i < 16; i++ {
+			hi := unhexNibble(parts[31-2*i])
+			lo := unhexNibble(parts[30-2*i])
+			if hi < 0 || lo < 0 {
+				return nil
+			}
+			raw[i] = byte(hi<<4 | lo)
+		}
+		return net.IP(raw[:])
+	}
+	return nil
+}
+
+func unhexNibble(s string) int {
+	if len(s) != 1 {
+		return -1
+	}
+	c := s[0]
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c - 'a' + 10)
+	case c >= 'A' && c <= 'F':
+		return int(c - 'A' + 10)
+	default:
+		return -1
+	}
 }
 
 func encodeResolvedAddresses(ips []net.IP, ttl uint32) []byte {

@@ -87,3 +87,13 @@ func TestLoadTorrcExitRelayExtendedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDirPortAutoPicksFreePort(t *testing.T) {
+	cfg := DefaultCLIConfig()
+	if err := processConfigOption(cfg, "DirPort", "auto", nil); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirPort <= 0 {
+		t.Fatalf("DirPort auto 应选空闲端口，得到 %d", cfg.DirPort)
+	}
+}

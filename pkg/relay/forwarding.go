@@ -70,7 +70,7 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 
 	case cell.RelaySendme:
 		if h.circuits.exits != nil {
-			h.circuits.exits.HandleSendme(circuitID, relayCell.StreamID)
+			h.circuits.exits.HandleSendme(circuitID, relayCell.StreamID, relayCell.Data)
 		}
 		return nil
 

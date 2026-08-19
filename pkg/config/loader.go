@@ -824,8 +824,7 @@ func parseDirPort(cfg *Config, value string) error {
 	}
 	addrPort := fields[0]
 	if strings.EqualFold(addrPort, "auto") {
-		// 与 SocksPort auto 一致：选空闲端口。出口中继测试可用 0 关闭。
-		cfg.DirPort = 0
+		cfg.DirPort = autoconfig.FindAvailablePort(9030)
 		return nil
 	}
 	if strings.Contains(addrPort, ":") {

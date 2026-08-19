@@ -211,12 +211,14 @@ func portToUint16(p int) uint16 {
 	if p > 65535 {
 		return 65535
 	}
-	return uint16(p) // #nosec G115 -- 已限制在 0..65535
+	// #nosec G115 -- 已限制在 0..65535
+	return uint16(p)
 }
 
 func nonNegUint64(v int64) uint64 {
 	if v <= 0 {
 		return 0
 	}
-	return uint64(v) // #nosec G115 -- 负值已归零
+	// #nosec G115 -- 负值已归零
+	return uint64(v)
 }

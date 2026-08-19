@@ -209,11 +209,11 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 	if m.policy == nil || !m.policy.AllowExit {
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonExitPolicy)
 	}
-	addr, port, flags, err := parseBeginAddr(data)
+	addr, port, flags, flagsPresent, err := parseBeginAddr(data)
 	if err != nil {
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonMisc)
 	}
-	if strings.HasSuffix(strings.ToLower(addr), ".onion") {
+	if isOnionHost(addr) {
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonExitPolicy)
 	}
 
@@ -250,7 +250,7 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 	if err != nil || len(ips) == 0 {
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonResolveFailed)
 	}
-	ips = filterBeginIPs(ips, flags)
+	ips = filterBeginIPs(ips, flags, flagsPresent)
 
 	var dialIP net.IP
 	for _, ip := range ips {
@@ -340,14 +340,24 @@ func (m *ExitStreamManager) HandleBeginDir(ctx context.Context, circ *ServerCirc
 		m.mu.Unlock()
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonResourceLimit)
 	}
+	m.circStreams[circ.CircuitID]++ // 先占名额，避免 TOCTOU 耗尽 goroutine
 	m.mu.Unlock()
-	c, err := m.dirDial()
-	if err != nil {
-		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonNotDirectory)
+	releaseSlot := func() {
+		m.mu.Lock()
+		if m.circStreams[circ.CircuitID] > 0 {
+			m.circStreams[circ.CircuitID]--
+		}
+		m.mu.Unlock()
 	}
 	if !m.gate.acquire() {
-		_ = c.Close()
+		releaseSlot()
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonResourceLimit)
+	}
+	c, err := m.dirDial()
+	if err != nil {
+		m.gate.release()
+		releaseSlot()
+		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonNotDirectory)
 	}
 	rctx := ctx
 	if circ != nil && circ.ctx != nil {
@@ -363,13 +373,14 @@ func (m *ExitStreamManager) HandleBeginDir(ctx context.Context, circ *ServerCirc
 		deliverWindow: exitStreamWindowInit,
 		held:          true,
 	}
-	m.circStreams[circ.CircuitID]++
 	if _, ok := m.circOutWindow[circ.CircuitID]; !ok {
 		m.circOutWindow[circ.CircuitID] = exitCircWindowInit
 	}
 	m.mu.Unlock()
 	if err := m.sendRelay(circ, clientConn, streamID, cell.RelayConnected, nil); err != nil {
-		m.HandleEnd(circ.CircuitID, streamID)
+		if es := m.removeStream(circ.CircuitID, streamID); es != nil {
+			m.teardown(es)
+		}
 		return err
 	}
 	go m.pumpRemoteToClient(sctx, circ, clientConn, streamID, c)
@@ -393,8 +404,9 @@ func resolveBeginIPs(ctx context.Context, host string) ([]net.IP, error) {
 	return out, nil
 }
 
-func filterBeginIPs(ips []net.IP, flags uint32) []net.IP {
-	ipv6OK := flags&beginFlagIPv6OK != 0 || flags == 0
+func filterBeginIPs(ips []net.IP, flags uint32, flagsPresent bool) []net.IP {
+	// 无 FLAGS 字段：兼容旧客户端，允许 IPv6。FLAGS 全 0：IPv6OK 未置位，只走 IPv4。
+	ipv6OK := !flagsPresent || flags&beginFlagIPv6OK != 0
 	ipv4OK := flags&beginFlagIPv4NotOK == 0
 	prefer6 := flags&beginFlagIPv6Preferred != 0
 	var v4, v6 []net.IP
@@ -506,30 +518,41 @@ func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn,
 	return nil
 }
 
-// HandleSendme 客户端 SENDME：恢复出向窗口。
-func (m *ExitStreamManager) HandleSendme(circID uint32, streamID uint16) {
+// HandleSendme 客户端 SENDME：恢复出向窗口。电路级校验载荷；已满窗口的多余 SENDME 丢弃，防止放大。
+func (m *ExitStreamManager) HandleSendme(circID uint32, streamID uint16, payload []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	flow := m.flowOf(circID)
-	inc := flow.sendmeInc
-	if inc <= 0 {
-		inc = exitCircSendmeInc
-	}
 	if streamID == 0 {
-		m.circOutWindow[circID] += inc
-		max := exitMaxCircOutWindow
+		if _, _, err := cell.DecodeSendme(payload); err != nil {
+			return
+		}
+		initW := exitCircWindowInit
 		if flow.cc {
-			max = 5000
+			initW = ccCwndInit
 		}
-		if m.circOutWindow[circID] > max {
-			m.circOutWindow[circID] = max
+		cur := m.circOutWindow[circID]
+		if cur >= initW {
+			return
 		}
+		inc := flow.sendmeInc
+		if inc <= 0 {
+			inc = exitCircSendmeInc
+		}
+		cur += inc
+		if cur > initW {
+			cur = initW
+		}
+		m.circOutWindow[circID] = cur
 		return
 	}
 	if es := m.streams[streamKey{circID, streamID}]; es != nil {
+		if es.packageWindow >= exitStreamWindowInit {
+			return
+		}
 		es.packageWindow += exitStreamSendmeInc
-		if es.packageWindow > exitMaxStreamOutWindow {
-			es.packageWindow = exitMaxStreamOutWindow
+		if es.packageWindow > exitStreamWindowInit {
+			es.packageWindow = exitStreamWindowInit
 		}
 	}
 }
@@ -690,7 +713,7 @@ func (m *ExitStreamManager) sendRelay(circ *ServerCircuit, clientConn net.Conn, 
 	return c.Encode(clientConn)
 }
 
-func parseBeginAddr(data []byte) (host string, port uint16, flags uint32, err error) {
+func parseBeginAddr(data []byte) (host string, port uint16, flags uint32, flagsPresent bool, err error) {
 	nul := -1
 	for i, b := range data {
 		if b == 0 {
@@ -703,23 +726,29 @@ func parseBeginAddr(data []byte) (host string, port uint16, flags uint32, err er
 		s = string(data[:nul])
 		rest := data[nul+1:]
 		if len(rest) >= 4 {
+			flagsPresent = true
 			flags = uint32(rest[0])<<24 | uint32(rest[1])<<16 | uint32(rest[2])<<8 | uint32(rest[3])
 		}
 	}
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return "", 0, 0, fmt.Errorf("empty BEGIN")
+		return "", 0, 0, false, fmt.Errorf("empty BEGIN")
 	}
 	if i := strings.IndexByte(s, ' '); i >= 0 {
 		s = s[:i]
 	}
 	h, pstr, err := net.SplitHostPort(s)
 	if err != nil {
-		return "", 0, 0, err
+		return "", 0, 0, false, err
 	}
 	p, err := strconv.Atoi(pstr)
 	if err != nil || p < 1 || p > 65535 {
-		return "", 0, 0, fmt.Errorf("bad port")
+		return "", 0, 0, false, fmt.Errorf("bad port")
 	}
-	return h, uint16(p), flags, nil // #nosec G115 -- 已校验 1..65535
+	return h, uint16(p), flags, flagsPresent, nil // #nosec G115 -- 已校验 1..65535
+}
+
+func isOnionHost(host string) bool {
+	h := strings.ToLower(strings.Trim(host, "."))
+	return h == "onion" || strings.HasSuffix(h, ".onion")
 }
