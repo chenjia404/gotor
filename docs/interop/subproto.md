@@ -42,4 +42,4 @@ cap_number    [1]
 
 - 对未宣告 `Relay=5` / `Relay=6` 的节点发 type 3
 - 请求 CGO 后仍按 72 字节 AES-CTR 派生密钥
-- 把「能编码 [02 06]」单独写成已在真实网络启用 CGO
+- 把「能编码 [02 06]」单独写成已在真实网络启用 CGO（CGO 本身的验收见 `docs/interop/cgo.md`）
