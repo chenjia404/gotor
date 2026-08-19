@@ -26,6 +26,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/opd-ai/go-tor/pkg/crypto"
+	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/security"
@@ -1994,33 +1995,37 @@ func (ip *IntroductionProtocol) CreateIntroductionCircuit(ctx context.Context, i
 	ip.logger.Info("Creating introduction circuit",
 		"link_specifiers_count", len(introPoint.LinkSpecifiers))
 
-	// If we have a circuit builder, use it to create a real circuit
-	if circuitBuilder != nil {
-		// Extract relay information from link specifiers
-		// For now, we need to convert IntroductionPoint to HSDirectory
-		// In a production system, link specifiers would contain full relay info
-		relay := &HSDirectory{
-			Fingerprint: "", // Would be extracted from link specifiers
-			Address:     "", // Would be extracted from link specifiers
-			ORPort:      0,  // Would be extracted from link specifiers
-			HSDir:       false,
-		}
-
-		// Build circuit with 5 second timeout
-		circuitID, err := circuitBuilder.BuildCircuitToRelay(ctx, relay, 5*time.Second)
-		if err != nil {
-			ip.logger.Error("Failed to build introduction circuit", "error", err)
-			return 0, fmt.Errorf("failed to build circuit: %w", err)
-		}
-
-		ip.logger.Info("Introduction circuit created",
-			"circuit_id", circuitID)
-		return circuitID, nil
+	if circuitBuilder == nil {
+		return 0, fmt.Errorf("circuit builder is required to create introduction circuit")
 	}
 
-	// AUDIT-003: No mock fallbacks in production code
-	// A circuit builder is required to create an introduction circuit
-	return 0, fmt.Errorf("circuit builder is required to create introduction circuit")
+	resolved, err := ResolveFromIntroPoint(introPoint)
+	if err != nil {
+		return 0, fmt.Errorf("resolve intro link specs: %w", err)
+	}
+	relay := resolved.ToHSDirectory()
+	if adapter, ok := circuitBuilder.(*CircuitAdapter); ok {
+		if matched := MatchConsensusRelay(resolved, adapter.relays); matched != nil {
+			relay = &HSDirectory{
+				Fingerprint: matched.GetFingerprintHex(),
+				Address:     matched.Address,
+				ORPort:      matched.ORPort,
+				Relay:       matched,
+			}
+		}
+	}
+	if relay == nil || relay.Address == "" {
+		return 0, fmt.Errorf("could not resolve introduction point address")
+	}
+
+	circuitID, err := circuitBuilder.BuildCircuitToRelay(ctx, relay, 90*time.Second)
+	if err != nil {
+		ip.logger.Error("Failed to build introduction circuit", "error", err)
+		return 0, fmt.Errorf("failed to build circuit: %w", err)
+	}
+
+	ip.logger.Info("Introduction circuit created", "circuit_id", circuitID)
+	return circuitID, nil
 }
 
 // SendIntroduce1 sends an INTRODUCE1 cell over a circuit
@@ -2033,23 +2038,17 @@ func (ip *IntroductionProtocol) SendIntroduce1(ctx context.Context, circuitID ui
 		"circuit_id", circuitID,
 		"data_size", len(introduce1Data))
 
-	// If we have a cell sender, use it to send the cell
-	if cellSender != nil {
-		const relayCommandIntroduce1 = 0x22 // Per Tor spec
-
-		// Send the INTRODUCE1 cell over the circuit
-		if err := cellSender.SendRelayCell(ctx, circuitID, relayCommandIntroduce1, introduce1Data); err != nil {
-			ip.logger.Error("Failed to send INTRODUCE1 cell", "error", err)
-			return fmt.Errorf("failed to send INTRODUCE1: %w", err)
-		}
-
-		ip.logger.Info("INTRODUCE1 cell sent successfully")
-		return nil
+	if cellSender == nil {
+		return fmt.Errorf("cell sender is required to send INTRODUCE1 cell")
 	}
 
-	// AUDIT-003: No mock fallbacks in production code
-	// A cell sender is required to send the INTRODUCE1 cell
-	return fmt.Errorf("cell sender is required to send INTRODUCE1 cell")
+	if err := cellSender.SendRelayCell(ctx, circuitID, cell.RelayIntroduce1, introduce1Data); err != nil {
+		ip.logger.Error("Failed to send INTRODUCE1 cell", "error", err)
+		return fmt.Errorf("failed to send INTRODUCE1: %w", err)
+	}
+
+	ip.logger.Info("INTRODUCE1 cell sent successfully")
+	return nil
 }
 
 // ConnectToOnionService orchestrates the full connection process to an onion service
@@ -2239,7 +2238,7 @@ func (rp *RendezvousProtocol) CreateRendezvousCircuit(ctx context.Context, rende
 	// If we have a circuit builder, use it to create a real circuit
 	if circuitBuilder != nil {
 		// Build circuit to the rendezvous point with 5 second timeout
-		circuitID, err := circuitBuilder.BuildCircuitToRelay(ctx, rendezvousPoint, 5*time.Second)
+		circuitID, err := circuitBuilder.BuildCircuitToRelay(ctx, rendezvousPoint, 90*time.Second)
 		if err != nil {
 			rp.logger.Error("Failed to build rendezvous circuit", "error", err)
 			return 0, fmt.Errorf("failed to build circuit: %w", err)
@@ -2265,36 +2264,26 @@ func (rp *RendezvousProtocol) SendEstablishRendezvous(ctx context.Context, circu
 		"circuit_id", circuitID,
 		"data_size", len(establishData))
 
-	// If we have a cell sender, use it to send the cell
-	if cellSender != nil {
-		const relayCommandEstablishRendezvous = 0x21 // Per Tor spec
-
-		// Send the ESTABLISH_RENDEZVOUS cell over the circuit
-		if err := cellSender.SendRelayCell(ctx, circuitID, relayCommandEstablishRendezvous, establishData); err != nil {
-			rp.logger.Error("Failed to send ESTABLISH_RENDEZVOUS cell", "error", err)
-			return fmt.Errorf("failed to send ESTABLISH_RENDEZVOUS: %w", err)
-		}
-
-		// Wait for RENDEZVOUS_ESTABLISHED acknowledgment with timeout
-		ackCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-
-		const relayCommandRendezvousEstablished = 0x27
-		ackData, err := cellSender.ReceiveRelayCell(ackCtx, circuitID, 5*time.Second)
-		if err != nil {
-			rp.logger.Warn("Did not receive RENDEZVOUS_ESTABLISHED (continuing anyway)", "error", err)
-			// Don't fail - the rendezvous point might have accepted it
-		} else {
-			rp.logger.Debug("Received RENDEZVOUS_ESTABLISHED", "data_len", len(ackData))
-		}
-
-		rp.logger.Info("ESTABLISH_RENDEZVOUS completed successfully")
-		return nil
+	if cellSender == nil {
+		return fmt.Errorf("cell sender is required to send ESTABLISH_RENDEZVOUS cell")
 	}
 
-	// AUDIT-003: No mock fallbacks in production code
-	// A cell sender is required to send the ESTABLISH_RENDEZVOUS cell
-	return fmt.Errorf("cell sender is required to send ESTABLISH_RENDEZVOUS cell")
+	if err := cellSender.SendRelayCell(ctx, circuitID, cell.RelayEstablishRendezvous, establishData); err != nil {
+		rp.logger.Error("Failed to send ESTABLISH_RENDEZVOUS cell", "error", err)
+		return fmt.Errorf("failed to send ESTABLISH_RENDEZVOUS: %w", err)
+	}
+
+	ackCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ackData, err := cellSender.ReceiveRelayCell(ackCtx, circuitID, 30*time.Second)
+	if err != nil {
+		rp.logger.Warn("Did not receive RENDEZVOUS_ESTABLISHED (continuing anyway)", "error", err)
+	} else {
+		rp.logger.Debug("Received RENDEZVOUS_ESTABLISHED", "data_len", len(ackData))
+	}
+
+	rp.logger.Info("ESTABLISH_RENDEZVOUS completed successfully")
+	return nil
 }
 
 // Rendezvous1Request represents a RENDEZVOUS1 request
