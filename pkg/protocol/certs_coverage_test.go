@@ -229,7 +229,7 @@ func TestValidateSignaturesUnit(t *testing.T) {
 			}
 		}
 
-		// Test Ed25519 signing key (self-signed)
+		// type 4 不能自签：必须由 type 7 identity 验签，且 type 7 必须有 type 2 RSA 交叉签名
 		signingCert := createSignedCert(4, pubKey, privKey)
 		certsCell := &CERTSCell{
 			Certificates: []*Certificate{
@@ -237,8 +237,22 @@ func TestValidateSignaturesUnit(t *testing.T) {
 			},
 		}
 		err = certsCell.ValidateSignatures()
+		if err == nil {
+			t.Error("self-signed type 4 without type 7 must fail")
+		}
+
+		chain := generateTestLinkCertChain(t)
+		signingByIdentity := createSignedCert(4, pubKey, chain.identityPriv)
+		certsCell = &CERTSCell{
+			Certificates: []*Certificate{
+				chain.type2,
+				chain.type7,
+				{CertType: CertTypeEd25519Signing, Ed25519Cert: signingByIdentity},
+			},
+		}
+		err = certsCell.ValidateSignatures()
 		if err != nil {
-			t.Errorf("Expected valid self-signed signing cert, got: %v", err)
+			t.Errorf("Expected valid type2/type7/type4 chain, got: %v", err)
 		}
 
 		// Test Ed25519 TLS link cert (signed by signing key)

@@ -22,7 +22,7 @@ func TestEd25519Cert_SignedWithKeyExtension_MatchesArti(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expHours := uint32(time.Now().Add(24 * time.Hour).Unix() / 3600)
+	expHours := uint32(time.Now().Add(24*time.Hour).Unix() / 3600)
 	signed := make([]byte, 0, 80)
 	signed = append(signed, 1, 4) // version, type 4
 	exp := make([]byte, 4)
@@ -51,22 +51,20 @@ func TestEd25519Cert_SignedWithKeyExtension_MatchesArti(t *testing.T) {
 		t.Fatalf("verify: %v", err)
 	}
 
-	type7 := make([]byte, 0, 38)
-	type7 = append(type7, identityPub...)
-	type7 = append(type7, exp...)
-	type7 = append(type7, 1, 0)
+	chain := generateTestLinkCertChain(t)
+	type7 := signRSAEd25519CrossCert(t, chain.rsaPriv, identityPub, expHours)
 
-	payload := []byte{2}
-	payload = append(payload, byte(CertTypeEd25519Identity))
-	l7 := make([]byte, 2)
-	binary.BigEndian.PutUint16(l7, uint16(len(type7)))
-	payload = append(payload, l7...)
-	payload = append(payload, type7...)
-	payload = append(payload, byte(CertTypeEd25519Signing))
-	l4 := make([]byte, 2)
-	binary.BigEndian.PutUint16(l4, uint16(len(raw)))
-	payload = append(payload, l4...)
-	payload = append(payload, raw...)
+	payload := []byte{3}
+	appendEntry := func(typ CertType, body []byte) {
+		payload = append(payload, byte(typ))
+		ln := make([]byte, 2)
+		binary.BigEndian.PutUint16(ln, uint16(len(body)))
+		payload = append(payload, ln...)
+		payload = append(payload, body...)
+	}
+	appendEntry(CertTypeRSAID, chain.rsaDER)
+	appendEntry(CertTypeEd25519Identity, type7)
+	appendEntry(CertTypeEd25519Signing, raw)
 
 	c := cell.NewCell(0, cell.CmdCerts)
 	c.Payload = payload
@@ -89,7 +87,7 @@ func TestEd25519Cert_WrongExtLenInterpretationRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	signingPub := make([]byte, 32)
-	expHours := uint32(time.Now().Add(24 * time.Hour).Unix() / 3600)
+	expHours := uint32(time.Now().Add(24*time.Hour).Unix() / 3600)
 	wrong := make([]byte, 0, 80)
 	wrong = append(wrong, 1, 4)
 	exp := make([]byte, 4)
