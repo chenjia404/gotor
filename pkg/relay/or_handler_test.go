@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/protocol"
 )
 
 // mockConn is a mock connection for testing
@@ -355,32 +358,69 @@ func TestSendCerts(t *testing.T) {
 		t.Fatalf("sendCerts failed: %v", err)
 	}
 
-	// Parse written cell
 	cells, err := conn.getWrittenCells(4)
 	if err != nil {
 		t.Fatalf("Failed to parse written cells: %v", err)
 	}
-
 	if len(cells) != 1 {
 		t.Fatalf("Expected 1 cell, got %d", len(cells))
 	}
-
 	c := cells[0]
 	if c.Command != cell.CmdCerts {
-		t.Errorf("Expected CERTS cell, got %s", c.Command)
+		t.Fatalf("Expected CERTS cell, got %s", c.Command)
 	}
 
-	// Parse CERTS payload
-	if len(c.Payload) < 1 {
-		t.Fatal("CERTS payload too short")
+	parsed, err := protocol.ParseCERTSCell(c)
+	if err != nil {
+		t.Fatalf("ParseCERTSCell: %v", err)
+	}
+	wantTypes := []protocol.CertType{
+		protocol.CertTypeTLSLink,
+		protocol.CertTypeRSAID,
+		protocol.CertTypeEd25519Signing,
+		protocol.CertTypeEd25519TLSLink,
+		protocol.CertTypeEd25519Identity,
+	}
+	if len(parsed.Certificates) != len(wantTypes) {
+		t.Fatalf("num certs = %d, want %d", len(parsed.Certificates), len(wantTypes))
+	}
+	for i, wt := range wantTypes {
+		if parsed.Certificates[i].CertType != wt {
+			t.Fatalf("cert[%d] type = %s, want %s", i, parsed.Certificates[i].CertType, wt)
+		}
+	}
+	if err := parsed.ValidateSignatures(); err != nil {
+		t.Fatalf("ValidateSignatures: %v", err)
+	}
+	if err := parsed.ValidateExpiration(); err != nil {
+		t.Fatalf("ValidateExpiration: %v", err)
 	}
 
-	numCerts := int(c.Payload[0])
-	if numCerts < 1 {
-		t.Error("Expected at least 1 certificate")
+	type4 := parsed.FindCertificate(protocol.CertTypeEd25519Signing)
+	if type4 == nil || type4.Ed25519Cert == nil {
+		t.Fatal("missing type 4")
+	}
+	if type4.Ed25519Cert.SignedWithEd25519Key() == nil {
+		t.Fatal("type 4 missing signed-with-ed25519-key extension")
+	}
+	if bytes.Equal(type4.Ed25519Cert.CertifiedKey, keys.Ed25519Public) {
+		t.Fatal("type 4 certified key must be medium-term signing key, not identity")
 	}
 
-	t.Logf("CERTS cell contains %d certificates", numCerts)
+	type5 := parsed.FindCertificate(protocol.CertTypeEd25519TLSLink)
+	if type5 == nil || type5.Ed25519Cert == nil {
+		t.Fatal("missing type 5")
+	}
+	if type5.Ed25519Cert.CertKeyType != protocol.CertKeyTypeSHA256OfX509 {
+		t.Fatalf("type 5 key type = %d, want SHA256_OF_X509", type5.Ed25519Cert.CertKeyType)
+	}
+	id, err := parsed.Ed25519IdentityKey()
+	if err != nil {
+		t.Fatalf("Ed25519IdentityKey: %v", err)
+	}
+	if !bytes.Equal(id, keys.Ed25519Public) {
+		t.Fatal("type 7 Ed25519 identity does not match relay key")
+	}
 }
 
 func TestSendNetinfo(t *testing.T) {
@@ -457,65 +497,71 @@ func TestReceiveNetinfo(t *testing.T) {
 	}
 }
 
-func TestBuildEd25519SigningCert(t *testing.T) {
+func TestBuildIdentitySigningCert(t *testing.T) {
 	keys := generateTestRelayKeys(t)
-	handler := NewLinkProtocolHandler(keys, nil)
-
-	cert, err := handler.buildEd25519SigningCert()
+	signPub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
-		t.Fatalf("buildEd25519SigningCert failed: %v", err)
+		t.Fatal(err)
 	}
-
-	// Validate cert structure
-	// Version (1) + CertType (1) + Expiration (4) + CertKeyType (1) +
-	// CertifiedKey (32) + NumExtensions (1) + Signature (64) = 104 bytes minimum
-	if len(cert) < 104 {
-		t.Errorf("Expected cert length >= 104, got %d", len(cert))
+	expires := time.Now().UTC().Add(24 * time.Hour)
+	raw, err := buildIdentitySigningCert(keys.Ed25519Private, signPub, expires)
+	if err != nil {
+		t.Fatalf("buildIdentitySigningCert: %v", err)
 	}
-
-	// Validate version
-	if cert[0] != 0x01 {
-		t.Errorf("Expected version 1, got %d", cert[0])
+	parsed, err := protocol.ParseEd25519Certificate(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-
-	// Validate cert type
-	if cert[1] != 0x04 {
-		t.Errorf("Expected cert type 4, got %d", cert[1])
+	if parsed.CertType != uint8(protocol.CertTypeEd25519Signing) {
+		t.Fatalf("cert type = %d, want 4", parsed.CertType)
 	}
-
-	// Validate number of extensions (at offset 38: 1+1+4+1+32-1 = 38)
-	numExtensionsOffset := 1 + 1 + 4 + 1 + 32 // version + certType + expiration + certKeyType + certifiedKey
-	numExtensions := cert[numExtensionsOffset]
-	if numExtensions != 0x00 {
-		t.Errorf("Expected 0 extensions, got %d", numExtensions)
+	if !bytes.Equal(parsed.CertifiedKey, signPub) {
+		t.Fatal("certified key is not the signing public key")
 	}
+	if !bytes.Equal(parsed.SignedWithEd25519Key(), keys.Ed25519Public) {
+		t.Fatal("signed-with-ed25519-key must be identity")
+	}
+	if err := parsed.VerifySignature(keys.Ed25519Public); err != nil {
+		t.Fatalf("VerifySignature: %v", err)
+	}
+}
 
-	// Validate signature (last 64 bytes after extensions section)
-	signatureOffset := numExtensionsOffset + 1 // after numExtensions byte
-	signature := cert[signatureOffset : signatureOffset+64]
-	certBody := cert[0:signatureOffset]
-
-	if !ed25519.Verify(keys.Ed25519Public, certBody, signature) {
-		t.Error("Ed25519 certificate signature verification failed")
+func TestBuildTLSLinkCert(t *testing.T) {
+	keys := generateTestRelayKeys(t)
+	_, signPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires := time.Now().UTC().Add(24 * time.Hour)
+	raw, err := buildTLSLinkCert(keys.TLSCert, signPriv, expires)
+	if err != nil {
+		t.Fatalf("buildTLSLinkCert: %v", err)
+	}
+	parsed, err := protocol.ParseEd25519Certificate(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed.CertType != uint8(protocol.CertTypeEd25519TLSLink) {
+		t.Fatalf("cert type = %d, want 5", parsed.CertType)
+	}
+	if parsed.CertKeyType != protocol.CertKeyTypeSHA256OfX509 {
+		t.Fatalf("key type = %d, want 3", parsed.CertKeyType)
+	}
+	sum := sha256.Sum256(keys.TLSCert)
+	if !bytes.Equal(parsed.CertifiedKey, sum[:]) {
+		t.Fatal("type 5 certified key is not SHA-256 of TLS certificate")
+	}
+	if err := parsed.VerifySignature(signPriv.Public().(ed25519.PublicKey)); err != nil {
+		t.Fatalf("VerifySignature: %v", err)
 	}
 }
 
 func generateTestRelayKeys(t *testing.T) *RelayKeys {
 	t.Helper()
-
-	// Generate Ed25519 keys
-	pub, priv, err := ed25519.GenerateKey(nil)
+	keys, err := GenerateRelayKeys()
 	if err != nil {
-		t.Fatalf("Failed to generate Ed25519 key: %v", err)
+		t.Fatalf("GenerateRelayKeys: %v", err)
 	}
-
-	// Create minimal keys
-	keys := &RelayKeys{
-		Ed25519Public:  pub,
-		Ed25519Private: priv,
-		TLSCert:        make([]byte, 100), // Dummy cert
-	}
-
 	return keys
 }
 
@@ -574,7 +620,7 @@ func TestHandleConnectionSwitchesCircIDAfterVersions(t *testing.T) {
 		t.Fatalf("server VERSIONS prefix = %x, want 00 00 07", written)
 	}
 
-	// VERSIONS 2 字节帧之后，CERTS / NETINFO 必须是协商后的 4 字节 CircID
+	// VERSIONS 2 字节帧之后：CERTS / AUTH_CHALLENGE / NETINFO 必须是 4 字节 CircID
 	r := bytes.NewReader(written)
 	versionsOut, err := cell.DecodeCellLink(r, 2)
 	if err != nil {
@@ -590,11 +636,249 @@ func TestHandleConnectionSwitchesCircIDAfterVersions(t *testing.T) {
 	if certsOut.Command != cell.CmdCerts {
 		t.Fatalf("second written cell = %s, want CERTS", certsOut.Command)
 	}
+	authOut, err := cell.DecodeCellLink(r, 4)
+	if err != nil {
+		t.Fatalf("decode server AUTH_CHALLENGE with 4-byte CircID: %v", err)
+	}
+	if authOut.Command != cell.CmdAuthChallenge {
+		t.Fatalf("third written cell = %s, want AUTH_CHALLENGE", authOut.Command)
+	}
 	netinfoOut, err := cell.DecodeCellLink(r, 4)
 	if err != nil {
 		t.Fatalf("decode server NETINFO with 4-byte CircID: %v", err)
 	}
 	if netinfoOut.Command != cell.CmdNetinfo {
-		t.Fatalf("third written cell = %s, want NETINFO", netinfoOut.Command)
+		t.Fatalf("fourth written cell = %s, want NETINFO", netinfoOut.Command)
+	}
+	if r.Len() != 0 {
+		t.Fatalf("unexpected trailing handshake bytes: %d", r.Len())
+	}
+
+	parsed, err := protocol.ParseCERTSCell(certsOut)
+	if err != nil {
+		t.Fatalf("ParseCERTSCell: %v", err)
+	}
+	if err := parsed.ValidateSignatures(); err != nil {
+		t.Fatalf("handshake CERTS ValidateSignatures: %v", err)
+	}
+	if err := assertAuthChallengePayload(authOut.Payload); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSendAuthChallenge(t *testing.T) {
+	handler := NewLinkProtocolHandler(generateTestRelayKeys(t), nil)
+	handler.setCircIDLen(4)
+	conn := newMockConn()
+	if err := handler.sendAuthChallenge(conn); err != nil {
+		t.Fatal(err)
+	}
+	cells, err := conn.getWrittenCells(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cells) != 1 || cells[0].Command != cell.CmdAuthChallenge {
+		t.Fatalf("got %+v", cells)
+	}
+	if err := assertAuthChallengePayload(cells[0].Payload); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertAuthChallengePayload(p []byte) error {
+	if len(p) < 36 {
+		return fmt.Errorf("AUTH_CHALLENGE too short: %d", len(p))
+	}
+	n := int(binary.BigEndian.Uint16(p[32:34]))
+	if n < 1 {
+		return fmt.Errorf("N_Methods = %d", n)
+	}
+	if len(p) < 34+2*n {
+		return fmt.Errorf("AUTH_CHALLENGE truncated methods")
+	}
+	var has3 bool
+	for i := 0; i < n; i++ {
+		m := binary.BigEndian.Uint16(p[34+2*i : 36+2*i])
+		if m == authMethodEd25519SHA256RFC5705 {
+			has3 = true
+		}
+	}
+	if !has3 {
+		return fmt.Errorf("AUTH_CHALLENGE missing method 3")
+	}
+	return nil
+}
+
+func TestReceiveNetinfoSkipsInitiatorHandshakeCells(t *testing.T) {
+	handler := NewLinkProtocolHandler(generateTestRelayKeys(t), nil)
+	handler.setCircIDLen(4)
+
+	var buf bytes.Buffer
+	certs := cell.NewCell(0, cell.CmdCerts)
+	certs.Payload = []byte{0}
+	if err := certs.EncodeLink(&buf, 4); err != nil {
+		t.Fatal(err)
+	}
+	auth := cell.NewCell(0, cell.CmdAuthenticate)
+	auth.Payload = []byte{0, 3, 0, 4, 0, 0, 0, 0}
+	if err := auth.EncodeLink(&buf, 4); err != nil {
+		t.Fatal(err)
+	}
+	pad := cell.NewCell(0, cell.CmdVPadding)
+	pad.Payload = []byte{1, 2, 3}
+	if err := pad.EncodeLink(&buf, 4); err != nil {
+		t.Fatal(err)
+	}
+	netinfo := cell.NewCell(0, cell.CmdNetinfo)
+	netinfo.Payload = []byte{0, 0, 0, 1, 0x04, 4, 127, 0, 0, 1, 0}
+	if err := netinfo.EncodeLink(&buf, 4); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := newMockConn()
+	conn.addReadData(buf.Bytes())
+	if err := handler.receiveNetinfo(context.Background(), conn); err != nil {
+		t.Fatalf("receiveNetinfo: %v", err)
+	}
+}
+
+func TestHandleConnectionAuthorityInitiatorCells(t *testing.T) {
+	handler := NewLinkProtocolHandler(generateTestRelayKeys(t), nil)
+
+	var inbound bytes.Buffer
+	inbound.Write(inboundVersionsWire2())
+	certs := cell.NewCell(0, cell.CmdCerts)
+	certs.Payload = []byte{0}
+	if err := certs.EncodeLink(&inbound, 4); err != nil {
+		t.Fatal(err)
+	}
+	auth := cell.NewCell(0, cell.CmdAuthenticate)
+	auth.Payload = []byte{0, 3, 0, 0}
+	if err := auth.EncodeLink(&inbound, 4); err != nil {
+		t.Fatal(err)
+	}
+	netinfo := cell.NewCell(0, cell.CmdNetinfo)
+	netinfo.Payload = []byte{0, 0, 0, 1, 0x04, 4, 10, 0, 0, 1, 0}
+	if err := netinfo.EncodeLink(&inbound, 4); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := newMockConn()
+	conn.addReadData(inbound.Bytes())
+	orConn, err := handler.HandleConnection(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("HandleConnection: %v", err)
+	}
+	if orConn.negotiatedVersion != 5 || orConn.circIDLen != 4 {
+		t.Fatalf("version=%d circIDLen=%d", orConn.negotiatedVersion, orConn.circIDLen)
+	}
+}
+
+func TestInboundHandshakeNetPipeClientNetinfo(t *testing.T) {
+	runInboundHandshakePipe(t, false)
+}
+
+func TestInboundHandshakeNetPipeRelayInitiator(t *testing.T) {
+	runInboundHandshakePipe(t, true)
+}
+
+func runInboundHandshakePipe(t *testing.T, initiatorIsRelay bool) {
+	t.Helper()
+	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() {
+		serverConn.Close()
+		clientConn.Close()
+	})
+	_ = serverConn.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = clientConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	handler := NewLinkProtocolHandler(generateTestRelayKeys(t), nil)
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := handler.HandleConnection(context.Background(), serverConn)
+		errCh <- err
+	}()
+
+	if _, err := clientConn.Write(inboundVersionsWire2()); err != nil {
+		t.Fatal(err)
+	}
+	versions, err := cell.DecodeCellLink(clientConn, 2)
+	if err != nil {
+		t.Fatalf("read VERSIONS: %v", err)
+	}
+	if versions.Command != cell.CmdVersions {
+		t.Fatalf("first cell = %s", versions.Command)
+	}
+	certs, err := cell.DecodeCellLink(clientConn, 4)
+	if err != nil {
+		t.Fatalf("read CERTS: %v", err)
+	}
+	if certs.Command != cell.CmdCerts {
+		t.Fatalf("second cell = %s", certs.Command)
+	}
+	parsed, err := protocol.ParseCERTSCell(certs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parsed.ValidateSignatures(); err != nil {
+		t.Fatalf("CERTS chain: %v", err)
+	}
+	auth, err := cell.DecodeCellLink(clientConn, 4)
+	if err != nil {
+		t.Fatalf("read AUTH_CHALLENGE: %v", err)
+	}
+	if auth.Command != cell.CmdAuthChallenge {
+		t.Fatalf("third cell = %s", auth.Command)
+	}
+	if err := assertAuthChallengePayload(auth.Payload); err != nil {
+		t.Fatal(err)
+	}
+	netinfoIn, err := cell.DecodeCellLink(clientConn, 4)
+	if err != nil {
+		t.Fatalf("read NETINFO: %v", err)
+	}
+	if netinfoIn.Command != cell.CmdNetinfo {
+		t.Fatalf("fourth cell = %s", netinfoIn.Command)
+	}
+
+	if initiatorIsRelay {
+		dummy := cell.NewCell(0, cell.CmdCerts)
+		dummy.Payload = []byte{0}
+		if err := dummy.EncodeLink(clientConn, 4); err != nil {
+			t.Fatal(err)
+		}
+		authen := cell.NewCell(0, cell.CmdAuthenticate)
+		authen.Payload = []byte{0, 3, 0, 0}
+		if err := authen.EncodeLink(clientConn, 4); err != nil {
+			t.Fatal(err)
+		}
+	}
+	netinfoOut := cell.NewCell(0, cell.CmdNetinfo)
+	netinfoOut.Payload = []byte{0, 0, 0, 1, 0x04, 4, 127, 0, 0, 1, 0}
+	if err := netinfoOut.EncodeLink(clientConn, 4); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("server handshake: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server handshake timeout")
+	}
+}
+
+func TestSendCertsRejectsIncompleteKeys(t *testing.T) {
+	handler := NewLinkProtocolHandler(&RelayKeys{}, nil)
+	if err := handler.sendCerts(newMockConn()); err == nil {
+		t.Fatal("expected error for empty keys")
+	}
+
+	keys := generateTestRelayKeys(t)
+	keys.TLSCert = []byte("not-a-certificate")
+	handler = NewLinkProtocolHandler(keys, nil)
+	if err := handler.sendCerts(newMockConn()); err == nil {
+		t.Fatal("expected error for invalid TLS certificate")
 	}
 }

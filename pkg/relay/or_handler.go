@@ -3,7 +3,7 @@ package relay
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -12,6 +12,13 @@ import (
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/security"
+)
+
+// AUTH_CHALLENGE 方法（tor-spec negotiating-channels）。
+const (
+	authMethodRSASHA256TLSSecret   uint16 = 1 // 已过时，仍宣告以免旧发起方无法选方法
+	authMethodEd25519SHA256RFC5705 uint16 = 3 // LinkAuth=3
+	authChallengeLen                      = 32
 )
 
 // ServerORConnection holds server-side OR connection state
@@ -44,14 +51,11 @@ func NewLinkProtocolHandler(keys *RelayKeys, log *logger.Logger) *LinkProtocolHa
 	}
 }
 
-// HandleConnection performs the server-side link protocol handshake
-// Per tor-spec.txt §2, the server:
-// 1. Receives VERSIONS from client
-// 2. Sends VERSIONS response
-// 3. Sends CERTS cell with identity certificates
-// 4. Sends AUTH_CHALLENGE (optional)
-// 5. Sends NETINFO
-// 6. Receives NETINFO from client
+// HandleConnection 做应答方 link 握手（tor-spec negotiating-channels）。
+//
+// 顺序：收 VERSIONS（CircID=2）→ 发 VERSIONS（仍 2）→ 协商后切 4 字节
+// → 发 CERTS → 发 AUTH_CHALLENGE → 发 NETINFO → 收发起方 NETINFO
+// （权威作为中继发起时还会先发 CERTS+AUTHENTICATE，读时跳过）。
 func (h *LinkProtocolHandler) HandleConnection(ctx context.Context, conn net.Conn) (*ServerORConnection, error) {
 	orConn := &ServerORConnection{
 		conn:       conn,
@@ -90,20 +94,18 @@ func (h *LinkProtocolHandler) HandleConnection(ctx context.Context, conn net.Con
 	}
 	orConn.circIDLen = h.circIDWidth()
 
-	// Step 3: Send CERTS cell
 	if err := h.sendCerts(conn); err != nil {
 		return nil, fmt.Errorf("failed to send CERTS: %w", err)
 	}
 
-	// Step 4: Send AUTH_CHALLENGE (optional, not implemented yet)
-	// This would be needed for client authentication
+	if err := h.sendAuthChallenge(conn); err != nil {
+		return nil, fmt.Errorf("failed to send AUTH_CHALLENGE: %w", err)
+	}
 
-	// Step 5: Send NETINFO
 	if err := h.sendNetinfo(conn); err != nil {
 		return nil, fmt.Errorf("failed to send NETINFO: %w", err)
 	}
 
-	// Step 6: Receive NETINFO from client
 	if err := h.receiveNetinfo(ctx, conn); err != nil {
 		return nil, fmt.Errorf("failed to receive client NETINFO: %w", err)
 	}
@@ -173,119 +175,42 @@ func (h *LinkProtocolHandler) sendVersions(conn net.Conn) error {
 	return h.writeCell(conn, versionsCell)
 }
 
-// sendCerts sends a CERTS cell with the relay's identity certificates
-// Per tor-spec.txt §4.2
 func (h *LinkProtocolHandler) sendCerts(conn net.Conn) error {
-	// Build CERTS cell payload
-	// Format: N (1 byte) || N times: (CertType (1) || CLEN (2) || Certificate (CLEN))
-
-	var payload []byte
-
-	// Count certificates we'll send
-	numCerts := 0
-	var certs []struct {
-		certType byte
-		certData []byte
+	payload, err := h.buildCERTSPayload()
+	if err != nil {
+		return err
 	}
-
-	// Cert 1: TLS link certificate (type 1)
-	if h.keys.TLSCert != nil {
-		certs = append(certs, struct {
-			certType byte
-			certData []byte
-		}{0x01, h.keys.TLSCert})
-		numCerts++
-	}
-
-	// Cert 2: RSA identity certificate (type 2)
-	// Use the same TLS cert for RSA identity (simplified approach)
-	if h.keys.TLSCert != nil {
-		certs = append(certs, struct {
-			certType byte
-			certData []byte
-		}{0x02, h.keys.TLSCert})
-		numCerts++
-	}
-
-	// Cert 4: Ed25519 signing key certificate (type 4)
-	// Generate a simple Ed25519 cert per cert-spec.txt
-	if h.keys.Ed25519Private != nil {
-		ed25519Cert, err := h.buildEd25519SigningCert()
-		if err != nil {
-			h.logger.Warn("Failed to build Ed25519 signing cert", "error", err)
-		} else {
-			certs = append(certs, struct {
-				certType byte
-				certData []byte
-			}{0x04, ed25519Cert})
-			numCerts++
-		}
-	}
-
-	// Build payload
-	payload = append(payload, byte(numCerts))
-	for _, cert := range certs {
-		payload = append(payload, cert.certType)
-		certLen := uint16(len(cert.certData))
-		payload = append(payload, byte(certLen>>8), byte(certLen))
-		payload = append(payload, cert.certData...)
-	}
-
 	certsCell := cell.NewCell(0, cell.CmdCerts)
 	certsCell.Payload = payload
-
-	h.logger.Debug("Sending CERTS cell", "num_certs", numCerts)
+	h.logger.Debug("Sending CERTS cell", "num_certs", int(payload[0]))
 	return h.writeCell(conn, certsCell)
 }
 
-// buildEd25519SigningCert builds a simple Ed25519 signing certificate
-// Per cert-spec.txt §2.1
-func (h *LinkProtocolHandler) buildEd25519SigningCert() ([]byte, error) {
-	// Build minimal Ed25519 certificate
-	// Format: Version (1) || CertType (1) || ExpirationDate (4) || CertKeyType (1) ||
-	//         CertifiedKey (32) || NumExtensions (1) || Signature (64)
+// sendAuthChallenge 发应答方 AUTH_CHALLENGE。权威作为中继发起时必须能选方法 3。
+// 本轮只发挑战，不校验 AUTHENTICATE（清单 LinkAuth=3 另做）。
+func (h *LinkProtocolHandler) sendAuthChallenge(conn net.Conn) error {
+	challenge := make([]byte, authChallengeLen)
+	if _, err := rand.Read(challenge); err != nil {
+		return fmt.Errorf("generate AUTH_CHALLENGE: %w", err)
+	}
+	methods := []uint16{authMethodRSASHA256TLSSecret, authMethodEd25519SHA256RFC5705}
+	payload := make([]byte, 0, authChallengeLen+2+2*len(methods))
+	payload = append(payload, challenge...)
+	nMethods := uint16(len(methods))
+	payload = append(payload, byte(nMethods>>8), byte(nMethods))
+	for _, m := range methods {
+		payload = append(payload, byte(m>>8), byte(m))
+	}
 
-	var cert []byte
-
-	// Version 1
-	cert = append(cert, 0x01)
-
-	// CertType 4 (Ed25519 signing key)
-	cert = append(cert, 0x04)
-
-	// Expiration date (4 bytes, hours since epoch)
-	expiresAt := time.Now().Add(365 * 24 * time.Hour) // 1 year
-	hoursSinceEpoch := uint32(expiresAt.Unix() / 3600)
-	cert = append(cert,
-		byte(hoursSinceEpoch>>24),
-		byte(hoursSinceEpoch>>16),
-		byte(hoursSinceEpoch>>8),
-		byte(hoursSinceEpoch))
-
-	// CertKeyType 1 (Ed25519 key)
-	cert = append(cert, 0x01)
-
-	// Certified key (32 bytes Ed25519 public key)
-	cert = append(cert, h.keys.Ed25519Public...)
-
-	// Number of extensions (0)
-	cert = append(cert, 0x00)
-
-	// Sign the certificate body with the identity key
-	signature := ed25519.Sign(h.keys.Ed25519Private, cert)
-	cert = append(cert, signature...)
-
-	return cert, nil
+	ch := cell.NewCell(0, cell.CmdAuthChallenge)
+	ch.Payload = payload
+	h.logger.Debug("Sending AUTH_CHALLENGE cell", "methods", methods)
+	return h.writeCell(conn, ch)
 }
 
-// sendNetinfo sends a NETINFO cell to the client
 func (h *LinkProtocolHandler) sendNetinfo(conn net.Conn) error {
-	// NETINFO format per tor-spec.txt §4.5:
-	// Timestamp (4) || OtherAddress || NumAddresses (1) || Addresses
-
 	var payload []byte
 
-	// Timestamp (current time in seconds since epoch)
 	now := time.Now()
 	timestamp, err := security.SafeUnixToUint32(now)
 	if err != nil {
@@ -298,45 +223,71 @@ func (h *LinkProtocolHandler) sendNetinfo(conn net.Conn) error {
 		byte(timestamp>>8),
 		byte(timestamp))
 
-	// OtherAddress (client's address as we see it)
-	// Type 0x04 (IPv4) || Length || Address
-	if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok && tcpAddr.IP.To4() != nil {
-		payload = append(payload, 0x04) // IPv4
-		payload = append(payload, 4)    // 4 bytes
-		payload = append(payload, tcpAddr.IP.To4()...)
-	} else {
-		// Unknown address type, use 0.0.0.0
-		payload = append(payload, 0x04, 4, 0, 0, 0, 0)
-	}
+	payload = append(payload, encodeLinkAddress(addrIP(conn.RemoteAddr()))...)
 
-	// NumAddresses (our addresses) - for simplicity, send 0
-	payload = append(payload, 0)
+	var my [][]byte
+	if ip := usableIP(addrIP(conn.LocalAddr())); ip != nil {
+		my = append(my, encodeLinkAddress(ip))
+	}
+	payload = append(payload, byte(len(my))) // #nosec G115 — 至多 1 个
+	for _, a := range my {
+		payload = append(payload, a...)
+	}
 
 	netinfoCell := cell.NewCell(0, cell.CmdNetinfo)
 	netinfoCell.Payload = payload
-
 	h.logger.Debug("Sending NETINFO cell")
 	return h.writeCell(conn, netinfoCell)
 }
 
-// receiveNetinfo receives and validates the client's NETINFO cell
+func addrIP(addr net.Addr) net.IP {
+	tcp, ok := addr.(*net.TCPAddr)
+	if !ok || tcp == nil {
+		return nil
+	}
+	return tcp.IP
+}
+
+func usableIP(ip net.IP) net.IP {
+	if ip == nil || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLoopback() {
+		return nil
+	}
+	return ip
+}
+
+func encodeLinkAddress(ip net.IP) []byte {
+	if v4 := ip.To4(); v4 != nil {
+		return append([]byte{0x04, 4}, v4...)
+	}
+	if v6 := ip.To16(); v6 != nil && ip.To4() == nil {
+		return append([]byte{0x06, 16}, v6...)
+	}
+	return []byte{0x04, 4, 0, 0, 0, 0}
+}
+
+// receiveNetinfo 等到发起方 NETINFO。NETINFO 是握手结束标记。
+// 客户端只发 NETINFO；权威作为中继发起时会先发 CERTS+AUTHENTICATE。
+// VPADDING 在 VERSIONS 之后任意数量、任意位置都允许。
 func (h *LinkProtocolHandler) receiveNetinfo(ctx context.Context, conn net.Conn) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	cellData, err := h.readCellWithContext(ctx, conn)
-	if err != nil {
-		return err
+	for {
+		cellData, err := h.readCellWithContext(ctx, conn)
+		if err != nil {
+			return err
+		}
+		switch cellData.Command {
+		case cell.CmdNetinfo:
+			h.logger.Debug("Received NETINFO cell")
+			return nil
+		case cell.CmdPadding, cell.CmdVPadding, cell.CmdCerts, cell.CmdAuthenticate, cell.CmdAuthChallenge:
+			h.logger.Debug("Skipping cell while waiting for NETINFO", "command", cellData.Command)
+			continue
+		default:
+			return fmt.Errorf("expected NETINFO cell, got %s", cellData.Command)
+		}
 	}
-
-	if cellData.Command != cell.CmdNetinfo {
-		return fmt.Errorf("expected NETINFO cell, got %s", cellData.Command)
-	}
-
-	h.logger.Debug("Received NETINFO cell")
-	// For now, just validate we received it
-	// Full parsing would extract timestamp and addresses
-	return nil
 }
 
 func (h *LinkProtocolHandler) circIDWidth() int {

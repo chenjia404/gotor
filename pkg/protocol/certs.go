@@ -4,6 +4,7 @@ package protocol
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1" // #nosec G505 - SHA-1 required by Tor spec for RSA fingerprints
 	"crypto/sha256"
@@ -32,6 +33,13 @@ const rsaEd25519CrossCertSignedLen = 36
 // ExtTypeSignedWithEd25519Key 是 cert-spec 的 signed-with-ed25519-key 扩展。
 // ExtLen=32，ExtData 为签名所用的 Ed25519 公钥。
 const ExtTypeSignedWithEd25519Key uint8 = 0x04
+
+// Ed25519 证书 CERT_KEY_TYPE（cert-spec）。
+const (
+	CertKeyTypeEd25519      uint8 = 1 // 32 字节 Ed25519 公钥
+	CertKeyTypeSHA256OfRSA  uint8 = 2 // SHA-256(RSA key)，现行 CERTS 不用
+	CertKeyTypeSHA256OfX509 uint8 = 3 // SHA-256(DER X.509)，type 5 TLS 绑定
+)
 
 // CertType represents the type of certificate in a CERTS cell
 // Per tor-spec.txt §4.2, different cert types serve different purposes
@@ -590,6 +598,53 @@ func reconstructRSAEd25519CrossCertFields(cross *Ed25519Certificate) []byte {
 	binary.BigEndian.PutUint32(exp, uint32(cross.ExpiresAt.Unix()/3600))
 	fields = append(fields, exp...)
 	return fields
+}
+
+// EncodeRSAEd25519CrossCert 生成 CERTS type 7：RSA→Ed25519 交叉证书。
+// 线上格式：KEY(32) || EXPIRATION(4) || SIGLEN(1) || SIGNATURE。
+// 签名覆盖 PREFIX || KEY || EXP（不含 SIGLEN），与 C Tor / Verify 一致。
+func EncodeRSAEd25519CrossCert(edID ed25519.PublicKey, rsaPriv *rsa.PrivateKey, expires time.Time) ([]byte, error) {
+	if len(edID) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("invalid Ed25519 identity length: %d", len(edID))
+	}
+	if rsaPriv == nil {
+		return nil, fmt.Errorf("RSA identity private key is required")
+	}
+	if rsaPriv.Size() > 255 {
+		return nil, fmt.Errorf("RSA signature length %d exceeds SIGLEN (1 byte)", rsaPriv.Size())
+	}
+
+	hours := expires.Unix() / 3600
+	if hours < 0 {
+		hours = 0
+	}
+	if hours > 0xffffffff {
+		hours = 0xffffffff
+	}
+
+	fields := make([]byte, 0, rsaEd25519CrossCertSignedLen)
+	fields = append(fields, edID...)
+	exp := make([]byte, 4)
+	binary.BigEndian.PutUint32(exp, uint32(hours)) // #nosec G115 — 已夹紧到 0..2^32-1
+	fields = append(fields, exp...)
+
+	msg := make([]byte, 0, len(rsaEd25519CrossCertPrefix)+len(fields))
+	msg = append(msg, rsaEd25519CrossCertPrefix...)
+	msg = append(msg, fields...)
+	digest := sha256.Sum256(msg)
+	sig, err := rsa.SignPKCS1v15(rand.Reader, rsaPriv, 0, digest[:])
+	if err != nil {
+		return nil, fmt.Errorf("sign type 7 cross-cert: %w", err)
+	}
+	if len(sig) != rsaPriv.Size() {
+		return nil, fmt.Errorf("RSA signature length %d != key size %d", len(sig), rsaPriv.Size())
+	}
+
+	out := make([]byte, 0, len(fields)+1+len(sig))
+	out = append(out, fields...)
+	out = append(out, byte(len(sig))) // #nosec G115 — Size() 已检查 ≤255
+	out = append(out, sig...)
+	return out, nil
 }
 
 // ValidateSignatures 校验 CERTS 证书链。
