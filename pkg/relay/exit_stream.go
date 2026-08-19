@@ -233,7 +233,9 @@ func resolveBeginIPs(ctx context.Context, host string) ([]net.IP, error) {
 	if ip := net.ParseIP(host); ip != nil {
 		return []net.IP{ip}, nil
 	}
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	// 出口按 Tor 规范在本机解析主机名（非客户端路径）
+	r := &net.Resolver{PreferGo: true}
+	addrs, err := r.LookupIPAddr(ctx, host)
 	if err != nil {
 		return nil, err
 	}

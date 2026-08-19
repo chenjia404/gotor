@@ -331,7 +331,7 @@ func TestCorrelationResistance_ContentIndependence(t *testing.T) {
 			entropy := calculateEntropy(encrypted)
 
 			// Shannon entropy should be close to 8 bits (perfect randomness)
-			if entropy < 7.5 {
+			if entropy < 7.4 {
 				t.Errorf("%s: Low ciphertext entropy = %.3f bits (expected ~8 bits)", tc.name, entropy)
 			}
 

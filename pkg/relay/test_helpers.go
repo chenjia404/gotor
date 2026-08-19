@@ -4,17 +4,17 @@ package relay
 import (
 	"io"
 	"net"
+	"sync"
 	"time"
 )
 
 // testMockConn is a mock connection for testing
-// This is a separate implementation from mockConn in or_handler_test.go
-// to avoid conflicts when running individual test files
 type testMockConn struct {
+	mu          sync.Mutex
 	readData    []byte
 	readPos     int
 	writeData   []byte
-	writtenData [][]byte // Track individual writes
+	writtenData [][]byte
 	closed      bool
 }
 
@@ -26,6 +26,8 @@ func newTestMockConn() *testMockConn {
 }
 
 func (m *testMockConn) Read(b []byte) (n int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.readPos >= len(m.readData) {
 		return 0, io.EOF
 	}
@@ -35,16 +37,18 @@ func (m *testMockConn) Read(b []byte) (n int, err error) {
 }
 
 func (m *testMockConn) Write(b []byte) (n int, err error) {
-	// Track the write
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	data := make([]byte, len(b))
 	copy(data, b)
 	m.writtenData = append(m.writtenData, data)
-	// Also append to the aggregate writeData for backward compatibility
 	m.writeData = append(m.writeData, b...)
 	return len(b), nil
 }
 
 func (m *testMockConn) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.closed = true
 	return nil
 }
