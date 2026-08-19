@@ -222,7 +222,7 @@ func (a *CircuitAdapter) InstallHSHop(circuitID uint32, keyMaterial []byte) erro
 	if err != nil {
 		return err
 	}
-	if err := circ.AddHop(hop); err != nil {
+	if err := circ.AddHSHop(hop); err != nil {
 		return fmt.Errorf("add HS hop: %w", err)
 	}
 	a.logger.Info("Installed HS rendezvous crypto hop", "circuit_id", circuitID)

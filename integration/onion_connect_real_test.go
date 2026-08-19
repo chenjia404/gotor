@@ -96,12 +96,25 @@ func TestRealOnionConnect(t *testing.T) {
 
 	circID, err := client.ConnectToOnionService(ctx, addr)
 	if err != nil {
-		// 进度验收：若已过描述符+会合/引言，记录错误供后续迭代
 		t.Logf("ConnectToOnionService: %v", err)
 		if desc != nil && len(desc.IntroPoints) > 0 {
-			t.Skip("descriptor+intro available; full rendezvous e2e pending service-side completion: " + err.Error())
+			t.Skip("descriptor+intro available; full rendezvous e2e pending: " + err.Error())
 		}
 		t.Fatalf("ConnectToOnionService: %v", err)
 	}
 	t.Logf("onion connect OK rendezvous_circuit=%d", circID)
+
+	circ, err := mgr.GetCircuit(circID)
+	if err != nil {
+		t.Fatalf("GetCircuit: %v", err)
+	}
+	sid, err := circ.AllocateStreamID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer circ.ReleaseStreamID(sid)
+	if err := circ.OpenStream(ctx, sid, "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion", 80); err != nil {
+		t.Fatalf("RELAY_BEGIN on rendezvous: %v", err)
+	}
+	t.Logf("RELAY_BEGIN CONNECTED on rendezvous stream=%d", sid)
 }
