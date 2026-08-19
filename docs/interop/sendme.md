@@ -41,3 +41,9 @@ body 仍为空，接收方忽略。窗口 500，每 50 cell +50。
 ## 真实网络
 
 `TestRealFlowControlSoak`：SOCKS5 重复拉取 `www.torproject.org`，合计 **1059120** 字节，电路未 DESTROY（FlowCtrl=2 Vegas + SENDME v1）。
+
+`TestRealFlowControlSoak10MB`（2026-08-19）：**10497056** 字节，ok_rounds=446，fail_rounds=1，电路未 DESTROY。
+
+`TestRealFlowControlMultiStream`（2026-08-19）：4 流合计 **753152** 字节。Stream Manager 已按 `(circuitID, streamID)` 索引，无全局撞号。
+
+本项（P0.2）已标 WORKING。可选 `TOR_SOAK_100MB=1` 不阻塞。

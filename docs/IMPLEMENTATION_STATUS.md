@@ -84,13 +84,16 @@
 
 #### 2. 更大流量 soak + SENDME 回归
 
-- **状态**：PARTIAL（代码已实现 window=0 等待 + orconn 阻塞启发式；10/100MB 真实验收待跑）。
+- **状态**：WORKING（2026-08-19）。
 - **已做**：
   - `SendRelayCell` 在电路/流窗口用尽时等待 SENDME，而不是立刻失败
   - OR 连接 `WriteBlocked()`：发送排队 >1，或单次 TLS 写出 ≥100ms（只报一次，避免 sticky 误伤 Vegas）
+  - Stream Manager 按 `(circuitID, streamID)` 索引（修复多电路并发撞号）
   - 集成：`TestRealFlowControlSoak10MB`、`TestRealFlowControlMultiStream`、`TestRealFlowControlSoak100MB`（需 `TOR_SOAK_100MB=1`）
-- **验收**：电路存活、SENDME v1 digest FIFO 匹配、无重复 SENDME。10MB / 多流通过后标 WORKING。
-- **现有代码**：`pkg/circuit/sendme.go`、`pkg/connection/connection.go`、`integration/e2e_real_tor_test.go`
+- **真实网络（2026-08-19）**：
+  - `TestRealFlowControlSoak10MB`：**10497056** 字节，ok_rounds=446，fail_rounds=1，电路未 DESTROY
+  - `TestRealFlowControlMultiStream`：4 流合计 **753152** 字节；无 `stream ID already in use`
+- **现有代码**：`pkg/circuit/sendme.go`、`pkg/connection/connection.go`、`pkg/stream/stream.go`、`integration/e2e_real_tor_test.go`
 
 ### P1 — 最新电路加密方向（尚未 required，但 mainnet 已宣告）
 
@@ -314,14 +317,17 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 - **Relay=6 CGO**：AES-128 UIV+、v1 cell、DATA 上限 488。真实 3-hop + `IsTor=true` + soak 1059120。
 - **缺口**：官方 v0 relay-cell 向量。
 
-### SENDME / Flow control — PARTIAL
+### SENDME / Flow control — WORKING
 
 - 未协商 CC：circuit window 1000 / +100；stream 500 / +50。
 - 电路级 SENDME v1：DIGEST=触发 cell 的完整 20 字节滚动 SHA-1；FIFO 匹配失败拆路。
 - 协商 CC 后启用 TOR_VEGAS：间隔 `sendme_inc`，初始 cwnd=`cc_cwnd_init`（默认 124，不是 186）。
 - 流级 SENDME 仍为空（spec）。
-- **真实网络（2026-08-19）**：soak **1059120** 字节，`rafsnicesrelay` → `janina1` → `NTH66R5`，未拆路。
-- **剩余**：10–100MB 真实验收。orconn 阻塞启发式已接线。见 P0.2。
+- **真实网络（2026-08-19）**：
+  - 1MB soak：**1059120** 字节（历史）
+  - 10MB soak：**10497056** 字节，ok=446 / fail=1，未 DESTROY
+  - 多流：**753152** 字节（4 流）；StreamID 按电路索引后无撞号
+- 可选：`TOR_SOAK_100MB=1` 超大 soak（不阻塞 WORKING）。
 
 ### SOCKS5 / DNS — WORKING
 
