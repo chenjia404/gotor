@@ -45,10 +45,11 @@ type streamKey struct {
 }
 
 type exitStream struct {
-	conn          net.Conn
-	cancel        context.CancelFunc
-	packageWindow int
-	deliverCount  int
+	conn           net.Conn
+	cancel         context.CancelFunc
+	packageWindow  int // 向客户端发送
+	deliverWindow  int // 允许再收多少客户端 DATA（扣减后靠我们发的 SENDME 恢复对端，本端防灌）
+	deliverCount   int
 }
 
 func NewExitStreamManager(policy *ExitPolicy, log *logger.Logger) *ExitStreamManager {
@@ -148,7 +149,11 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 	}
 	m.mu.Unlock()
 
-	ips, err := resolveBeginIPs(ctx, addr)
+	rctx := ctx
+	if circ.ctx != nil {
+		rctx = circ.ctx
+	}
+	ips, err := resolveBeginIPs(rctx, addr)
 	if err != nil || len(ips) == 0 {
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonResolveFailed)
 	}
@@ -166,8 +171,12 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 	}
 
 	target := net.JoinHostPort(dialIP.String(), strconv.Itoa(int(port)))
+	dctx := ctx
+	if circ.ctx != nil {
+		dctx = circ.ctx
+	}
 	d := net.Dialer{Timeout: 15 * time.Second}
-	c, err := d.DialContext(ctx, "tcp", target)
+	c, err := d.DialContext(dctx, "tcp", target)
 	if err != nil {
 		m.logger.Debug("exit dial failed", "target", target, "error", err)
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonConnRefused)
@@ -199,12 +208,16 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 		return err
 	}
 
-	sctx, cancel := context.WithCancel(ctx)
+	sctx, cancel := context.WithCancel(circ.ctx)
+	if circ.ctx == nil {
+		sctx, cancel = context.WithCancel(ctx)
+	}
 	m.mu.Lock()
 	m.streams[key] = &exitStream{
 		conn:          c,
 		cancel:        cancel,
 		packageWindow: exitStreamWindowInit,
+		deliverWindow: exitStreamWindowInit,
 	}
 	m.circStreams[circ.CircuitID]++
 	if _, ok := m.circOutWindow[circ.CircuitID]; !ok {
@@ -235,27 +248,43 @@ func resolveBeginIPs(ctx context.Context, host string) ([]net.IP, error) {
 func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn, streamID uint16, data []byte) error {
 	m.mu.Lock()
 	es := m.streams[streamKey{circ.CircuitID, streamID}]
-	m.mu.Unlock()
 	if es == nil || es.conn == nil {
+		m.mu.Unlock()
 		return fmt.Errorf("unknown exit stream %d/%d", circ.CircuitID, streamID)
 	}
-	if _, err := es.conn.Write(data); err != nil {
+	if es.deliverWindow <= 0 {
+		m.mu.Unlock()
+		m.logger.Warn("inbound stream window exhausted", "circuit", circ.CircuitID, "stream", streamID)
+		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonMisc)
+	}
+	es.deliverWindow--
+	conn := es.conn
+	m.mu.Unlock()
+
+	if _, err := conn.Write(data); err != nil {
 		return err
 	}
 
 	sendCirc, sendStream := false, false
 	var circDigest []byte
 	m.mu.Lock()
+	es = m.streams[streamKey{circ.CircuitID, streamID}]
 	m.circInCount[circ.CircuitID]++
 	if m.circInCount[circ.CircuitID] >= exitCircSendmeInc {
 		m.circInCount[circ.CircuitID] = 0
 		sendCirc = true
 		circDigest = append([]byte(nil), m.lastFwdDigest[circ.CircuitID]...)
 	}
-	es.deliverCount++
-	if es.deliverCount >= exitStreamSendmeInc {
-		es.deliverCount = 0
-		sendStream = true
+	if es != nil {
+		es.deliverCount++
+		if es.deliverCount >= exitStreamSendmeInc {
+			es.deliverCount = 0
+			es.deliverWindow += exitStreamSendmeInc
+			if es.deliverWindow > exitMaxStreamOutWindow {
+				es.deliverWindow = exitMaxStreamOutWindow
+			}
+			sendStream = true
+		}
 	}
 	m.mu.Unlock()
 
@@ -266,7 +295,6 @@ func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn,
 		}
 	}
 	if sendStream {
-		// 流级 SENDME 体为空
 		_ = m.sendRelay(circ, clientConn, streamID, cell.RelaySendme, nil)
 	}
 	return nil

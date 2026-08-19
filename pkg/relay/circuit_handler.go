@@ -22,6 +22,8 @@ type ServerCircuit struct {
 	LastActivity time.Time
 	KeyMaterial  []byte
 	crypto       *circuitCrypto
+	ctx          context.Context
+	cancel       context.CancelFunc
 	mu           sync.RWMutex
 }
 
@@ -164,12 +166,15 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 		h.logger.Error("circuit crypto init failed", "error", cerr)
 		return h.sendDestroyCell(conn, c.CircID, cell.DestroyReasonInternal)
 	}
+	cctx, ccancel := context.WithCancel(h.ctx)
 	circuit := &ServerCircuit{
 		CircuitID:    c.CircID,
 		Created:      time.Now(),
 		LastActivity: time.Now(),
 		KeyMaterial:  keyMaterial,
 		crypto:       cc,
+		ctx:          cctx,
+		cancel:       ccancel,
 	}
 
 	// Store circuit
@@ -248,18 +253,7 @@ func (h *CircuitHandler) handleRelay(conn net.Conn, c *cell.Cell) error {
 // handleDestroy processes DESTROY cells
 func (h *CircuitHandler) handleDestroy(c *cell.Cell) error {
 	h.logger.Info("Received DESTROY", "circuit_id", c.CircID)
-
-	if h.forwarder != nil {
-		h.forwarder.HandleDestroy(c.CircID)
-	}
-	if h.exits != nil {
-		h.exits.CloseCircuit(c.CircID)
-	}
-
-	h.mu.Lock()
-	delete(h.circuits, c.CircID)
-	h.mu.Unlock()
-
+	h.CloseCircuit(c.CircID)
 	return nil
 }
 
@@ -296,33 +290,43 @@ func (h *CircuitHandler) GetCircuitCount() int {
 
 // CloseCircuit destroys a circuit
 func (h *CircuitHandler) CloseCircuit(circuitID uint32) {
+	h.mu.Lock()
+	circ := h.circuits[circuitID]
+	delete(h.circuits, circuitID)
+	h.mu.Unlock()
+	if circ != nil && circ.cancel != nil {
+		circ.cancel()
+	}
 	if h.exits != nil {
 		h.exits.CloseCircuit(circuitID)
 	}
 	if h.forwarder != nil {
 		h.forwarder.HandleDestroy(circuitID)
 	}
-	h.mu.Lock()
-	delete(h.circuits, circuitID)
-	h.mu.Unlock()
-
 	h.logger.Info("Circuit closed", "circuit_id", circuitID)
 }
 
 // CloseAll destroys all circuits
 func (h *CircuitHandler) CloseAll() {
+	h.mu.Lock()
+	all := make([]*ServerCircuit, 0, len(h.circuits))
+	for _, c := range h.circuits {
+		all = append(all, c)
+	}
+	count := len(h.circuits)
+	h.circuits = make(map[uint32]*ServerCircuit)
+	h.mu.Unlock()
+	for _, c := range all {
+		if c.cancel != nil {
+			c.cancel()
+		}
+	}
 	if h.forwarder != nil {
 		h.forwarder.CloseAll()
 	}
 	if h.exits != nil {
 		h.exits.CloseAll()
 	}
-
-	h.mu.Lock()
-	count := len(h.circuits)
-	h.circuits = make(map[uint32]*ServerCircuit)
-	h.mu.Unlock()
-
 	h.logger.Info("All circuits closed", "count", count)
 }
 

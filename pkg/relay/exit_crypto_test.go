@@ -45,7 +45,7 @@ func TestCircuitCryptoRoundTrip(t *testing.T) {
 	copy(enc[5:9], sum[:4])
 	clientFwd.fwdCipher.XORKeyStream(enc, enc)
 
-	dec, err := cc.decryptInbound(enc)
+	dec, _, err := cc.decryptInbound(enc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestDecryptInboundRejectsBadDigestWithoutCommitting(t *testing.T) {
 	for i := range bad {
 		bad[i] = 0xff
 	}
-	if _, err := cc.decryptInbound(bad); err == nil {
+	if _, _, err := cc.decryptInbound(bad); err == nil {
 		t.Fatal("expected error")
 	}
 	// valid cell should still work (digest not permanently desynced by failed attempt
@@ -115,7 +115,7 @@ func TestDecryptInboundRejectsBadDigestWithoutCommitting(t *testing.T) {
 	client.fwdCipher.XORKeyStream(enc, enc)
 	// Note: after bad decrypt cipher may be desynced — use fresh crypto for valid path
 	cc2, _ := newCircuitCrypto(km)
-	if _, err := cc2.decryptInbound(enc); err != nil {
+	if _, _, err := cc2.decryptInbound(enc); err != nil {
 		t.Fatal(err)
 	}
 }
