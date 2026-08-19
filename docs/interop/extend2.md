@@ -44,5 +44,26 @@ HLEN  [2]
 HDATA [HLEN]  = NODEID(20) || KEYID(32) || CLIENT_PK(32)
 ```
 
-specifier 顺序：`[00]` IPv4、`[02]` RSA 20、`[03]` Ed25519 32。
+specifier 顺序：`[00]` IPv4、`[02]` RSA 20、`[03]` Ed25519 32，双栈再追加 `[01]` IPv6。
 RELAY_EARLY、StreamID=0、Length = Data 长度。
+
+## EXTEND2 IPv6（Relay=3 / RELAY_EXTEND_IPv6）
+
+对照：https://spec.torproject.org/tor-spec/create-created-cells.html
+
+| LSTYPE | 含义 | LSLEN | 负载 |
+|--------|------|-------|------|
+| `[00]` | TLS-over-TCP IPv4 | 6 | 4 字节 IP + 2 字节端口（大端） |
+| `[01]` | TLS-over-TCP IPv6 | 18 | 16 字节 IP + 2 字节端口（大端） |
+| `[02]` | Legacy RSA identity | 20 | SHA-1 |
+| `[03]` | Ed25519 identity | 32 | |
+
+附加 `[01]` 的条件（纯 Go，无 CGO）：
+
+1. 共识或 microdescriptor 的 `a` 行给出合法 IPv6 ORPort（`a [2001:db8::1]:9001`）。
+2. 已解析 `pr` 时还要求宣告 `Relay=3`。`Relay=4` **不蕴含** `Relay=3`（proposal 346）。
+3. 缺 `pr` 但有 IPv6 地址时仍附加（与现行 mainnet 默认一致）。
+4. IPv4-only 或 `Relay<3` 仍只发 NSPEC=3，不硬塞 `[01]`。
+5. 目标字符串本身已是 IPv6 时，不重复第二个 `[01]`。
+
+仍兼容极旧的 `a sha256=`（microdesc digest 现已在 `m` 行）。

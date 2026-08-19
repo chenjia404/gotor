@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -517,6 +518,150 @@ func TestRealConflux(t *testing.T) {
 		return
 	}
 	t.Fatalf("check.torproject.org failed after %d attempts: %v", maxAttempts, lastErr)
+}
+
+// TestRealExtend2IPv6 验收对双栈中继发出 EXTEND2 [01]，且 EXTENDED2 成功。
+// 共识里找不到 IPv6 ORPort + Relay=3 时跳过，不得标 WORKING。
+func TestRealExtend2IPv6(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	log := logger.NewDefault()
+	dirClient := directory.NewClient(log)
+	guardMgr, err := path.NewGuardManager(t.TempDir(), log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := path.NewSelectorWithGuards(dirClient, guardMgr, log)
+	if err := selector.UpdateConsensus(ctx); err != nil {
+		t.Fatalf("UpdateConsensus: %v", err)
+	}
+	relays := selector.GetRelays()
+	var dual, relay3 int
+	for _, r := range relays {
+		if r.HasIPv6ORPort() {
+			dual++
+		}
+		if r.AdvertisesExtendIPv6() {
+			relay3++
+		}
+	}
+	t.Logf("consensus relays=%d ipv6_orport=%d relay3=%d", len(relays), dual, relay3)
+
+	selected, err := pickIPv6ExtendPathFromSelector(selector, relays, 443)
+	if err != nil {
+		t.Skipf("无可用双栈路径，不标 WORKING: %v", err)
+	}
+
+	if err := dirClient.FetchMicrodescriptorsFor(ctx, []*directory.Relay{
+		selected.Guard, selected.Middle, selected.Exit,
+	}); err != nil {
+		t.Fatalf("FetchMicrodescriptorsFor: %v", err)
+	}
+
+	hs := make([]byte, 32)
+	for _, hop := range []struct {
+		role   string
+		relay  *directory.Relay
+		target string
+	}{
+		{"middle", selected.Middle, fmt.Sprintf("%s:%d", selected.Middle.Address, selected.Middle.ORPort)},
+		{"exit", selected.Exit, fmt.Sprintf("%s:%d", selected.Exit.Address, selected.Exit.ORPort)},
+	} {
+		data, err := circuit.EncodeExtend2Data(hop.target, hop.relay, circuit.HandshakeTypeNtorV3, hs)
+		if err != nil {
+			t.Fatalf("EncodeExtend2Data %s: %v", hop.role, err)
+		}
+		dump := circuit.DescribeExtend2(data)
+		ip, port, ok := hop.relay.IPv6ORAddress()
+		if !ok {
+			t.Fatalf("%s 选路后丢失 IPv6", hop.role)
+		}
+		want := fmt.Sprintf("[01] [%s]:%d", ip, port)
+		if data[0] != 4 || !strings.Contains(dump, want) {
+			t.Fatalf("%s EXTEND2 缺少 [01]：nspec=%d dump=%s want=%s", hop.role, data[0], dump, want)
+		}
+		t.Logf("%s EXTEND2 %s dump=%s", hop.role, hop.relay.Nickname, dump)
+	}
+
+	builder := circuit.NewBuilder(circuit.NewManager(), log)
+	circ, err := builder.BuildCircuit(ctx, selected, 90*time.Second)
+	if err != nil {
+		t.Fatalf("BuildCircuit with [01]: %v", err)
+	}
+	defer circ.Close()
+	if circ.Length() != 3 || circ.GetState() != circuit.StateOpen {
+		t.Fatalf("state=%s hops=%d", circ.GetState(), circ.Length())
+	}
+	t.Logf("EXTEND2 IPv6 OK\n  Guard  %s %s relay3=%v\n  Middle %s %s ipv6=%s:%d\n  Exit   %s %s ipv6=%s:%d",
+		selected.Guard.Nickname, selected.Guard.GetFingerprintHex(), selected.Guard.AdvertisesExtendIPv6(),
+		selected.Middle.Nickname, selected.Middle.GetFingerprintHex(), selected.Middle.IPv6, selected.Middle.IPv6Port,
+		selected.Exit.Nickname, selected.Exit.GetFingerprintHex(), selected.Exit.IPv6, selected.Exit.IPv6Port)
+}
+
+func pickIPv6ExtendPathFromSelector(selector *path.Selector, relays []*directory.Relay, port int) (*path.Path, error) {
+	var last error
+	for i := 0; i < 24; i++ {
+		p, err := selector.SelectPath(port)
+		if err != nil {
+			last = err
+			continue
+		}
+		if p.Guard.AdvertisesExtendIPv6() && p.Middle.ShouldIncludeExtendIPv6() && p.Exit.ShouldIncludeExtendIPv6() {
+			return p, nil
+		}
+		last = fmt.Errorf("attempt %d: guard_relay3=%v middle_ipv6=%v exit_ipv6=%v",
+			i+1, p.Guard.AdvertisesExtendIPv6(), p.Middle.HasIPv6ORPort(), p.Exit.HasIPv6ORPort())
+	}
+	if p, err := pickIPv6ExtendPath(relays, port); err == nil {
+		return p, nil
+	}
+	if last == nil {
+		last = fmt.Errorf("no dual-stack path")
+	}
+	return nil, last
+}
+
+func pickIPv6ExtendPath(relays []*directory.Relay, port int) (*path.Path, error) {
+	var guards, dual []*directory.Relay
+	for _, r := range relays {
+		if r == nil || !r.IsRunning() || !r.IsValid() || r.ORPort <= 0 {
+			continue
+		}
+		if r.IsGuard() && r.AdvertisesExtendIPv6() {
+			guards = append(guards, r)
+		}
+		if r.HasIPv6ORPort() && r.ShouldIncludeExtendIPv6() {
+			dual = append(dual, r)
+		}
+	}
+	if len(guards) == 0 || len(dual) < 2 {
+		return nil, fmt.Errorf("guards_relay3=%d dual_stack=%d", len(guards), len(dual))
+	}
+	for _, guard := range guards {
+		for _, exit := range dual {
+			if exit.Fingerprint == guard.Fingerprint || !exit.CanExitToPort(port) {
+				continue
+			}
+			if exit.InSameFamily(guard) || exit.InSameSubnet(guard) {
+				continue
+			}
+			for _, middle := range dual {
+				if middle.Fingerprint == guard.Fingerprint || middle.Fingerprint == exit.Fingerprint {
+					continue
+				}
+				if middle.InSameFamily(guard) || middle.InSameFamily(exit) {
+					continue
+				}
+				if middle.InSameSubnet(guard) || middle.InSameSubnet(exit) {
+					continue
+				}
+				return &path.Path{Guard: guard, Middle: middle, Exit: exit}, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("no diverse dual-stack 3-hop (guards=%d dual=%d)", len(guards), len(dual))
 }
 
 func buildLiveCircuit(t *testing.T) (*circuit.Circuit, *path.Path) {

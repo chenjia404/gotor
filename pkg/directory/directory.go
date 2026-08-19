@@ -125,6 +125,8 @@ type Relay struct {
 	Fingerprint     string
 	Address         string
 	ORPort          int
+	IPv6            string // 共识/microdesc a 行的第一个 IPv6 OR 地址（不含方括号）
+	IPv6Port        int    // 对应 IPv6 ORPort
 	DirPort         int
 	Flags           []string
 	Published       time.Time
@@ -521,15 +523,10 @@ func (c *Client) parseConsensusWithMetadata(r io.Reader) ([]*Relay, *ConsensusMe
 			}
 		}
 
-		// Parse "a" lines (microdescriptor digests) - SPEC-001 (legacy format)
-		// Legacy format: "a sha256=base64digest"
+		// 解析 "a" 行。现行 dir-spec：附加 OR 地址（几乎总是 IPv6）。
+		// 仍兼容极旧的 "a sha256=digest"（digest 现已在 m 行）。
 		if strings.HasPrefix(line, "a ") && currentRelay != nil {
-			parts := strings.Fields(line)
-			// Format: "a" SP algname "=" digest
-			// e.g., "a sha256=base64digest"
-			if len(parts) >= 2 && strings.HasPrefix(parts[1], "sha256=") {
-				currentRelay.MicrodescDigest = strings.TrimPrefix(parts[1], "sha256=")
-			}
+			applyALine(currentRelay, line)
 		}
 
 		// Parse "m" lines (microdescriptor digests) - SPEC-001 (consensus-method 33)

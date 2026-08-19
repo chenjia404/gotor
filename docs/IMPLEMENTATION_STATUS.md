@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/conflux1-8e65`（基于 `origin/main`，含已合入的 Relay=6 CGO）  
+**分支**：`cursor/extend2-ipv6-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + **现行** Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -42,7 +42,7 @@
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
 | VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | WORKING | VERSIONS CircID=2、CERTS type4 验签、**type 7 RSA 交叉签名强制校验**、NETINFO 已在真实 Guard 通过；AUTH_CHALLENGE 客户端路径按 spec 跳过 |
 | CREATE2 / ntor / CREATED2 | WORKING | 默认 ntor-v3（HTYPE 0x0003，Ed25519 主身份）；真实 Guard CREATE2 + `CC_FIELD_RESPONSE` `sendme_inc=31`。缺密钥或 `Relay<4` 回退经典 ntor |
-| EXTEND2 / EXTENDED2 | WORKING | 真实 3-hop 三跳均为 ntor-v3 + FlowCtrl=2；SOCKS5 `IsTor=true`。IPv6 EXTEND2（Relay=3）未做 |
+| EXTEND2 / EXTENDED2 | WORKING | 真实 3-hop 三跳均为 ntor-v3 + FlowCtrl=2；SOCKS5 `IsTor=true`。IPv6 `[01]` 见下项 |
 | Circuit crypto / digest | WORKING | 真实路径已证明 AES-CTR-SHA1 与 **Relay=6 CGO** |
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
 | SENDME / flow control | WORKING | FlowCtrl=2 TOR_VEGAS 已实现；真实 soak **1059120** 字节，电路未 DESTROY。10–100MB / 多流仍见 P0.2 |
@@ -141,10 +141,12 @@
 
 #### 6. EXTEND2 IPv6（Relay=3）
 
-- **状态**：MISSING。当前 EXTEND2 只发 `[00]` IPv4。
+- **状态**：UNVERIFIED。纯 Go：共识 `a` 行 → `Relay.IPv6`；`buildExtend2Data` 在双栈且 `Relay=3` 时追加 `[01]`（LSLEN=18，大端端口）。
 - **Spec**：tor-spec create-created-cells / EXTEND2 specifier `[01]` IPv6；subprotocol `RELAY_EXTEND_IPv6`
-- **现有代码**：`pkg/circuit/extension.go` `buildExtend2Data`
-- **验收**：对同时有 IPv4/IPv6 ORPort 的中继发出 `[01]`；真实 EXTENDED2 成功。无 IPv6 出口的环境不要标 WORKING。
+- **要点**：顺序 `[00] [02] [03] [01]`；`Relay=4` 不蕴含 `Relay=3`；IPv4-only 仍 NSPEC=3；兼容旧 `a sha256=`。
+- **禁止**：无 IPv6 ORPort 硬塞 `[01]`；无真实双栈 EXTENDED2 标 WORKING。
+- **现有代码**：`pkg/directory/oraddress.go`、`pkg/circuit/extension.go`；文档 `docs/interop/extend2-ipv6.md`
+- **验收**：`TestRealExtend2IPv6` 对双栈 Middle/Exit 的 dump 含 `[01]` + 16 字节 IPv6 + 端口，且 3-hop EXTENDED2 成功。
 
 #### 7. Exit policy IPv6 `p6` + 完整 `p` 行
 
@@ -328,7 +330,7 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 | `pkg/directory` microdesc / 共识验签 | digest、自生成证书、篡改必失败 | 运行 |
 | `pkg/protocol` CERTS type 7 | RSA→Ed25519 交叉签名；缺 type 2 / 篡改必失败 | 运行 |
 | `integration/link_test.go` | 真实 TLS+handshake / type 7 RSA | `-tags=integration` + `TOR_INTEGRATION_TEST=1` |
-| `integration/e2e_real_tor_test.go` | 共识验签 / ntor-v3 CREATE2 / 3-hop / IsTor / soak / RESOLVE / Conflux | 同上 |
+| `integration/e2e_real_tor_test.go` | 共识验签 / ntor-v3 CREATE2 / 3-hop / IsTor / soak / RESOLVE / Conflux / EXTEND2 IPv6 | 同上 |
 | `scripts/test-real-tor.sh` | 启动 client + socks5h curl | 手动 |
 
 ---
@@ -342,4 +344,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准（尚未达到）：** 更大 soak、EXTEND2 IPv6。Conflux=1 已在真实网络 LINK + `IsTor=true`。
+**下一轮完成标准（尚未达到）：** 更大 soak。EXTEND2 IPv6 已实现，待真实双栈网络标 WORKING。
