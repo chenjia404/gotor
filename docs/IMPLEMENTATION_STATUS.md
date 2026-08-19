@@ -176,9 +176,17 @@
 
 #### 8. Circuit padding machine（Padding=2 / proposal 302）
 
-- **状态**：PARTIAL。`Circuit` 有 padding 间隔字段，不是 HS setup machine。
+- **状态**：PARTIAL（2026-08-19：协商 + 状态表已对齐；运行时/onion 接线未完）。
+- **已做**：
+  - `PADDING_NEGOTIATE` / `NEGOTIATED`：STOP=1 START=2、CIRC_SETUP=1、machine_ctr u32、8 字节载荷
+  - `ClientHideIntroCircuits` / `RelayHideIntroCircuits` / `ClientHideRendCircuits` 状态表（对照 C Tor）
+  - Intro DROPs 7–10；`circpad_padding_disabled` 读取
+  - 单测：编解码往返、状态转移、线值常量
+- **未做**：Onion INTRODUCE1 后自动 negotiate；完整直方图延迟运行时；真实验收
 - **Spec**：https://spec.torproject.org/padding-spec ；proposal 302
-- **验收**：对照 C Tor machine 状态表的单测。不要发明与 spec 不符的随机 padding 并宣称合规。
+- **现有代码**：`pkg/circuit/circpad.go`、`padding_machine.go`；`docs/interop/circuit-padding.md`
+- **验收**：对照 C Tor machine 状态表的单测已有。onion 路径真实验收待 Phase 4。
+- **禁止**：发明与 spec 不符的随机 padding 并宣称合规。
 
 #### 9. Consensus diff（DirCache=2）
 
