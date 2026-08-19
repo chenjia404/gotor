@@ -1634,35 +1634,36 @@ func (c *Circuit) OpenStream(ctx context.Context, streamID uint16, target string
 		return fmt.Errorf("failed to send RELAY_BEGIN: %w", err)
 	}
 
-	// Wait for RELAY_CONNECTED response with caller's context and 30s timeout
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	return c.waitStreamConnected(timeoutCtx, streamID)
+}
 
-	connectedCell, err := c.ReceiveRelayCell(timeoutCtx)
-	if err != nil {
-		return fmt.Errorf("failed to receive RELAY_CONNECTED: %w", err)
-	}
-
-	if connectedCell.StreamID != streamID {
-		// Not for this stream, put it back?
-		// For now, error out
-		return fmt.Errorf("received cell for wrong stream: expected %d, got %d", streamID, connectedCell.StreamID)
-	}
-
-	if connectedCell.Command == cell.RelayEnd {
-		// Stream was rejected
-		reason := "unknown"
-		if len(connectedCell.Data) > 0 {
-			reason = fmt.Sprintf("reason=%d", connectedCell.Data[0])
+// waitStreamConnected 等到本 StreamID 的 RELAY_CONNECTED 或 RELAY_END。
+// 其它流的信元交给 stream manager，避免 SOCKS 多流并发时误报 wrong stream。
+func (c *Circuit) waitStreamConnected(ctx context.Context, streamID uint16) error {
+	for {
+		connectedCell, err := c.ReceiveRelayCell(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to receive RELAY_CONNECTED: %w", err)
 		}
-		return fmt.Errorf("stream rejected by exit: %s", reason)
+		if connectedCell.StreamID != streamID {
+			_ = c.deliverToStream(connectedCell)
+			continue
+		}
+		switch connectedCell.Command {
+		case cell.RelayEnd:
+			reason := "unknown"
+			if len(connectedCell.Data) > 0 {
+				reason = fmt.Sprintf("reason=%d", connectedCell.Data[0])
+			}
+			return fmt.Errorf("stream rejected by exit: %s", reason)
+		case cell.RelayConnected:
+			return nil
+		default:
+			continue
+		}
 	}
-
-	if connectedCell.Command != cell.RelayConnected {
-		return fmt.Errorf("expected RELAY_CONNECTED, got %s", cell.RelayCmdString(connectedCell.Command))
-	}
-
-	return nil
 }
 
 // ReadFromStream reads data from a specific stream

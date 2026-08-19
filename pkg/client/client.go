@@ -153,7 +153,14 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 	}
 
 	// Initialize control protocol server
-	controlAddr := fmt.Sprintf("127.0.0.1:%d", cfg.ControlPort)
+	controlHost := cfg.ControlListenAddr
+	if controlHost == "" {
+		controlHost = "127.0.0.1"
+	}
+	controlAddr := net.JoinHostPort(controlHost, strconv.Itoa(cfg.ControlPort))
+	if ip := net.ParseIP(controlHost); ip != nil && !ip.IsLoopback() {
+		log.Warn("ControlPort 绑定非回环地址，必须启用 Cookie 或口令认证", "addr", controlAddr)
+	}
 	auth := control.AuthOptions{
 		Password:              cfg.ControlPassword,
 		HashedControlPassword: cfg.HashedControlPassword,

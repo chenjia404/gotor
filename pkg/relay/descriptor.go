@@ -44,6 +44,7 @@ type ServerDescriptor struct {
 	RSAIdentity     *rsa.PublicKey    // RSA-1024 identity public key
 	Ed25519Identity ed25519.PublicKey // Ed25519 identity public key
 	NtorOnionKey    []byte            // Curve25519 ntor onion key (32 bytes)
+	NtorPrivate     []byte            // ntor 私钥，签发 ntor-onion-key-crosscert
 
 	// Internal fields
 	rsaPrivate     *rsa.PrivateKey    // RSA private key for signing
@@ -145,6 +146,7 @@ func GenerateServerDescriptor(keys *RelayKeys, config *DescriptorConfig) (*Serve
 		RSAIdentity:     &keys.RSAPrivate.PublicKey,
 		Ed25519Identity: keys.Ed25519Public,
 		NtorOnionKey:    ntorPublic[:],
+		NtorPrivate:     append([]byte(nil), keys.NtorOnionKey...),
 		rsaPrivate:      keys.RSAPrivate,
 		ed25519Private:  keys.Ed25519Private,
 	}
@@ -195,8 +197,19 @@ func (d *ServerDescriptor) build() error {
 	if err := writeRSAPublicPEM(&buf, "onion-key", &tapKey.PublicKey); err != nil {
 		return err
 	}
+	tapCross, err := signOnionKeyCrosscert(tapKey, d.RSAIdentity, d.Ed25519Identity)
+	if err != nil {
+		return err
+	}
+	writePEMBlock(&buf, "onion-key-crosscert", "CROSSCERT", tapCross)
 	fmt.Fprintf(&buf, "ntor-onion-key %s\n",
 		base64.RawStdEncoding.EncodeToString(d.NtorOnionKey))
+	ntorBit, ntorCert, err := makeNtorOnionKeyCrosscert(d.NtorPrivate, d.Ed25519Identity)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(&buf, "ntor-onion-key-crosscert %d\n", ntorBit)
+	writePEMBlock(&buf, "", "ED25519 CERT", ntorCert)
 	if err := writeRSAPublicPEM(&buf, "signing-key", d.RSAIdentity); err != nil {
 		return err
 	}
@@ -211,8 +224,7 @@ func (d *ServerDescriptor) build() error {
 		fmt.Fprintf(&buf, "tunnelled-dir-server\n")
 	}
 
-	edPrefix := []byte("Tor router descriptor signature v1")
-	edSig := ed25519.Sign(signPriv, append(edPrefix, buf.Bytes()...))
+	edSig := signRouterEd25519(signPriv, buf.Bytes())
 	fmt.Fprintf(&buf, "router-sig-ed25519 %s\n",
 		base64.RawStdEncoding.EncodeToString(edSig))
 
@@ -229,6 +241,14 @@ func (d *ServerDescriptor) build() error {
 	fmt.Fprintf(&buf, "router-signature\n")
 	writePEMBlock(&buf, "", "SIGNATURE", signature)
 	d.RawDescriptor = buf.Bytes()
+	if err := VerifyServerDescriptorDocument(d.RawDescriptor, d.Ed25519Identity, d.RSAIdentity, d.NtorOnionKey); err != nil {
+		return fmt.Errorf("descriptor self-check failed: %w", err)
+	}
+	// 私钥只用于签发交叉证书，自检通过后从描述符结构体清掉，避免误日志。
+	for i := range d.NtorPrivate {
+		d.NtorPrivate[i] = 0
+	}
+	d.NtorPrivate = nil
 	return nil
 }
 
@@ -278,10 +298,70 @@ func formatFingerprintGroups(hex40 string) string {
 	return b.String()
 }
 
+const routerEd25519SigPrefix = "Tor router descriptor signature v1"
+
+// signRouterEd25519 按 dir-spec：Ed25519(SHA256(PREFIX || 文档含 "router-sig-ed25519 "))。
+func signRouterEd25519(signPriv ed25519.PrivateKey, body []byte) []byte {
+	signed := make([]byte, 0, len(routerEd25519SigPrefix)+len(body)+len("router-sig-ed25519 "))
+	signed = append(signed, routerEd25519SigPrefix...)
+	signed = append(signed, body...)
+	signed = append(signed, []byte("router-sig-ed25519 ")...)
+	sum := sha256.Sum256(signed)
+	return ed25519.Sign(signPriv, sum[:])
+}
+
+// signOnionKeyCrosscert 用 TAP 私钥签 SHA1(PKCS1(RSA id)) || Ed25519 id（52 字节）。
+func signOnionKeyCrosscert(tap *rsa.PrivateKey, rsaID *rsa.PublicKey, edID ed25519.PublicKey) ([]byte, error) {
+	if tap == nil || rsaID == nil || len(edID) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("onion-key-crosscert: missing keys")
+	}
+	payload := onionKeyCrosscertPayload(rsaID, edID)
+	sig, err := rsa.SignPKCS1v15(rand.Reader, tap, 0, payload)
+	if err != nil {
+		return nil, fmt.Errorf("onion-key-crosscert sign: %w", err)
+	}
+	return sig, nil
+}
+
+func onionKeyCrosscertPayload(rsaID *rsa.PublicKey, edID ed25519.PublicKey) []byte {
+	der := x509.MarshalPKCS1PublicKey(rsaID)
+	sum := sha1.Sum(der) // #nosec G401
+	out := make([]byte, 0, 52)
+	out = append(out, sum[:]...)
+	out = append(out, edID...)
+	return out
+}
+
+// makeNtorOnionKeyCrosscert 生成 type-0A 证书：ntor 私钥签主身份。
+func makeNtorOnionKeyCrosscert(ntorPriv []byte, edID ed25519.PublicKey) (int, []byte, error) {
+	kp, err := crypto.Ed25519KeypairFromCurve25519(ntorPriv)
+	if err != nil {
+		return 0, nil, err
+	}
+	cert := &protocol.Ed25519Certificate{
+		Version:      1,
+		CertType:     uint8(protocol.CertTypeNtorOnionKeyCrossCert),
+		ExpiresAt:    time.Now().UTC().Add(30 * 24 * time.Hour),
+		CertKeyType:  1,
+		CertifiedKey: append([]byte(nil), edID...),
+	}
+	msg := cert.PrepareSignedBytes()
+	sig, err := kp.Sign(msg)
+	if err != nil {
+		return 0, nil, err
+	}
+	cert.Signature = sig
+	return kp.SignBit, protocol.EncodeEd25519Certificate(cert), nil
+}
+
 // makeEd25519SigningCert 生成 cert-spec type-04：Ed25519 签名钥由主身份签发。
 func makeEd25519SigningCert(idPriv ed25519.PrivateKey, signPub ed25519.PublicKey) ([]byte, error) {
 	if len(idPriv) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("invalid Ed25519 identity private key")
+	}
+	idPub, ok := idPriv.Public().(ed25519.PublicKey)
+	if !ok || len(idPub) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("invalid Ed25519 identity public key")
 	}
 	cert := &protocol.Ed25519Certificate{
 		Version:      1,
@@ -289,6 +369,11 @@ func makeEd25519SigningCert(idPriv ed25519.PrivateKey, signPub ed25519.PublicKey
 		ExpiresAt:    time.Now().UTC().Add(30 * 24 * time.Hour),
 		CertKeyType:  1,
 		CertifiedKey: append([]byte(nil), signPub...),
+		Extensions: []protocol.Ed25519Extension{{
+			ExtType: protocol.ExtTypeSignedWithEd25519Key,
+			Flags:   0,
+			ExtData: append([]byte(nil), idPub...),
+		}},
 	}
 	protocol.SignEd25519Certificate(cert, idPriv)
 	return protocol.EncodeEd25519Certificate(cert), nil
@@ -360,57 +445,51 @@ func GenerateExtraInfo(keys *RelayKeys, desc *ServerDescriptor, stats map[string
 		return nil, fmt.Errorf("server descriptor cannot be nil")
 	}
 
+	published := desc.PublishedTime
+	if published.IsZero() {
+		published = time.Now().UTC()
+	}
 	extraInfo := &ExtraInfoDescriptor{
 		Nickname:      desc.Nickname,
 		Fingerprint:   desc.Fingerprint(),
-		PublishedTime: time.Now().UTC(),
+		PublishedTime: published,
 		Statistics:    stats,
 	}
 
-	// Build extra-info document
+	signPub, signPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("extra-info signing key: %w", err)
+	}
+	idCert, err := makeEd25519SigningCert(keys.Ed25519Private, signPub)
+	if err != nil {
+		return nil, fmt.Errorf("extra-info identity-ed25519: %w", err)
+	}
+
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "extra-info %s %s\n", extraInfo.Nickname, extraInfo.Fingerprint)
+	writePEMBlock(&buf, "identity-ed25519", "ED25519 CERT", idCert)
 	fmt.Fprintf(&buf, "published %s\n",
 		extraInfo.PublishedTime.Format("2006-01-02 15:04:05"))
-
-	// Add statistics
 	for key, value := range stats {
 		fmt.Fprintf(&buf, "%s %s\n", key, value)
 	}
 
-	// Compute digest and sign
-	body := buf.String()
-	h := sha256.New()
-	h.Write([]byte(body))
-	extraInfo.Digest = h.Sum(nil)
+	edSig := signRouterEd25519(signPriv, buf.Bytes())
+	fmt.Fprintf(&buf, "router-sig-ed25519 %s\n",
+		base64.RawStdEncoding.EncodeToString(edSig))
 
-	// Sign with RSA key
-	sig, err := rsa.SignPKCS1v15(nil, keys.RSAPrivate, 0, extraInfo.Digest)
+	rsaBody := buf.String() + "router-signature\n"
+	h := sha1.New() // #nosec G401
+	h.Write([]byte(rsaBody))
+	extraInfo.Digest = h.Sum(nil)
+	sig, err := rsa.SignPKCS1v15(rand.Reader, keys.RSAPrivate, 0, extraInfo.Digest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign extra-info: %w", err)
 	}
 	extraInfo.Signature = sig
-
-	// Build complete descriptor with signature
-	var fullBuf bytes.Buffer
-	fullBuf.WriteString(body)
-	fmt.Fprintf(&fullBuf, "router-signature\n")
-
-	// Encode signature in base64
-	sigB64 := base64.StdEncoding.EncodeToString(sig)
-	fmt.Fprintf(&fullBuf, "-----BEGIN SIGNATURE-----\n")
-	// Split base64 into 64-char lines
-	for i := 0; i < len(sigB64); i += 64 {
-		end := i + 64
-		if end > len(sigB64) {
-			end = len(sigB64)
-		}
-		fmt.Fprintf(&fullBuf, "%s\n", sigB64[i:end])
-	}
-	fmt.Fprintf(&fullBuf, "-----END SIGNATURE-----\n")
-
-	extraInfo.RawDescriptor = fullBuf.Bytes()
-
+	fmt.Fprintf(&buf, "router-signature\n")
+	writePEMBlock(&buf, "", "SIGNATURE", sig)
+	extraInfo.RawDescriptor = buf.Bytes()
 	return extraInfo, nil
 }
 

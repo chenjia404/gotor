@@ -28,6 +28,7 @@ func TestCertTypeStringComplete(t *testing.T) {
 			{CertTypeEd25519TLSLink, "ED25519_TLS_LINK"},
 			{CertTypeEd25519Auth, "ED25519_AUTH"},
 			{CertTypeEd25519Identity, "ED25519_IDENTITY"},
+			{CertTypeNtorOnionKeyCrossCert, "NTOR_ONION_KEY_CROSSCERT"},
 			{CertType(99), "UNKNOWN(99)"},
 			{CertType(255), "UNKNOWN(255)"},
 		}

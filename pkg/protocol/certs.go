@@ -52,6 +52,8 @@ const (
 	CertTypeEd25519Auth CertType = 0x06
 	// CertTypeEd25519Identity is an RSA cross-certification of Ed25519 identity (type 7)
 	CertTypeEd25519Identity CertType = 0x07
+	// CertTypeNtorOnionKeyCrossCert 是 ntor 洋葱密钥交叉证明 Ed25519 身份（type 0x0A，描述符用）
+	CertTypeNtorOnionKeyCrossCert CertType = 0x0A
 )
 
 // String returns a human-readable representation of the cert type
@@ -71,6 +73,8 @@ func (ct CertType) String() string {
 		return "ED25519_AUTH"
 	case CertTypeEd25519Identity:
 		return "ED25519_IDENTITY"
+	case CertTypeNtorOnionKeyCrossCert:
+		return "NTOR_ONION_KEY_CROSSCERT"
 	default:
 		return fmt.Sprintf("UNKNOWN(%d)", ct)
 	}
@@ -233,6 +237,11 @@ func parseRSAEd25519CrossCert(data []byte) (*Ed25519Certificate, error) {
 		// KEY || EXPIRATION。C Tor 不把 SIGLEN 纳入哈希。
 		SignedBytes: append([]byte(nil), data[:rsaEd25519CrossCertSignedLen]...),
 	}, nil
+}
+
+// ParseEd25519Certificate 解析 cert-spec Ed25519 证书（含 type-0A ntor 交叉证书）。
+func ParseEd25519Certificate(data []byte) (*Ed25519Certificate, error) {
+	return parseEd25519Certificate(data)
 }
 
 // parseEd25519Certificate 按 cert-spec / Arti tor-cert 解析 Ed25519 证书。
@@ -494,10 +503,15 @@ func (e *Ed25519Certificate) reconstructSignedBytes() []byte {
 	return signedData
 }
 
+// PrepareSignedBytes 填充 SignedBytes（尚未签名），供 ntor 转换密钥等非标准私钥签名。
+func (e *Ed25519Certificate) PrepareSignedBytes() []byte {
+	e.SignedBytes = e.reconstructSignedBytes()
+	return e.SignedBytes
+}
+
 // SignEd25519Certificate 用 priv 按 cert-spec 签发证书（填充 SignedBytes 与 Signature）。
 func SignEd25519Certificate(cert *Ed25519Certificate, priv ed25519.PrivateKey) {
-	msg := cert.reconstructSignedBytes()
-	cert.SignedBytes = msg
+	msg := cert.PrepareSignedBytes()
 	cert.Signature = ed25519.Sign(priv, msg)
 }
 

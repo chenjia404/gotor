@@ -12,10 +12,11 @@ import (
 // Config represents the Tor client configuration
 type Config struct {
 	// Network settings
-	SocksPort       int    // SOCKS5 proxy port (default: 9050)
-	SocksListenAddr string // SOCKS 绑定地址（默认 127.0.0.1；兼容 SocksPort addr:port）
-	ControlPort     int    // Control protocol port (default: 9051)
-	ControlPassword string // 明文控制口令（非 C Tor 标准；优先于空哈希时使用）
+	SocksPort         int    // SOCKS5 proxy port (default: 9050)
+	SocksListenAddr   string // SOCKS 绑定地址（默认 127.0.0.1；兼容 SocksPort addr:port）
+	ControlPort       int    // Control protocol port (default: 9051)
+	ControlListenAddr string // Control 绑定地址（默认 127.0.0.1；兼容 ControlPort addr:port）
+	ControlPassword   string // 明文控制口令（非 C Tor 标准；优先于空哈希时使用）
 	// HashedControlPassword 为 C Tor 标准 `16:...` 哈希；与 CookieAuthentication 可并存
 	HashedControlPassword string
 	CookieAuthentication  bool   // 启用 control_auth_cookie
@@ -219,6 +220,7 @@ func DefaultConfig() *Config {
 		SocksPort:               socksPort,
 		SocksListenAddr:         "127.0.0.1",
 		ControlPort:             controlPort,
+		ControlListenAddr:       "127.0.0.1",
 		ControlPassword:         "", // No authentication by default
 		HashedControlPassword:   "",
 		CookieAuthentication:    false,

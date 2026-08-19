@@ -28,6 +28,31 @@ func TestParseCLI_FlagsAndPositional(t *testing.T) {
 	}
 }
 
+func TestControlPortAddrPort(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		line, host string
+		port       int
+	}{
+		{"ControlPort 127.0.0.1:9151\n", "127.0.0.1", 9151},
+		{"ControlPort 9051\n", "127.0.0.1", 9051},
+		{"ControlPort [::1]:9152\n", "::1", 9152},
+	}
+	for _, tc := range cases {
+		torrc := filepath.Join(dir, "torrc")
+		if err := os.WriteFile(torrc, []byte(tc.line), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := DefaultConfig()
+		if err := LoadFromFile(torrc, cfg); err != nil {
+			t.Fatalf("%q: %v", tc.line, err)
+		}
+		if cfg.ControlPort != tc.port || cfg.ControlListenAddr != tc.host {
+			t.Fatalf("%q -> %s:%d, want %s:%d", tc.line, cfg.ControlListenAddr, cfg.ControlPort, tc.host, tc.port)
+		}
+	}
+}
+
 func TestLoadTorrcClientOptions(t *testing.T) {
 	dir := t.TempDir()
 	hsDir := filepath.Join(dir, "hs")

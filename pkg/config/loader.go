@@ -114,15 +114,7 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 		return parseSocksListenAddress(cfg, value)
 
 	case "ControlPort":
-		fields := strings.Fields(value)
-		if len(fields) == 0 {
-			return fmt.Errorf("empty ControlPort")
-		}
-		port, err := strconv.Atoi(fields[0])
-		if err != nil {
-			return fmt.Errorf("invalid ControlPort value: %s", value)
-		}
-		cfg.ControlPort = port
+		return parseControlPort(cfg, value)
 
 	case "DataDirectory":
 		cfg.DataDirectory = value
@@ -431,6 +423,37 @@ func parseSocksListenAddress(cfg *Config, value string) error {
 }
 
 // parseORPort 支持：9001 | 0.0.0.0:9001 | [::<]:9001
+// parseControlPort 支持：9051 | 127.0.0.1:9051 | [::1]:9051
+func parseControlPort(cfg *Config, value string) error {
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return fmt.Errorf("empty ControlPort")
+	}
+	addrPort := fields[0]
+	if strings.Contains(addrPort, ":") {
+		host, portStr, err := splitHostPortLoose(addrPort)
+		if err != nil {
+			return fmt.Errorf("invalid ControlPort: %w", err)
+		}
+		cfg.ControlListenAddr = host
+		p, err := strconv.Atoi(portStr)
+		if err != nil {
+			return fmt.Errorf("invalid ControlPort port: %s", portStr)
+		}
+		if p < 0 || p > 65535 {
+			return fmt.Errorf("invalid ControlPort port: %d", p)
+		}
+		cfg.ControlPort = p
+		return nil
+	}
+	p, err := strconv.Atoi(addrPort)
+	if err != nil {
+		return fmt.Errorf("invalid ControlPort value: %s", value)
+	}
+	cfg.ControlPort = p
+	return nil
+}
+
 func parseORPort(cfg *Config, value string) error {
 	fields := strings.Fields(value)
 	if len(fields) == 0 {
