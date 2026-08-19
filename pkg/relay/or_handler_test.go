@@ -71,48 +71,35 @@ func (m *mockConn) addReadData(data []byte) {
 	m.readData = append(m.readData, data...)
 }
 
-func (m *mockConn) getWrittenCells() ([]*cell.Cell, error) {
+func (m *mockConn) getWrittenCells(circIDLen int) ([]*cell.Cell, error) {
+	m.mu.Lock()
+	data := append([]byte(nil), m.writeData...)
+	m.mu.Unlock()
+
+	r := bytes.NewReader(data)
 	var cells []*cell.Cell
-	pos := 0
-
-	for pos < len(m.writeData) {
-		if pos+5 > len(m.writeData) {
-			break
-		}
-
-		// Read header
-		circID := binary.BigEndian.Uint32(m.writeData[pos : pos+4])
-		command := cell.Command(m.writeData[pos+4])
-		pos += 5
-
-		// Determine payload length
-		var payloadLen int
-		if command.IsVariableLength() {
-			if pos+2 > len(m.writeData) {
+	for r.Len() > 0 {
+		c, err := cell.DecodeCellLink(r, circIDLen)
+		if err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
 			}
-			payloadLen = int(binary.BigEndian.Uint16(m.writeData[pos : pos+2]))
-			pos += 2
-		} else {
-			payloadLen = cell.PayloadLen
+			return cells, err
 		}
-
-		// Read payload
-		if pos+payloadLen > len(m.writeData) {
-			break
-		}
-		payload := make([]byte, payloadLen)
-		copy(payload, m.writeData[pos:pos+payloadLen])
-		pos += payloadLen
-
-		cells = append(cells, &cell.Cell{
-			CircID:  circID,
-			Command: command,
-			Payload: payload,
-		})
+		cells = append(cells, c)
 	}
-
 	return cells, nil
+}
+
+// inboundVersionsWire2 是权威/C Tor 握手线上的 VERSIONS：CIRCID_LEN(v_in=0)=2。
+// 00 00 | 07 | 00 06 | 00 03 00 04 00 05
+func inboundVersionsWire2() []byte {
+	return []byte{
+		0x00, 0x00,
+		byte(cell.CmdVersions),
+		0x00, 0x06,
+		0x00, 0x03, 0x00, 0x04, 0x00, 0x05,
+	}
 }
 
 func TestNewLinkProtocolHandler(t *testing.T) {
@@ -193,25 +180,8 @@ func TestReceiveVersions(t *testing.T) {
 	keys := generateTestRelayKeys(t)
 	handler := NewLinkProtocolHandler(keys, nil)
 
-	// Build VERSIONS cell
-	versions := []uint16{3, 4, 5}
-	payload := make([]byte, len(versions)*2)
-	for i, v := range versions {
-		binary.BigEndian.PutUint16(payload[i*2:], v)
-	}
-
-	versionsCell := cell.NewCell(0, cell.CmdVersions)
-	versionsCell.Payload = payload
-	var buf bytes.Buffer
-	err := versionsCell.Encode(&buf)
-	if err != nil {
-		t.Fatalf("Failed to encode VERSIONS cell: %v", err)
-	}
-	cellData := buf.Bytes()
-
-	// Create mock connection with VERSIONS cell
 	conn := newMockConn()
-	conn.addReadData(cellData)
+	conn.addReadData(inboundVersionsWire2())
 
 	ctx := context.Background()
 	receivedVersions, err := handler.receiveVersions(ctx, conn)
@@ -230,15 +200,81 @@ func TestReceiveVersions(t *testing.T) {
 	}
 }
 
+// TestInboundVersionsCircIDWidthBeforeNegotiation 锁定入站握手根因：
+// 权威 VERSIONS 为 2 字节 CircID（00 00 07 …）。协商前按 4 字节解析会得到
+// CREATED_FAST（长度字段低位 0x06）；修复后入站路径必须识别为 VERSIONS。
+func TestInboundVersionsCircIDWidthBeforeNegotiation(t *testing.T) {
+	wire := inboundVersionsWire2()
+	if len(wire) < 5 {
+		t.Fatalf("VERSIONS wire too short: %d", len(wire))
+	}
+	if wire[0] != 0x00 || wire[1] != 0x00 || wire[2] != byte(cell.CmdVersions) {
+		t.Fatalf("VERSIONS wire prefix = %x, want 00 00 07", wire[:3])
+	}
+
+	encoded := cell.NewCell(0, cell.CmdVersions)
+	encoded.Payload = []byte{0x00, 0x03, 0x00, 0x04, 0x00, 0x05}
+	var encBuf bytes.Buffer
+	if err := encoded.EncodeLink(&encBuf, 2); err != nil {
+		t.Fatalf("EncodeLink(2): %v", err)
+	}
+	if !bytes.Equal(encBuf.Bytes(), wire) {
+		t.Fatalf("EncodeLink(2) = %x, want hardcoded %x", encBuf.Bytes(), wire)
+	}
+
+	// 协商前按 4 字节 CircID 读头：第 5 字节是变长长度低位 0x06 → CREATED_FAST
+	oldCmd := cell.Command(wire[4])
+	if oldCmd != cell.CmdCreatedFast {
+		t.Fatalf("4-byte header parse must yield CREATED_FAST, got %s (byte %02x)", oldCmd, wire[4])
+	}
+
+	padded := make([]byte, cell.CellLen)
+	copy(padded, wire)
+	wrong, err := cell.DecodeCellLink(bytes.NewReader(padded), 4)
+	if err != nil {
+		t.Fatalf("4-byte decode of padded VERSIONS wire failed: %v", err)
+	}
+	if wrong.Command != cell.CmdCreatedFast {
+		t.Fatalf("4-byte DecodeCellLink must yield CREATED_FAST, got %s", wrong.Command)
+	}
+
+	right, err := cell.DecodeCellLink(bytes.NewReader(wire), 2)
+	if err != nil {
+		t.Fatalf("2-byte decode failed: %v", err)
+	}
+	if right.Command != cell.CmdVersions || right.CircID != 0 {
+		t.Fatalf("2-byte decode: cmd=%s circ=%d, want VERSIONS/0", right.Command, right.CircID)
+	}
+
+	keys := generateTestRelayKeys(t)
+	handler := NewLinkProtocolHandler(keys, nil)
+	conn := newMockConn()
+	conn.addReadData(wire)
+
+	got, err := handler.receiveVersions(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("receiveVersions after fix failed: %v", err)
+	}
+	want := []int{3, 4, 5}
+	if len(got) != len(want) {
+		t.Fatalf("versions = %v, want %v", got, want)
+	}
+	for i, v := range want {
+		if got[i] != v {
+			t.Fatalf("versions = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestReceiveVersionsInvalidCell(t *testing.T) {
 	keys := generateTestRelayKeys(t)
 	handler := NewLinkProtocolHandler(keys, nil)
 
-	// Build NETINFO cell instead of VERSIONS
+	// 协商前按 2 字节 CircID 读；必须 EncodeLink(..., 2)，否则测到的是解码宽度错误而非命令错误
 	netinfoCell := cell.NewCell(0, cell.CmdNetinfo)
 	netinfoCell.Payload = make([]byte, 20)
 	var buf bytes.Buffer
-	err := netinfoCell.Encode(&buf)
+	err := netinfoCell.EncodeLink(&buf, 2)
 	if err != nil {
 		t.Fatalf("Failed to encode NETINFO cell: %v", err)
 	}
@@ -264,8 +300,15 @@ func TestSendVersions(t *testing.T) {
 		t.Fatalf("sendVersions failed: %v", err)
 	}
 
-	// Parse written cell
-	cells, err := conn.getWrittenCells()
+	conn.mu.Lock()
+	written := append([]byte(nil), conn.writeData...)
+	conn.mu.Unlock()
+	if len(written) < 3 || written[0] != 0x00 || written[1] != 0x00 || written[2] != byte(cell.CmdVersions) {
+		t.Fatalf("sendVersions wire prefix = %x, want 00 00 07", written)
+	}
+
+	// Parse written cell（VERSIONS 仍是 2 字节 CircID）
+	cells, err := conn.getWrittenCells(2)
 	if err != nil {
 		t.Fatalf("Failed to parse written cells: %v", err)
 	}
@@ -304,6 +347,7 @@ func TestSendVersions(t *testing.T) {
 func TestSendCerts(t *testing.T) {
 	keys := generateTestRelayKeys(t)
 	handler := NewLinkProtocolHandler(keys, nil)
+	handler.setCircIDLen(4) // CERTS 在 VERSIONS 协商之后
 
 	conn := newMockConn()
 	err := handler.sendCerts(conn)
@@ -312,7 +356,7 @@ func TestSendCerts(t *testing.T) {
 	}
 
 	// Parse written cell
-	cells, err := conn.getWrittenCells()
+	cells, err := conn.getWrittenCells(4)
 	if err != nil {
 		t.Fatalf("Failed to parse written cells: %v", err)
 	}
@@ -342,6 +386,7 @@ func TestSendCerts(t *testing.T) {
 func TestSendNetinfo(t *testing.T) {
 	keys := generateTestRelayKeys(t)
 	handler := NewLinkProtocolHandler(keys, nil)
+	handler.setCircIDLen(4) // NETINFO 在 VERSIONS 协商之后
 
 	conn := newMockConn()
 	err := handler.sendNetinfo(conn)
@@ -350,7 +395,7 @@ func TestSendNetinfo(t *testing.T) {
 	}
 
 	// Parse written cell
-	cells, err := conn.getWrittenCells()
+	cells, err := conn.getWrittenCells(4)
 	if err != nil {
 		t.Fatalf("Failed to parse written cells: %v", err)
 	}
@@ -379,6 +424,7 @@ func TestSendNetinfo(t *testing.T) {
 func TestReceiveNetinfo(t *testing.T) {
 	keys := generateTestRelayKeys(t)
 	handler := NewLinkProtocolHandler(keys, nil)
+	handler.setCircIDLen(4) // NETINFO 在 VERSIONS 协商之后
 
 	// Build NETINFO cell
 	var payload []byte
@@ -488,5 +534,67 @@ func TestHandleConnectionTimeout(t *testing.T) {
 	_, err := handler.HandleConnection(ctx, conn)
 	if err == nil {
 		t.Error("Expected timeout error, got nil")
+	}
+}
+
+func TestHandleConnectionSwitchesCircIDAfterVersions(t *testing.T) {
+	keys := generateTestRelayKeys(t)
+	handler := NewLinkProtocolHandler(keys, nil)
+
+	netinfoCell := cell.NewCell(0, cell.CmdNetinfo)
+	netinfoCell.Payload = []byte{
+		0x00, 0x00, 0x00, 0x01,
+		0x04, 4, 127, 0, 0, 1,
+		0,
+	}
+	var netinfoBuf bytes.Buffer
+	if err := netinfoCell.EncodeLink(&netinfoBuf, 4); err != nil {
+		t.Fatalf("encode NETINFO: %v", err)
+	}
+
+	conn := newMockConn()
+	conn.addReadData(inboundVersionsWire2())
+	conn.addReadData(netinfoBuf.Bytes())
+
+	orConn, err := handler.HandleConnection(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("HandleConnection failed: %v", err)
+	}
+	if orConn.negotiatedVersion != 5 {
+		t.Fatalf("negotiated version = %d, want 5", orConn.negotiatedVersion)
+	}
+	if orConn.circIDLen != 4 {
+		t.Fatalf("post-handshake circIDLen = %d, want 4", orConn.circIDLen)
+	}
+
+	conn.mu.Lock()
+	written := append([]byte(nil), conn.writeData...)
+	conn.mu.Unlock()
+	if len(written) < 3 || written[0] != 0x00 || written[1] != 0x00 || written[2] != byte(cell.CmdVersions) {
+		t.Fatalf("server VERSIONS prefix = %x, want 00 00 07", written)
+	}
+
+	// VERSIONS 2 字节帧之后，CERTS / NETINFO 必须是协商后的 4 字节 CircID
+	r := bytes.NewReader(written)
+	versionsOut, err := cell.DecodeCellLink(r, 2)
+	if err != nil {
+		t.Fatalf("decode server VERSIONS: %v", err)
+	}
+	if versionsOut.Command != cell.CmdVersions {
+		t.Fatalf("first written cell = %s, want VERSIONS", versionsOut.Command)
+	}
+	certsOut, err := cell.DecodeCellLink(r, 4)
+	if err != nil {
+		t.Fatalf("decode server CERTS with 4-byte CircID: %v", err)
+	}
+	if certsOut.Command != cell.CmdCerts {
+		t.Fatalf("second written cell = %s, want CERTS", certsOut.Command)
+	}
+	netinfoOut, err := cell.DecodeCellLink(r, 4)
+	if err != nil {
+		t.Fatalf("decode server NETINFO with 4-byte CircID: %v", err)
+	}
+	if netinfoOut.Command != cell.CmdNetinfo {
+		t.Fatalf("third written cell = %s, want NETINFO", netinfoOut.Command)
 	}
 }
