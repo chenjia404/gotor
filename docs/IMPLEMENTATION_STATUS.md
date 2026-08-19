@@ -31,7 +31,7 @@
 | EXTEND2 / EXTENDED2 | WORKING | 真实 Guard→Middle / Middle→Exit EXTEND2 已成功 |
 | Circuit crypto / digest | WORKING | 真实 RELAY_DROP / EXTEND2 / BEGIN / DATA 已证明 AES-CTR + SHA-1 digest 与 Guard 一致；仍缺官方 cell 向量 |
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
-| SENDME / flow control | PARTIAL | 电路级 SENDME v1（20 字节 digest）已实现；真实 soak 待本轮验收 |
+| SENDME / flow control | WORKING | 电路级 SENDME v1 已在真实网络 256KB+ soak 通过；流级仍为空（spec）；FlowCtrl=2 未做 |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | PARTIAL | 有 Resolve API；未证明无本地泄漏 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功 |
@@ -115,14 +115,15 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 - 真实 RELAY_DROP 不再触发 DESTROY；EXTEND2 / BEGIN / DATA 已跑通。
 - **缺口**：缺官方 C Tor/Arti relay-cell 向量；cell tracer（`pkg/debug`，`GOTOR_CELL_TRACE=1`）默认关闭且不记用户 payload。
 
-### SENDME / Flow control — PARTIAL（本轮已修认证 blocker）
+### SENDME / Flow control — WORKING（电路级 v1）
 
 - circuit window 1000 / +100；stream window 500 / +50。
 - 电路级 SENDME 发 version 1，DIGEST=触发 cell 的完整 20 字节滚动 SHA-1。
 - 发出 DATA 时在 `package_window % 100 == 0` 入队；收到 SENDME 必须 FIFO 匹配，否则拆路。
 - 流级 SENDME 仍为空（spec）。
 - DATA padding 随机化。
-- **缺口**：1MB–100MB soak 与 SENDME 认证的真实网络证明（见 `TestRealFlowControlSoak`）。
+- 真实网络：`TestRealFlowControlSoak` 经 SOCKS 下载 282KB，电路未 DESTROY。
+- **缺口**：1MB–100MB soak、FlowCtrl=2（ntor-v3 congestion control）。
 
 ### SOCKS5 / DNS — WORKING（CONNECT） / PARTIAL（RESOLVE）
 
@@ -206,5 +207,5 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 CREATE2、EXTEND2、3-hop、`IsTor=true`（ExitIP ≠ 本机）。  
-**Tor Client basic interoperability 可标 WORKING（经典 ntor / AES-CTR-SHA1 路径）**。ntor-v3、SENDME 认证、大流量 soak 仍未做。
+当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 CREATE2、EXTEND2、3-hop、`IsTor=true`、SENDME v1 soak（≥256KB）。  
+**Tor Client basic interoperability 可标 WORKING（经典 ntor / AES-CTR-SHA1 / SENDME v1）**。ntor-v3、FlowCtrl=2、更大流量 soak 仍未做。

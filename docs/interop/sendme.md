@@ -34,3 +34,7 @@ body 仍为空，接收方忽略。窗口 500，每 50 cell +50。
 - `pkg/cell/sendme.go`：编解码
 - `pkg/circuit/sendme.go`：FIFO 校验 / 发出 v1
 - DATA cell 未用 padding 填随机字节（spec：每个 increment 窗口内 digest 不可预测）
+
+## 真实网络
+
+`TestRealFlowControlSoak`：SOCKS5 重复拉取 `www.torproject.org`，合计 ≥256KB，电路未 DESTROY。
