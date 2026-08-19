@@ -38,6 +38,9 @@ const (
 
 	// Certificate caching
 	certCacheTTL = 24 * time.Hour // Authority certificates are valid for ~30 days, cache for 24h
+
+	// 共识正文上限（整份或 apply 后）。真实 microdesc 共识约 1–3MB。
+	maxConsensusDownloadBytes = 16 << 20
 )
 
 // DefaultAuthorities is the default directory authority addresses (hardcoded fallback directories)
@@ -145,12 +148,14 @@ type Relay struct {
 
 // Client provides directory protocol operations
 type Client struct {
-	httpClient  *http.Client
-	logger      *logger.Logger
-	authorities []string
-	certCache   *AuthorityCertCache // Certificate cache for signature verification
-	mu          sync.RWMutex
-	lastParams  map[string]int // 最近一次验签成功的共识 params（给 FlowCtrl=2）
+	httpClient        *http.Client
+	logger            *logger.Logger
+	authorities       []string
+	certCache         *AuthorityCertCache // Certificate cache for signature verification
+	mu                sync.RWMutex
+	lastParams        map[string]int // 最近一次验签成功的共识 params（给 FlowCtrl=2）
+	lastConsensusRaw  string         // 验签成功的整份共识（给 DirCache=2 diff）
+	lastSignedSHA3Hex string         // 上述文档 signed part 的 SHA3-256 hex
 }
 
 // AuthorityCertCache caches authority signing certificates for consensus verification
@@ -228,60 +233,131 @@ func (c *Client) FetchConsensus(ctx context.Context) ([]*Relay, error) {
 
 // fetchFromAuthority fetches consensus from a specific authority
 func (c *Client) fetchFromAuthority(ctx context.Context, authorityURL string) ([]*Relay, error) {
+	fromHex := c.cachedSignedSHA3()
+	if fromHex != "" {
+		raw, err := c.httpGetConsensus(ctx, authorityURL, fromHex)
+		if err == nil {
+			doc, aerr := c.resolveConsensusPayload(raw)
+			if aerr == nil {
+				relays, ierr := c.ingestConsensusDocument(ctx, doc)
+				if ierr == nil {
+					return relays, nil
+				}
+				c.logger.Warn("applied or received consensus rejected; falling back to full document", "error", ierr)
+			} else {
+				c.logger.Warn("consensus diff apply failed; falling back to full document", "error", aerr)
+			}
+		} else {
+			c.logger.Debug("consensus diff request failed; falling back to full document", "error", err)
+		}
+	}
+
+	raw, err := c.httpGetConsensus(ctx, authorityURL, "")
+	if err != nil {
+		return nil, err
+	}
+	if isConsensusDiffDocument(raw) {
+		return nil, fmt.Errorf("authority returned consensus diff on full-document request")
+	}
+	return c.ingestConsensusDocument(ctx, raw)
+}
+
+func (c *Client) cachedSignedSHA3() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastSignedSHA3Hex
+}
+
+func (c *Client) copyLastConsensusRaw() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastConsensusRaw
+}
+
+func (c *Client) rememberVerifiedConsensus(doc, signedSHA3 string, params map[string]int) {
+	copied := make(map[string]int, len(params))
+	for k, v := range params {
+		copied[k] = v
+	}
+	c.mu.Lock()
+	c.lastConsensusRaw = doc
+	c.lastSignedSHA3Hex = signedSHA3
+	c.lastParams = copied
+	c.mu.Unlock()
+}
+
+// resolveConsensusPayload 若是 limited ed diff 则应用到已缓存共识，否则原样返回整份文档。
+func (c *Client) resolveConsensusPayload(raw string) (string, error) {
+	if !isConsensusDiffDocument(raw) {
+		return raw, nil
+	}
+	cached := c.copyLastConsensusRaw()
+	if cached == "" {
+		return "", fmt.Errorf("received consensus diff without cached consensus")
+	}
+	return applyConsensusDiff(cached, raw)
+}
+
+func (c *Client) httpGetConsensus(ctx context.Context, authorityURL, fromSHA3 string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", authorityURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	if fromSHA3 != "" {
+		req.Header.Set("X-Or-Diff-From-Consensus", strings.ToLower(fromSHA3))
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch consensus: %w", err)
+		return "", fmt.Errorf("failed to fetch consensus: %w", err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			c.logger.Error("Failed to close response body", "function", "fetchFromAuthority", "error", err)
+			c.logger.Error("Failed to close response body", "function", "httpGetConsensus", "error", err)
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return "", fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	// Handle compressed response
 	var reader io.Reader = resp.Body
 	switch resp.Header.Get("Content-Encoding") {
 	case "gzip":
 		gzReader, err := gzip.NewReader(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
+			return "", fmt.Errorf("failed to create gzip reader: %w", err)
 		}
 		defer func() {
 			if err := gzReader.Close(); err != nil {
-				c.logger.Error("Failed to close gzip reader", "function", "fetchFromAuthority", "error", err)
+				c.logger.Error("Failed to close gzip reader", "function", "httpGetConsensus", "error", err)
 			}
 		}()
 		reader = gzReader
 	case "deflate":
-		// Try zlib format first (deflate with wrapper)
 		zlibReader, err := zlib.NewReader(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create zlib reader: %w", err)
+			return "", fmt.Errorf("failed to create zlib reader: %w", err)
 		}
 		defer func() {
 			if err := zlibReader.Close(); err != nil {
-				c.logger.Error("Failed to close zlib reader", "function", "fetchFromAuthority", "error", err)
+				c.logger.Error("Failed to close zlib reader", "function", "httpGetConsensus", "error", err)
 			}
 		}()
 		reader = zlibReader
 	}
 
-	// 必须保留原文：签名覆盖 network-status-version … directory-signature<space>
-	raw, err := io.ReadAll(reader)
+	raw, err := io.ReadAll(io.LimitReader(reader, maxConsensusDownloadBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read consensus: %w", err)
+		return "", fmt.Errorf("failed to read consensus: %w", err)
 	}
+	if len(raw) > maxConsensusDownloadBytes {
+		return "", fmt.Errorf("consensus document exceeds %d bytes", maxConsensusDownloadBytes)
+	}
+	return string(raw), nil
+}
 
-	doc := string(raw)
+func (c *Client) ingestConsensusDocument(ctx context.Context, doc string) ([]*Relay, error) {
 	signedBody, err := extractConsensusSignedBody(doc)
 	if err != nil {
 		return nil, fmt.Errorf("consensus signed-body: %w", err)
@@ -322,7 +398,7 @@ func (c *Client) fetchFromAuthority(ctx context.Context, authorityURL string) ([
 		"valid_after", metadata.ValidAfter,
 		"valid_until", metadata.ValidUntil)
 
-	c.storeLastParams(metadata.Params)
+	c.rememberVerifiedConsensus(doc, sha3_256Hex(signedBody), metadata.Params)
 	return relays, nil
 }
 

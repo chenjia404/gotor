@@ -10,6 +10,7 @@ HTTP 目录端口仍可能 `InsecureSkipVerify`。没有密码学验签时，MIT
 
 - Spec：https://spec.torproject.org/dir-spec/consensus-formats.html
 - Spec：https://spec.torproject.org/dir-spec/authority-key-certificates.html
+- Consensus diff（DirCache=2）：见 `docs/interop/consensus-diff.md`
 - C Tor：`router_get_networkstatus_v3_signed_boundaries`
 - C Tor：`authority_cert_parse_from_string` / dir-key-certification
 
