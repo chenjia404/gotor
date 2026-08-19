@@ -1,4 +1,5 @@
 # 将 Docker 镜像推送到 GitHub Container Registry
+# 只打 latest（默认分支覆盖）和 git SHA 短号，避免 sha/semver 堆积
 # 拉取：docker pull ghcr.io/chenjia404/gotor:latest
 name: Docker
 
@@ -45,10 +46,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=,format=short
 
       - name: Resolve build args
         id: args
