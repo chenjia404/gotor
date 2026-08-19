@@ -616,3 +616,22 @@ func TestMergeContextsChildCancellation(t *testing.T) {
 		t.Error("Merged context should be cancelled when child is cancelled")
 	}
 }
+
+func TestIsolationModeFor(t *testing.T) {
+	if isolationModeFor(nil) != "off" {
+		t.Fatal("nil 配置应为 off")
+	}
+	cfg := config.DefaultConfig()
+	if isolationModeFor(cfg) != "off" {
+		t.Fatalf("默认应为 off, got %q", isolationModeFor(cfg))
+	}
+	cfg.IsolationLevel = "destination"
+	if isolationModeFor(cfg) != "strict" {
+		t.Fatalf("IsolationLevel=destination 应为 strict, got %q", isolationModeFor(cfg))
+	}
+	cfg = config.DefaultConfig()
+	cfg.IsolateDestinations = true
+	if isolationModeFor(cfg) != "strict" {
+		t.Fatalf("IsolateDestinations 应为 strict, got %q", isolationModeFor(cfg))
+	}
+}

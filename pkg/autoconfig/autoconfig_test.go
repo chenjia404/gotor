@@ -4,8 +4,36 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
+
+func TestDefaultDataDirForGOOSAndroid(t *testing.T) {
+	t.Setenv("GOTOR_DATADIR", "")
+	dir, err := defaultDataDirForGOOS("android")
+	if err != nil {
+		t.Fatalf("android 默认目录失败: %v", err)
+	}
+	if dir == "" {
+		t.Fatal("android 默认目录为空")
+	}
+	if filepath.Base(dir) != "go-tor" {
+		t.Fatalf("android 目录应以 go-tor 结尾: %s", dir)
+	}
+	if strings.Contains(filepath.ToSlash(dir), "/.config/") || strings.HasSuffix(filepath.ToSlash(dir), "/.config") {
+		t.Fatalf("android 不得使用 ~/.config: %s", dir)
+	}
+
+	want := filepath.Join(t.TempDir(), "app-files")
+	t.Setenv("GOTOR_DATADIR", want)
+	got, err := defaultDataDirForGOOS("android")
+	if err != nil {
+		t.Fatalf("GOTOR_DATADIR 分支失败: %v", err)
+	}
+	if got != want {
+		t.Fatalf("GOTOR_DATADIR: got %q want %q", got, want)
+	}
+}
 
 func TestGetDefaultDataDir(t *testing.T) {
 	dataDir, err := GetDefaultDataDir()

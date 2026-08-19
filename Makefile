@@ -1,4 +1,4 @@
-.PHONY: all build test clean install fmt vet lint coverage help
+.PHONY: all build test clean install fmt vet lint coverage help android-aar
 
 # Build variables
 BINARY_NAME=gotor
@@ -146,6 +146,18 @@ docker-push: docker-build ## Push Docker image to GHCR
 docker-run: ## Run Docker container
 	@echo "Running Docker container..."
 	docker run --rm -p 9050:9050 -p 9051:9051 $(IMAGE):$(VERSION)
+
+# Android AAR（仅绑定库，本仓库不包含 Android 工程 / APK）
+ANDROID_API ?= 21
+MOBILE_PKG = github.com/opd-ai/go-tor/pkg/mobile
+AAR_PATH = bin/gotor.aar
+
+android-aar: ## 使用 gomobile 生成 Android AAR（arm / arm64）
+	@echo "构建 Android AAR（需要 gomobile、Android NDK、CGO）..."
+	@command -v gomobile >/dev/null || (echo "请先安装: go install golang.org/x/mobile/cmd/gomobile@latest && gomobile init" && exit 1)
+	@mkdir -p bin
+	gomobile bind -v -target=android/arm,android/arm64 -androidapi=$(ANDROID_API) -ldflags="-s -w" -o $(AAR_PATH) $(MOBILE_PKG)
+	@echo "AAR 已生成: $(AAR_PATH)"
 
 help: ## Show this help message
 	@echo "Usage: make [target]"

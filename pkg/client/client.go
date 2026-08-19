@@ -40,6 +40,20 @@ func parseIsolationLevel(level string) circuit.IsolationLevel {
 	return parsed
 }
 
+// isolationModeFor 在配置了电路隔离时启用 SOCKS 侧强制，否则保持 off。
+func isolationModeFor(cfg *config.Config) string {
+	if cfg == nil {
+		return "off"
+	}
+	if cfg.IsolationLevel != "" && cfg.IsolationLevel != "none" {
+		return "strict"
+	}
+	if cfg.IsolateDestinations || cfg.IsolateSOCKSAuth || cfg.IsolateClientPort || cfg.IsolateClientProtocol {
+		return "strict"
+	}
+	return "off"
+}
+
 // Client represents a Tor client instance
 type Client struct {
 	config        *config.Config
@@ -147,6 +161,7 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 		IsolateDestinations: cfg.IsolateDestinations,
 		IsolateSOCKSAuth:    cfg.IsolateSOCKSAuth,
 		IsolateClientPort:   cfg.IsolateClientPort,
+		IsolationMode:       isolationModeFor(cfg),
 		SafeSocks:           cfg.SafeSocks,
 		TestSocks:           cfg.TestSocks,
 		RejectInternal:      cfg.ClientRejectInternalAddresses,
