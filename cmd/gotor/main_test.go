@@ -62,7 +62,14 @@ func TestVerifyConfigExitRelay(t *testing.T) {
 	cfg := config.DefaultCLIConfig()
 	cfg.ExitRelay = true
 	if err := cfg.CheckDropInConstraints(); err == nil {
-		t.Fatal("expected reject")
+		t.Fatal("ExitRelay 1 且 ORPort=0 应拒绝")
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate 也应拒绝 ExitRelay 1 + ORPort=0")
+	}
+	cfg.ORPort = 9001
+	if err := cfg.CheckDropInConstraints(); err != nil {
+		t.Fatalf("ExitRelay 1 + ORPort 应允许: %v", err)
 	}
 }
 

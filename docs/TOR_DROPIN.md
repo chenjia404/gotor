@@ -2,8 +2,8 @@
 
 **产物**：单一二进制 `bin/gotor`（`make build`）。
 
-**范围**：客户端 + 洋葱服务托管 + 非出口 ORPort 中继。未知 torrc 键**静默忽略**。
-**明确不做**：PT 生产路径（obfs4/Bridge 真连）、出口中继（`ExitRelay 1` 拒绝启动）、TransPort/NATDPort、完整 Windows NT service。
+**范围**：客户端 + 洋葱服务托管 + ORPort 中继（含出口）。未知 torrc 键**静默忽略**。
+**明确不做**：PT 生产路径（obfs4/Bridge 真连）、TransPort/NATDPort、完整 Windows NT service、Directory Authority。
 
 ## CLI（对齐 C Tor 0.4.9.x）
 
@@ -65,8 +65,13 @@ gotor --version                   # Tor version 0.4.9.11 (gotor).
 | UseBridges / Bridge / ClientTransportPlugin | **仅解析**，无 PT 生产路径 |
 | ExitNodes / EntryNodes / Exclude* / StrictNodes | 解析入库（选路接线持续完善） |
 | HiddenServiceDir / Port / Version / MaxStreams | 启动托管洋葱服务 |
-| ORPort / Nickname 等 | 非出口中继 |
-| ExitRelay / ExitPolicy* | 解析；**ExitRelay 1 拒绝作为出口启动** |
+| ORPort / Nickname / ContactInfo / Address | 中继身份与宣告地址；`ORPort` 必须 >0 才能当中继 |
+| ExitRelay / ExitPolicy / ReduceExitPolicy / IPv6Exit | **ExitRelay 1 启用出口**；策略顺序匹配，无匹配默认 accept（C Tor）；`DefaultCLIConfig()` 默认 ExitRelay=0 |
+| ExitPolicyRejectPrivate | 默认 1：拒绝 RFC1918/环回/链路本地/CGN/文档网段等 |
+| ExitPolicyRejectLocalInterfaces | 默认 1：拒绝本机网卡地址 |
+| DirPort / DirCache | 解析；DirCache 尽量用 CacheDirectory 落盘文件应答 BEGIN_DIR / 明文 DirPort |
+| MyFamily / FamilyID | 解析；MyFamily 写入描述符 `family` 行 |
+| RelayBandwidthRate/Burst、BandwidthRate/Burst | 接到出口数据面令牌桶 |
 | TransPort / NATDPort | 非 0 拒绝启动（未实现） |
 | %include / Include | 递归包含；通配符词法排序；目录忽略点文件 |
 | 引号值 | `DataDirectory "/path with spaces"` |
@@ -76,10 +81,12 @@ gotor --version                   # Tor version 0.4.9.11 (gotor).
 - `lock`（flock；占用则退出）
 - `state`（含 `Guard in=default rsa_id=... nickname=...`；读优先于 `guard_state.json`，写两者；`rsa_id` 须为 40 位十六进制，否则丢弃并回退 json）
 - `control_auth_cookie`
-- `keys/`（`--keygen` / `--list-fingerprint`）
+- `keys/`（`--keygen` / `--list-fingerprint`；可读 C Tor `secret_id_key` / `ed25519_master_id_secret_key` / `secret_onion_key_ntor`）
 - HiddenServiceDir（既有）
 - CacheDirectory：`cached-certs`（DataDirectory，既有）、`cached-microdesc-consensus`（验签成功后原子写；启动再验签，过期不用）、`cached-microdescs` + `cached-microdescs.new`（`@last-listed`；哈希前去掉 `@` 行）
 
-## 中继（PARTIAL）
+## 中继 / 出口（PARTIAL）
 
-`ORPort` 启用非出口中继。`ExitRelay 1` 由 drop-in 入口拒绝。
+`ORPort > 0` 启用中继。`ExitRelay 1` 且 `ORPort > 0` 时作为出口：执行 ExitPolicy、处理 RELAY_BEGIN/DATA/END/RESOLVE，描述符写入真实 accept/reject。`ExitRelay 1` 且 `ORPort==0` 拒绝启动。策略最终等价 `reject *:*` 时仍启动，但不会放行常见端口（权威不会给 Exit flag）。
+
+`DefaultCLIConfig()` **默认不打开** ExitRelay。未经验证的真网权威收录不得宣称 WORKING。

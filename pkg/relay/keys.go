@@ -151,6 +151,10 @@ func (k *RelayKeys) SaveKeys(dataDir string) error {
 	if err := saveSecureFile(ed25519Path, k.Ed25519Private, 0o600); err != nil {
 		return fmt.Errorf("failed to save Ed25519 key: %w", err)
 	}
+	// C Tor 别名，避免换二进制丢身份
+	if err := saveSecureFile(filepath.Join(dataDir, "ed25519_master_id_secret_key"), encodeCTorEd25519Secret(k.Ed25519Private), 0o600); err != nil {
+		return fmt.Errorf("failed to save C Tor Ed25519 key: %w", err)
+	}
 
 	// Save RSA identity key in PEM format
 	rsaPath := filepath.Join(dataDir, "rsa_identity_secret_key")
@@ -161,6 +165,9 @@ func (k *RelayKeys) SaveKeys(dataDir string) error {
 	})
 	if err := saveSecureFile(rsaPath, rsaPEM, 0o600); err != nil {
 		return fmt.Errorf("failed to save RSA key: %w", err)
+	}
+	if err := saveSecureFile(filepath.Join(dataDir, "secret_id_key"), rsaPEM, 0o600); err != nil {
+		return fmt.Errorf("failed to save C Tor RSA key: %w", err)
 	}
 
 	// Save TLS certificate in PEM format
@@ -173,10 +180,10 @@ func (k *RelayKeys) SaveKeys(dataDir string) error {
 		return fmt.Errorf("failed to save TLS certificate: %w", err)
 	}
 
-	// Save ntor onion private key
+	// Save ntor onion private key（C Tor tagged，LoadKeys 同时接受裸 32 字节）
 	if len(k.NtorOnionKey) == 32 {
 		ntorPath := filepath.Join(dataDir, "secret_onion_key_ntor")
-		if err := saveSecureFile(ntorPath, k.NtorOnionKey, 0o600); err != nil {
+		if err := saveSecureFile(ntorPath, encodeCTorNtorSecret(k.NtorOnionKey), 0o600); err != nil {
 			return fmt.Errorf("failed to save ntor key: %w", err)
 		}
 	}
@@ -188,21 +195,19 @@ func (k *RelayKeys) SaveKeys(dataDir string) error {
 func LoadKeys(dataDir string) (*RelayKeys, error) {
 	keys := &RelayKeys{}
 
-	// Load Ed25519 identity key
-	ed25519Path := filepath.Join(dataDir, "ed25519_identity_secret_key")
-	ed25519Data, err := os.ReadFile(ed25519Path)
+	ed25519Data, err := readFirstExisting(dataDir, "ed25519_identity_secret_key", "ed25519_master_id_secret_key")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read Ed25519 key: %w", err)
 	}
-	if len(ed25519Data) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("invalid Ed25519 key size: got %d, want %d", len(ed25519Data), ed25519.PrivateKeySize)
+	priv, err := parseEd25519Secret(ed25519Data)
+	if err != nil {
+		return nil, err
 	}
-	keys.Ed25519Private = ed25519.PrivateKey(ed25519Data)
+	keys.Ed25519Private = priv
 	keys.Ed25519Public = keys.Ed25519Private.Public().(ed25519.PublicKey)
 
-	// Load RSA identity key
-	rsaPath := filepath.Join(dataDir, "rsa_identity_secret_key")
-	rsaPEMData, err := os.ReadFile(rsaPath)
+	// Load RSA identity key（gotor 名或 C Tor secret_id_key）
+	rsaPEMData, err := readFirstExisting(dataDir, "rsa_identity_secret_key", "secret_id_key")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read RSA key: %w", err)
 	}
@@ -216,19 +221,26 @@ func LoadKeys(dataDir string) (*RelayKeys, error) {
 	}
 	keys.RSAPrivate = rsaKey
 
-	// Load TLS certificate
+	// Load TLS certificate；C Tor keys 目录可能没有，用 RSA 身份钥现签
 	certPath := filepath.Join(dataDir, "tls_certificate.pem")
 	certPEMData, err := os.ReadFile(certPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read TLS certificate: %w", err)
+		cert, gerr := generateTLSCertificate(keys.RSAPrivate)
+		if gerr != nil {
+			return nil, fmt.Errorf("generate TLS certificate: %w", gerr)
+		}
+		keys.TLSCert = cert
+		certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert})
+		_ = saveSecureFile(certPath, certPEM, 0o644)
+	} else {
+		block, _ = pem.Decode(certPEMData)
+		if block == nil || block.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("invalid certificate PEM format")
+		}
+		keys.TLSCert = block.Bytes
 	}
-	block, _ = pem.Decode(certPEMData)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, fmt.Errorf("invalid certificate PEM format")
-	}
-	keys.TLSCert = block.Bytes
 
-	// Load ntor onion key（缺失则生成并落盘）
+	// Load ntor onion key（缺失则生成并落盘；兼容 C Tor tagged 头）
 	ntorPath := filepath.Join(dataDir, "secret_onion_key_ntor")
 	ntorData, err := os.ReadFile(ntorPath)
 	if err != nil {
@@ -239,10 +251,11 @@ func LoadKeys(dataDir string) (*RelayKeys, error) {
 		keys.NtorOnionKey = ntorKey
 		_ = saveSecureFile(ntorPath, ntorKey, 0o600)
 	} else {
-		if len(ntorData) != 32 {
-			return nil, fmt.Errorf("invalid ntor key size: %d", len(ntorData))
+		ntorKey, nerr := parseNtorSecret(ntorData)
+		if nerr != nil {
+			return nil, nerr
 		}
-		keys.NtorOnionKey = ntorData
+		keys.NtorOnionKey = ntorKey
 	}
 
 	keys.Identity.Public = keys.Ed25519Public

@@ -92,10 +92,17 @@ type Config struct {
 	AssumeReachable         bool   // AssumeReachable
 	RelayBandwidthRate      int64  // 字节/秒，0=不限
 	RelayBandwidthBurst     int64  // 突发字节，0=不限
-	// ExitPolicyLines 为 torrc 中按顺序出现的 ExitPolicy / ExitPolicyReject* 规则行（不含关键字）
-	ExitPolicyLines  []string
-	IPv6Exit         bool // IPv6Exit
-	ReduceExitPolicy bool // ReduceExitPolicy（启用精简默认出口策略）
+	// ExitPolicyLines 为 torrc 中按顺序出现的 ExitPolicy 规则行（不含关键字）
+	ExitPolicyLines                 []string
+	IPv6Exit                        bool // IPv6Exit
+	ReduceExitPolicy                bool // ReduceExitPolicy（启用精简默认出口策略）
+	ExitPolicyRejectPrivate         bool // 默认 true：拒绝 RFC1918/环回/链路本地/CGN 等
+	ExitPolicyRejectLocalInterfaces bool // 默认 true：拒绝本机网卡地址（C Tor 0.4.9）
+	DirPort                         int  // 目录缓存 HTTP 端口（0=不监听明文 DirPort）
+	DirListenAddr                   string
+	DirCache                        bool     // 是否作为目录缓存（出口中继常见；BEGIN_DIR）
+	MyFamily                        []string // MyFamily 指纹/昵称
+	FamilyIDs                       []string // FamilyID（Desc=4）
 
 	// Onion service settings
 	OnionServices []OnionServiceConfig
@@ -260,58 +267,65 @@ func DefaultConfig() *Config {
 	}
 
 	return &Config{
-		SocksPort:                   socksPort,
-		SocksListenAddr:             "127.0.0.1",
-		ControlPort:                 controlPort,
-		ControlListenAddr:           "127.0.0.1",
-		ControlPassword:             "", // No authentication by default
-		HashedControlPassword:       "",
-		CookieAuthentication:        false,
-		CookieAuthFile:              "",
-		AllowUnauthenticatedControl: true, // 库路径：兼容既有无认证测试
-		DataDirectory:               dataDir,
-		CacheDirectory:              "",
-		ClientUseIPv4:               true,
-		ClientUseIPv6:               true,
-		ClientPreferIPv6ORPort:      false,
-		UseDefaultFallbackDirs:      true,
-		ConnectionPadding:           "auto",
-		VirtualAddrNetworkIPv4:      "127.192.0.0/10",
-		VirtualAddrNetworkIPv6:      "[FE80::]/10",
-		AutomapHostsSuffixes:        []string{".onion", ".exit"},
-		CircuitBuildTimeout:         60 * time.Second,
-		MaxCircuitDirtiness:         10 * time.Minute,
-		NewCircuitPeriod:            30 * time.Second,
-		NumEntryGuards:              3,
-		UseEntryGuards:              true,
-		UseBridges:                  false,
-		BridgeAddresses:             []string{},
-		ExcludeNodes:                []string{},
-		ExcludeExitNodes:            []string{},
-		ExitNodes:                   []string{},
-		EntryNodes:                  []string{},
-		StrictNodes:                 false,
-		ConnLimit:                   1000,
-		DormantTimeout:              24 * time.Hour,
-		ORPort:                      0,
-		ORListenAddr:                "0.0.0.0",
-		Nickname:                    "",
-		ContactInfo:                 "",
-		RelayAddress:                "",
-		ExitRelay:                   false,
-		PublishServerDescriptor:     true,
-		AssumeReachable:             false,
-		RelayBandwidthRate:          0,
-		RelayBandwidthBurst:         0,
-		ExitPolicyLines:             nil,
-		IPv6Exit:                    false,
-		ReduceExitPolicy:            false,
-		OnionServices:               []OnionServiceConfig{},
-		ClientTransports:            []ClientTransportConfig{},
-		ServerTransports:            []ServerTransportConfig{},
-		TransportProxy:              "",
-		LogLevel:                    "info",
-		LogFile:                     "",
+		SocksPort:                       socksPort,
+		SocksListenAddr:                 "127.0.0.1",
+		ControlPort:                     controlPort,
+		ControlListenAddr:               "127.0.0.1",
+		ControlPassword:                 "", // No authentication by default
+		HashedControlPassword:           "",
+		CookieAuthentication:            false,
+		CookieAuthFile:                  "",
+		AllowUnauthenticatedControl:     true, // 库路径：兼容既有无认证测试
+		DataDirectory:                   dataDir,
+		CacheDirectory:                  "",
+		ClientUseIPv4:                   true,
+		ClientUseIPv6:                   true,
+		ClientPreferIPv6ORPort:          false,
+		UseDefaultFallbackDirs:          true,
+		ConnectionPadding:               "auto",
+		VirtualAddrNetworkIPv4:          "127.192.0.0/10",
+		VirtualAddrNetworkIPv6:          "[FE80::]/10",
+		AutomapHostsSuffixes:            []string{".onion", ".exit"},
+		CircuitBuildTimeout:             60 * time.Second,
+		MaxCircuitDirtiness:             10 * time.Minute,
+		NewCircuitPeriod:                30 * time.Second,
+		NumEntryGuards:                  3,
+		UseEntryGuards:                  true,
+		UseBridges:                      false,
+		BridgeAddresses:                 []string{},
+		ExcludeNodes:                    []string{},
+		ExcludeExitNodes:                []string{},
+		ExitNodes:                       []string{},
+		EntryNodes:                      []string{},
+		StrictNodes:                     false,
+		ConnLimit:                       1000,
+		DormantTimeout:                  24 * time.Hour,
+		ORPort:                          0,
+		ORListenAddr:                    "0.0.0.0",
+		Nickname:                        "",
+		ContactInfo:                     "",
+		RelayAddress:                    "",
+		ExitRelay:                       false,
+		PublishServerDescriptor:         true,
+		AssumeReachable:                 false,
+		RelayBandwidthRate:              0,
+		RelayBandwidthBurst:             0,
+		ExitPolicyLines:                 nil,
+		IPv6Exit:                        false,
+		ReduceExitPolicy:                false,
+		ExitPolicyRejectPrivate:         true,
+		ExitPolicyRejectLocalInterfaces: true,
+		DirPort:                         0,
+		DirListenAddr:                   "0.0.0.0",
+		DirCache:                        true, // C Tor：中继默认开目录缓存
+		MyFamily:                        nil,
+		FamilyIDs:                       nil,
+		OnionServices:                   []OnionServiceConfig{},
+		ClientTransports:                []ClientTransportConfig{},
+		ServerTransports:                []ServerTransportConfig{},
+		TransportProxy:                  "",
+		LogLevel:                        "info",
+		LogFile:                         "",
 		// Monitoring defaults (Phase 9.1)
 		MetricsPort:   0,     // Disabled by default
 		EnableMetrics: false, // Disabled by default
@@ -441,6 +455,15 @@ func (c *Config) Validate() error {
 	}
 	if c.ConnLimit < 1 {
 		return fmt.Errorf("ConnLimit must be at least 1")
+	}
+	if c.ORPort < 0 || c.ORPort > 65535 {
+		return fmt.Errorf("invalid ORPort: %d", c.ORPort)
+	}
+	if c.DirPort < 0 || c.DirPort > 65535 {
+		return fmt.Errorf("invalid DirPort: %d", c.DirPort)
+	}
+	if c.ExitRelay && c.ORPort == 0 {
+		return fmt.Errorf("ExitRelay 1 需要 ORPort > 0")
 	}
 
 	// Validate log level
@@ -642,6 +665,8 @@ func (c *Config) Clone() *Config {
 	clone.ExitNodes = append([]string{}, c.ExitNodes...)
 	clone.EntryNodes = append([]string{}, c.EntryNodes...)
 	clone.ExitPolicyLines = append([]string{}, c.ExitPolicyLines...)
+	clone.MyFamily = append([]string{}, c.MyFamily...)
+	clone.FamilyIDs = append([]string{}, c.FamilyIDs...)
 	clone.MapAddress = append([]MapAddressEntry{}, c.MapAddress...)
 	clone.AutomapHostsSuffixes = append([]string{}, c.AutomapHostsSuffixes...)
 	clone.FallbackDirs = append([]string{}, c.FallbackDirs...)
@@ -666,6 +691,8 @@ func DefaultCLIConfig() *Config {
 	if cfg.SocksTimeout == 0 {
 		cfg.SocksTimeout = 120 * time.Second
 	}
+	// 默认不当出口；库 DefaultConfig() 同样为 false，此处显式固定以免日后被改。
+	cfg.ExitRelay = false
 	return cfg
 }
 

@@ -9,6 +9,17 @@ import (
 	"testing"
 )
 
+func TestDefaultCLIConfigDoesNotEnableExit(t *testing.T) {
+	cli := DefaultCLIConfig()
+	if cli.ExitRelay {
+		t.Fatal("DefaultCLIConfig 不得打开 ExitRelay")
+	}
+	lib := DefaultConfig()
+	if lib.ExitRelay {
+		t.Fatal("DefaultConfig 也不得默认打开 ExitRelay")
+	}
+}
+
 func TestDefaultCLIConfigDoesNotChangeLibraryDefaults(t *testing.T) {
 	lib := DefaultConfig()
 	cli := DefaultCLIConfig()
@@ -206,11 +217,24 @@ func TestVersionString(t *testing.T) {
 
 func TestCheckDropInConstraints(t *testing.T) {
 	cfg := DefaultCLIConfig()
+	if cfg.ExitRelay {
+		t.Fatal("DefaultCLIConfig 不得默认打开 ExitRelay")
+	}
 	cfg.ExitRelay = true
 	if err := cfg.CheckDropInConstraints(); err == nil {
-		t.Fatal("ExitRelay should fail")
+		t.Fatal("ExitRelay 1 且 ORPort=0 应失败")
 	}
+	cfg.ORPort = 9001
+	if err := cfg.CheckDropInConstraints(); err != nil {
+		t.Fatalf("ExitRelay 1 + ORPort 应通过: %v", err)
+	}
+	cfg.ClientOnly = true
+	if err := cfg.CheckDropInConstraints(); err == nil {
+		t.Fatal("ClientOnly 与 ExitRelay 冲突应失败")
+	}
+	cfg.ClientOnly = false
 	cfg.ExitRelay = false
+	cfg.ORPort = 0
 	cfg.TransPort = 9040
 	if err := cfg.CheckDropInConstraints(); err == nil {
 		t.Fatal("TransPort should fail")

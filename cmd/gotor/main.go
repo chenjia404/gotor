@@ -276,6 +276,7 @@ func printHelp() {
   gotor SocksPort 9150 ControlPort 9151
   gotor --hash-password mysecret
   gotor ORPort 9001 Nickname gotorRelay ExitRelay 0
+  gotor ORPort 9001 ExitRelay 1 ReduceExitPolicy 1 SocksPort 0
 `)
 }
 

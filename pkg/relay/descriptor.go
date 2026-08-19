@@ -37,7 +37,8 @@ type ServerDescriptor struct {
 	BandwidthObs   uint64    // Observed bandwidth (bytes/sec)
 	Contact        string    // Contact information (optional)
 	Family         []string  // Relay family members (optional)
-	ExitPolicy     string    // Exit policy summary (default: "reject *:*")
+	ExitPolicy     string    // Exit policy 行（可多行，默认 "reject *:*"）
+	IPv6Policy     string    // ipv6-policy 行
 	IPv6Addr       string    // IPv6 address (optional, e.g., "[2001:db8::1]:9001")
 
 	// Cryptographic keys
@@ -68,17 +69,19 @@ type ExtraInfoDescriptor struct {
 
 // DescriptorConfig holds configuration for descriptor generation
 type DescriptorConfig struct {
-	Nickname       string   // Relay nickname (default: auto-generated)
-	Address        string   // IPv4 address (required)
-	ORPort         uint16   // OR port (required)
-	DirPort        uint16   // Directory port (0 for bridges)
-	Contact        string   // Contact info (optional)
-	Family         []string // Family members (optional)
-	BandwidthAvg   uint64   // Average bandwidth (default: 1MB/s)
-	BandwidthBurst uint64   // Burst bandwidth (default: 2MB/s)
-	IPv6Addr       string   // IPv6 address:port (optional)
-	IsBridge       bool     // Whether this is a bridge relay
-	Uptime         int      // 已运行秒数
+	Nickname        string   // Relay nickname (default: auto-generated)
+	Address         string   // IPv4 address (required)
+	ORPort          uint16   // OR port (required)
+	DirPort         uint16   // Directory port (0 for bridges)
+	Contact         string   // Contact info (optional)
+	Family          []string // Family members (optional)
+	BandwidthAvg    uint64   // Average bandwidth (default: 1MB/s)
+	BandwidthBurst  uint64   // Burst bandwidth (default: 2MB/s)
+	IPv6Addr        string   // IPv6 address:port (optional)
+	IsBridge        bool     // Whether this is a bridge relay
+	Uptime          int      // 已运行秒数
+	ExitPolicyLines []string // 真实 accept/reject 行；空则 reject *:*
+	IPv6Policy      string   // ipv6-policy 行（可含关键字）
 }
 
 // GenerateServerDescriptor creates a signed server descriptor
@@ -121,8 +124,10 @@ func GenerateServerDescriptor(keys *RelayKeys, config *DescriptorConfig) (*Serve
 	// Observed bandwidth starts at average (will be updated by bandwidth measurement)
 	bandwidthObs := bandwidthAvg
 
-	// Exit policy (always reject for non-exit/bridge relays)
 	exitPolicy := "reject *:*"
+	if len(config.ExitPolicyLines) > 0 {
+		exitPolicy = strings.Join(config.ExitPolicyLines, "\n")
+	}
 
 	// Compute ntor onion public key from private key
 	var ntorPublic [32]byte
@@ -142,6 +147,7 @@ func GenerateServerDescriptor(keys *RelayKeys, config *DescriptorConfig) (*Serve
 		Contact:         config.Contact,
 		Family:          config.Family,
 		ExitPolicy:      exitPolicy,
+		IPv6Policy:      strings.TrimSpace(config.IPv6Policy),
 		IPv6Addr:        config.IPv6Addr,
 		RSAIdentity:     &keys.RSAPrivate.PublicKey,
 		Ed25519Identity: keys.Ed25519Public,
@@ -219,7 +225,23 @@ func (d *ServerDescriptor) build() error {
 	if len(d.Family) > 0 {
 		fmt.Fprintf(&buf, "family %s\n", strings.Join(d.Family, " "))
 	}
-	fmt.Fprintf(&buf, "reject *:*\n")
+	if strings.Contains(d.ExitPolicy, "\n") || strings.HasPrefix(d.ExitPolicy, "accept") || strings.HasPrefix(d.ExitPolicy, "reject") {
+		for _, line := range strings.Split(d.ExitPolicy, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			fmt.Fprintf(&buf, "%s\n", line)
+		}
+	} else {
+		fmt.Fprintf(&buf, "reject *:*\n")
+	}
+	if ipv6 := strings.TrimSpace(d.IPv6Policy); ipv6 != "" {
+		if !strings.HasPrefix(ipv6, "ipv6-policy") {
+			ipv6 = "ipv6-policy " + ipv6
+		}
+		fmt.Fprintf(&buf, "%s\n", ipv6)
+	}
 	if d.DirPort == 0 {
 		fmt.Fprintf(&buf, "tunnelled-dir-server\n")
 	}
