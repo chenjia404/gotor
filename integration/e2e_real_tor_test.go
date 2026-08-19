@@ -326,7 +326,7 @@ func TestRealFlowControlSoak(t *testing.T) {
 	// 以覆盖 FlowCtrl=2 Vegas + 多次电路级 SENDME v1。
 	const wantBytes = 1024 * 1024
 	var total int64
-	for i := 0; total < wantBytes && i < 40; i++ {
+	for i := 0; total < wantBytes && i < 80; i++ {
 		u := fmt.Sprintf("https://www.torproject.org/?soak=%d", i)
 		resp, err := httpClient.Get(u)
 		if err != nil {
