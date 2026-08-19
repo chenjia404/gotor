@@ -17,6 +17,29 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
+func TestDefaultDirectoryAuthorities(t *testing.T) {
+	auths := DefaultDirectoryAuthorities()
+	if len(auths) < 9 {
+		t.Fatalf("directory authorities %d, want >= 9", len(auths))
+	}
+	for _, a := range auths {
+		if a.Address == "" || !strings.Contains(a.URL, "/tor/post/upload") {
+			t.Fatalf("bad authority %+v", a)
+		}
+	}
+}
+
+func TestAuthorityUploadURLs(t *testing.T) {
+	urls := authorityUploadURLs(BridgeAuthority{Address: "192.0.2.1:80", URL: "http://192.0.2.1/tor/post/upload"})
+	if len(urls) < 2 || !strings.Contains(urls[1], "/tor/") {
+		t.Fatalf("urls %v", urls)
+	}
+	plain := authorityUploadURLs(BridgeAuthority{Address: "192.0.2.1:80"})
+	if len(plain) != 2 {
+		t.Fatalf("plain urls %v", plain)
+	}
+}
+
 func TestNewDescriptorPublisher(t *testing.T) {
 	log := logger.New(slog.LevelInfo, io.Discard)
 

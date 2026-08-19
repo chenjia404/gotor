@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"time"
 
 	"github.com/opd-ai/go-tor/pkg/config"
 	"github.com/opd-ai/go-tor/pkg/logger"
@@ -13,10 +14,12 @@ import (
 
 // Server 是非出口中继（middle/guard 候选）运行时。
 type Server struct {
-	cfg      *config.Config
-	keys     *RelayKeys
-	listener *ORListener
-	logger   *logger.Logger
+	cfg       *config.Config
+	keys      *RelayKeys
+	listener  *ORListener
+	publisher *ScheduledPublisher
+	startedAt time.Time
+	logger    *logger.Logger
 }
 
 // NewServerFromConfig 从 torrc 配置创建中继；ORPort 必须 > 0。
@@ -72,17 +75,70 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 	return s, nil
 }
 
-// Start 开始监听 OR 连接。
+// Start 开始监听 OR 连接；若 PublishServerDescriptor 则向目录权威发布描述符。
 func (s *Server) Start(ctx context.Context) error {
 	if s == nil || s.listener == nil {
 		return fmt.Errorf("relay server not initialized")
 	}
-	return s.listener.Start(ctx)
+	if err := s.listener.Start(ctx); err != nil {
+		return err
+	}
+	s.startedAt = time.Now()
+	if s.cfg != nil && s.cfg.PublishServerDescriptor {
+		if err := s.startPublisher(ctx); err != nil {
+			s.logger.Error("descriptor publisher not started", "error", err)
+		}
+	}
+	return nil
 }
 
-// Stop 停止监听。
+func (s *Server) startPublisher(ctx context.Context) error {
+	if s.cfg.RelayAddress == "" {
+		return fmt.Errorf("Address is required to publish a server descriptor")
+	}
+	pcfg := DefaultPublisherConfig()
+	pcfg.Authorities = DefaultDirectoryAuthorities()
+	pub := NewDescriptorPublisher(pcfg, s.logger)
+	sched := NewScheduledPublisher(pub, pcfg.PublishInterval, func() (*ServerDescriptor, *ExtraInfoDescriptor, error) {
+		dcfg := &DescriptorConfig{
+			Nickname:       s.cfg.Nickname,
+			Address:        s.cfg.RelayAddress,
+			ORPort:         uint16(s.cfg.ORPort),
+			Contact:        s.cfg.ContactInfo,
+			BandwidthAvg:   uint64(s.cfg.RelayBandwidthRate),
+			BandwidthBurst: uint64(s.cfg.RelayBandwidthBurst),
+			Uptime:         int(time.Since(s.startedAt).Seconds()),
+		}
+		desc, err := GenerateServerDescriptor(s.keys, dcfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		extra, err := GenerateExtraInfo(s.keys, desc, nil)
+		if err != nil {
+			s.logger.Warn("extra-info generation failed", "error", err)
+			return desc, nil, nil
+		}
+		return desc, extra, nil
+	}, s.logger)
+	s.publisher = sched
+	s.logger.Info("publishing server descriptor to directory authorities",
+		"nickname", s.cfg.Nickname,
+		"address", s.cfg.RelayAddress,
+		"orport", s.cfg.ORPort,
+		"authorities", len(pcfg.Authorities))
+	return sched.Start(ctx)
+}
+
+// Stop 停止监听与描述符发布。
 func (s *Server) Stop() error {
-	if s == nil || s.listener == nil {
+	if s == nil {
+		return nil
+	}
+	if s.publisher != nil {
+		s.publisher.Stop()
+		s.publisher = nil
+	}
+	if s.listener == nil {
 		return nil
 	}
 	return s.listener.Stop()
