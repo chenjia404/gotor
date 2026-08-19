@@ -55,8 +55,9 @@ var NtorV3CircuitVerification = []byte("circuit extend")
 
 // NtorV3ExtType 是握手加密附加数据里的扩展类型。
 const (
-	NtorV3ExtCCRequest  uint8 = 1
-	NtorV3ExtCCResponse uint8 = 2
+	NtorV3ExtCCRequest       uint8 = 1
+	NtorV3ExtCCResponse      uint8 = 2
+	NtorV3ExtSubprotoRequest uint8 = 3 // proposal 346 / RELAY_NEGOTIATE_SUBPROTO
 )
 
 // NtorV3Extension 是 ntor-v3 CM/SM 里的一条扩展。

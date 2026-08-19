@@ -206,6 +206,16 @@ func requestCCFor(relay interface{}) bool {
 	return false
 }
 
+func subprotoCapsFor(relay interface{}) ([]crypto.SubprotoCap, error) {
+	type advertiser interface {
+		crypto.ProtoSupport
+	}
+	if r, ok := relay.(advertiser); ok {
+		return crypto.SelectSubprotoRequest(r)
+	}
+	return nil, nil
+}
+
 func (e *Extension) generateHandshakeData(handshakeType HandshakeType) ([]byte, error) {
 	e.handshakeType = handshakeType
 	switch handshakeType {
@@ -217,9 +227,17 @@ func (e *Extension) generateHandshakeData(handshakeType HandshakeType) ([]byte, 
 		e.serverIdentity = append([]byte(nil), edID...)
 		e.serverNtorKey = append([]byte(nil), ntorKey...)
 		e.requestCC = requestCCFor(e.targetRelay)
-		cm := crypto.EncodeNtorV3Extensions(nil)
-		if e.requestCC {
-			cm = crypto.EncodeCCRequest()
+		caps, err := subprotoCapsFor(e.targetRelay)
+		if err != nil {
+			return nil, fmt.Errorf("subproto_request selection: %w", err)
+		}
+		cm, err := crypto.EncodeNtorV3ClientMsg(e.requestCC, caps)
+		if err != nil {
+			return nil, fmt.Errorf("ntor-v3 client extensions: %w", err)
+		}
+		if len(caps) > 0 {
+			e.logger.Info("Requesting ntor-v3 subproto capabilities",
+				"circuit_id", e.circuit.ID, "caps", caps)
 		}
 		skin, st, err := crypto.NtorV3ClientHandshake(edID, ntorKey, crypto.NtorV3CircuitVerification, cm)
 		if err != nil {

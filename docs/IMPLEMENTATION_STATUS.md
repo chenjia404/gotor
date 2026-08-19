@@ -50,7 +50,7 @@
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family ID（Desc=4）未用 |
 | Exit policy | PARTIAL | 已解析 `p` 行并按端口过滤；完整策略与 IPv6 `p6` 未做 |
-| Relay=5 subproto_request | MISSING | ntor-v3 扩展 type 3（proposal 346）；CGO 的前置条件 |
+| Relay=5 subproto_request | PARTIAL | type 3 编解码与选择已实现；**生产不发送**（CGO 未实现）。单测覆盖排序 / 拒未登记能力 |
 | Relay=6 CGO | MISSING | Counter Galois Onion（proposal 359）；最新电路加密方向 |
 | Conflux=1 | MISSING | 多路径（proposal 329）；mainnet 已广泛宣告，尚未 required |
 | Circuit padding (Padding=2) | PARTIAL | 有定时器骨架，无 HS setup machine（proposal 302） |
@@ -93,14 +93,17 @@
 
 #### 3. Relay=5 `subproto_request`（proposal 346）
 
-- **状态**：MISSING。
-- **用途**：在 ntor-v3 扩展里请求电路能力。CGO 必须走这条路（请求 `Relay=6`，编码 `[02 06]`）。
-- **Spec**：https://spec.torproject.org/tor-spec/create-created-cells.html （Extension handshake: Subprotocol request）；https://spec.torproject.org/proposals/346-protovers-again.html
-- **扩展 ID**：ntor-v3 / hs-ntor 共用 type **3**
-- **编码**：若干 `{protocol_id u8, capability u8}`，按 protocol_id 再 capability 升序
-- **现有代码**：`pkg/crypto/ntorv3.go` 已有通用 `N_EXTENSIONS` 编解码；只需加 type 3 与选择逻辑
-- **选择条件**：对端 `pr` 含 `Relay=5`，且客户端确实要请求已实现的能力（例如 CGO）
-- **验收**：单测排序 / 拒绝未宣告能力；真实网络仅在请求已实现能力时开启
+- **状态**：PARTIAL。编解码与选择已按 spec 实现；生产 **不发送** type 3。
+- **已做**：
+  - type 3 DATA：`{protocol_id u8, cap u8}*`，升序；Relay=6 = `[02 06]`
+  - 只允许现行表内能力（目前仅 `RELAY_CRYPT_CGO`）
+  - 选择：`Relay=5` ∧ 对端宣告该能力 ∧ `ImplementedNegotiableCaps()`
+  - `ImplementedNegotiableCaps()` 为空（CGO 未做）
+  - 单测：排序、拒空/重复/未登记、与 CC type 1 同框编码
+- **未做**：真正发出 type 3（须等 CGO）；真实网络「请求已实现能力」验收
+- **Spec**：https://spec.torproject.org/tor-spec/create-created-cells.html ；https://spec.torproject.org/proposals/346-protovers-again.html
+- **现有代码**：`pkg/crypto/subproto.go`、`pkg/crypto/ntorv3.go`、`pkg/circuit/extension.go`
+- **禁止**：未实现 CGO 时请求 `[02 06]`。
 
 #### 4. Relay=6 CGO（Counter Galois Onion）
 

@@ -24,6 +24,7 @@ https://spec.torproject.org/tor-spec/create-created-cells.html
 - 扩展：`N_EXTENSIONS || (TYPE LEN DATA)*`
   - type 1 `CC_FIELD_REQUEST`（空体）
   - type 2 `CC_FIELD_RESPONSE`（1 字节 `sendme_inc`）
+  - type 3 `subproto_request`（proposal 346；见 `docs/interop/subproto.md`）。生产暂不发送。
 
 Relay 宣告 `Relay=4` 才接受 ntor-v3。`FlowCtrl=2` 才协商拥塞控制。
 
