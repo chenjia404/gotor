@@ -1,0 +1,16 @@
+# gotor 非出口中继示例 torrc
+#
+# 首轮实现：ORPort 监听 + 链路握手 + CREATE2（ntor / ntor-v3）
+# ExitRelay 请保持 0；完整出口与目录权威发布后续迭代。
+
+Nickname gotorMiddle
+ORPort 9001
+ExitRelay 0
+SocksPort 9050
+ControlPort 9051
+DataDirectory /var/lib/gotor
+CookieAuthentication 1
+PublishServerDescriptor 0
+AssumeReachable 1
+ContactInfo admin@example.invalid
+Log notice stdout

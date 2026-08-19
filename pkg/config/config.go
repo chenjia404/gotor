@@ -43,6 +43,18 @@ type Config struct {
 	ConnLimit      int           // Max concurrent connections (default: 1000)
 	DormantTimeout time.Duration // Time before entering dormant mode (default: 24h)
 
+	// Relay / OR（中继）设置；ORPort>0 时 gotor 以中继模式启动 OR 监听
+	ORPort                  int    // OR 监听端口（0=不启用中继）
+	ORListenAddr            string // 绑定地址，默认 0.0.0.0
+	Nickname                string // 中继昵称
+	ContactInfo             string // ContactInfo
+	RelayAddress            string // Address（对外宣告的 IPv4/主机名）
+	ExitRelay               bool   // ExitRelay；本实现首轮强制非出口时忽略 true 并告警
+	PublishServerDescriptor bool   // 是否尝试发布描述符（首轮可仅本地生成）
+	AssumeReachable         bool   // AssumeReachable
+	RelayBandwidthRate      int64  // 字节/秒，0=不限
+	RelayBandwidthBurst     int64  // 突发字节，0=不限
+
 	// Onion service settings
 	OnionServices []OnionServiceConfig
 
@@ -200,34 +212,44 @@ func DefaultConfig() *Config {
 	}
 
 	return &Config{
-		SocksPort:             socksPort,
-		SocksListenAddr:       "127.0.0.1",
-		ControlPort:           controlPort,
-		ControlPassword:       "", // No authentication by default
-		HashedControlPassword: "",
-		CookieAuthentication:  false,
-		CookieAuthFile:        "",
-		DataDirectory:         dataDir,
-		CircuitBuildTimeout:   60 * time.Second,
-		MaxCircuitDirtiness:   10 * time.Minute,
-		NewCircuitPeriod:      30 * time.Second,
-		NumEntryGuards:        3,
-		UseEntryGuards:        true,
-		UseBridges:            false,
-		BridgeAddresses:       []string{},
-		ExcludeNodes:          []string{},
-		ExcludeExitNodes:      []string{},
-		ExitNodes:             []string{},
-		EntryNodes:            []string{},
-		StrictNodes:           false,
-		ConnLimit:             1000,
-		DormantTimeout:        24 * time.Hour,
-		OnionServices:         []OnionServiceConfig{},
-		ClientTransports:      []ClientTransportConfig{},
-		ServerTransports:      []ServerTransportConfig{},
-		TransportProxy:        "",
-		LogLevel:              "info",
-		LogFile:               "",
+		SocksPort:               socksPort,
+		SocksListenAddr:         "127.0.0.1",
+		ControlPort:             controlPort,
+		ControlPassword:         "", // No authentication by default
+		HashedControlPassword:   "",
+		CookieAuthentication:    false,
+		CookieAuthFile:          "",
+		DataDirectory:           dataDir,
+		CircuitBuildTimeout:     60 * time.Second,
+		MaxCircuitDirtiness:     10 * time.Minute,
+		NewCircuitPeriod:        30 * time.Second,
+		NumEntryGuards:          3,
+		UseEntryGuards:          true,
+		UseBridges:              false,
+		BridgeAddresses:         []string{},
+		ExcludeNodes:            []string{},
+		ExcludeExitNodes:        []string{},
+		ExitNodes:               []string{},
+		EntryNodes:              []string{},
+		StrictNodes:             false,
+		ConnLimit:               1000,
+		DormantTimeout:          24 * time.Hour,
+		ORPort:                  0,
+		ORListenAddr:            "0.0.0.0",
+		Nickname:                "",
+		ContactInfo:             "",
+		RelayAddress:            "",
+		ExitRelay:               false,
+		PublishServerDescriptor: true,
+		AssumeReachable:         false,
+		RelayBandwidthRate:      0,
+		RelayBandwidthBurst:     0,
+		OnionServices:           []OnionServiceConfig{},
+		ClientTransports:        []ClientTransportConfig{},
+		ServerTransports:        []ServerTransportConfig{},
+		TransportProxy:          "",
+		LogLevel:                "info",
+		LogFile:                 "",
 		// Monitoring defaults (Phase 9.1)
 		MetricsPort:   0,     // Disabled by default
 		EnableMetrics: false, // Disabled by default

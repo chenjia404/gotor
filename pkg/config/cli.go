@@ -254,6 +254,8 @@ func KnownTorrcOptions() []string {
 		"ClientTransportPlugin", "ServerTransportPlugin", "ServerTransportListenAddr",
 		"ServerTransportOptions", "TransportProxy",
 		"HiddenServiceDir", "HiddenServicePort", "HiddenServiceVersion", "HiddenServiceMaxStreams",
+		"ORPort", "Nickname", "ContactInfo", "Address", "ExitRelay",
+		"PublishServerDescriptor", "AssumeReachable", "RelayBandwidthRate", "RelayBandwidthBurst",
 		"%include", "Include",
 	}
 }

@@ -173,6 +173,14 @@ func (k *RelayKeys) SaveKeys(dataDir string) error {
 		return fmt.Errorf("failed to save TLS certificate: %w", err)
 	}
 
+	// Save ntor onion private key
+	if len(k.NtorOnionKey) == 32 {
+		ntorPath := filepath.Join(dataDir, "secret_onion_key_ntor")
+		if err := saveSecureFile(ntorPath, k.NtorOnionKey, 0o600); err != nil {
+			return fmt.Errorf("failed to save ntor key: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -220,6 +228,25 @@ func LoadKeys(dataDir string) (*RelayKeys, error) {
 	}
 	keys.TLSCert = block.Bytes
 
+	// Load ntor onion key（缺失则生成并落盘）
+	ntorPath := filepath.Join(dataDir, "secret_onion_key_ntor")
+	ntorData, err := os.ReadFile(ntorPath)
+	if err != nil {
+		ntorKey := make([]byte, 32)
+		if _, err := rand.Read(ntorKey); err != nil {
+			return nil, fmt.Errorf("generate ntor key: %w", err)
+		}
+		keys.NtorOnionKey = ntorKey
+		_ = saveSecureFile(ntorPath, ntorKey, 0o600)
+	} else {
+		if len(ntorData) != 32 {
+			return nil, fmt.Errorf("invalid ntor key size: %d", len(ntorData))
+		}
+		keys.NtorOnionKey = ntorData
+	}
+
+	keys.Identity.Public = keys.Ed25519Public
+	keys.Identity.Private = keys.Ed25519Private
 	return keys, nil
 }
 
