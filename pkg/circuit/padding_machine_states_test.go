@@ -245,16 +245,20 @@ func TestStateMachine_CustomParamsSingleCellBurst(t *testing.T) {
 }
 
 func TestDecodePaddingNegotiate_EdgeCases(t *testing.T) {
+	ok8 := make([]byte, 8)
+	ok8[1] = CircpadCommandStart
+	ok8[2] = CircpadMachineCircSetup
+	extra := append(append([]byte{}, ok8...), 99, 100)
 	tests := []struct {
 		name    string
 		data    []byte
 		wantErr bool
 	}{
-		{"exact 3 bytes", []byte{0, 1, 2}, false},
-		{"extra bytes", []byte{0, 1, 2, 99, 100}, false},
+		{"exact 8 bytes", ok8, false},
+		{"extra bytes", extra, false},
 		{"0 bytes", []byte{}, true},
-		{"1 byte", []byte{0}, true},
-		{"2 bytes", []byte{0, 1}, true},
+		{"3 bytes", []byte{0, 1, 2}, true},
+		{"7 bytes", make([]byte, 7), true},
 	}
 
 	for _, tt := range tests {
@@ -269,16 +273,21 @@ func TestDecodePaddingNegotiate_EdgeCases(t *testing.T) {
 }
 
 func TestDecodePaddingNegotiated_EdgeCases(t *testing.T) {
+	ok8 := make([]byte, 8)
+	ok8[1] = CircpadCommandStart
+	ok8[2] = CircpadResponseOK
+	ok8[3] = CircpadMachineCircSetup
+	extra := append(append([]byte{}, ok8...), 1, 2, 3)
 	tests := []struct {
 		name    string
 		data    []byte
 		wantErr bool
 	}{
-		{"exact 3 bytes", []byte{0, 1, 2}, false},
-		{"extra bytes", []byte{0, 1, 2, 3, 4, 5}, false},
+		{"exact 8 bytes", ok8, false},
+		{"extra bytes", extra, false},
 		{"0 bytes", []byte{}, true},
-		{"1 byte", []byte{0}, true},
-		{"2 bytes", []byte{0, 1}, true},
+		{"3 bytes", []byte{0, 1, 2}, true},
+		{"7 bytes", make([]byte, 7), true},
 	}
 
 	for _, tt := range tests {

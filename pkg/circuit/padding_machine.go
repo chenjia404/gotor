@@ -18,10 +18,10 @@ type PaddingMachineType byte
 const (
 	// PaddingMachineNone indicates no padding machine is active
 	PaddingMachineNone PaddingMachineType = 0
-	// PaddingMachineAPE is the Adaptive Padding Engine from padding-spec.txt
-	PaddingMachineAPE PaddingMachineType = 1
-	// PaddingMachineCircuitSetup is for circuit setup phase padding
-	PaddingMachineCircuitSetup PaddingMachineType = 2
+	// PaddingMachineCircuitSetup is CIRCPAD_MACHINE_CIRC_SETUP（proposal 302 / padding-spec = 1）
+	PaddingMachineCircuitSetup PaddingMachineType = PaddingMachineType(CircpadMachineCircSetup)
+	// PaddingMachineAPE is a local Adaptive Padding Engine（不上线路 negotiate）
+	PaddingMachineAPE PaddingMachineType = 2
 )
 
 // PaddingMachineState represents the current state of a padding machine
@@ -294,79 +294,93 @@ func (sm *StateMachine) randomDuration(min, max time.Duration) time.Duration {
 	return min + time.Duration(n%rangeSize)
 }
 
-// PaddingNegotiateRequest represents a PADDING_NEGOTIATE cell payload
+// PaddingNegotiateRequest represents a PADDING_NEGOTIATE cell payload.
+// Deprecated: 请使用 CircpadNegotiate（含 machine_ctr，符合 padding-spec）。
 type PaddingNegotiateRequest struct {
 	Version     byte               // Protocol version (0 for now)
-	Command     byte               // 1 = START, 2 = STOP
+	Command     byte               // 1 = STOP, 2 = START（padding-spec）
 	MachineType PaddingMachineType // Type of padding machine to negotiate
+	MachineCtr  uint32
 }
 
-// PaddingNegotiateResponse represents a PADDING_NEGOTIATED cell payload
+// PaddingNegotiateResponse represents a PADDING_NEGOTIATED cell payload.
+// Deprecated: 请使用 CircpadNegotiated。
 type PaddingNegotiateResponse struct {
 	Version     byte               // Protocol version (0 for now)
-	Command     byte               // 1 = STARTED, 2 = STOPPED, 3 = ERROR
+	Command     byte               // STOP=1 / START=2
+	Response    byte               // OK=1 / ERR=2
 	MachineType PaddingMachineType // Type of padding machine negotiated
+	MachineCtr  uint32
 }
 
-// Padding negotiate commands
+// Padding negotiate commands（与 CircpadCommand* 一致；旧名保留）。
 const (
-	PaddingCommandStart byte = 1
-	PaddingCommandStop  byte = 2
+	PaddingCommandStop  byte = CircpadCommandStop  // 1
+	PaddingCommandStart byte = CircpadCommandStart // 2
 )
 
-// Padding negotiate responses
+// Padding negotiate responses（与 CircpadResponse* 一致）。
 const (
-	PaddingResponseStarted byte = 1
-	PaddingResponseStopped byte = 2
-	PaddingResponseError   byte = 3
+	PaddingResponseOK    byte = CircpadResponseOK  // 1
+	PaddingResponseErr   byte = CircpadResponseErr // 2
+	PaddingResponseStarted byte = CircpadResponseOK // 兼容旧测试名
+	PaddingResponseStopped byte = CircpadResponseOK
+	PaddingResponseError   byte = CircpadResponseErr
 )
 
-// EncodePaddingNegotiate encodes a PADDING_NEGOTIATE request
+// EncodePaddingNegotiate 编码 PADDING_NEGOTIATE（8 字节，含 machine_ctr）。
 func EncodePaddingNegotiate(req *PaddingNegotiateRequest) ([]byte, error) {
 	if req == nil {
 		return nil, errors.New("request cannot be nil")
 	}
-	// Version(1) + Command(1) + MachineType(1) = 3 bytes minimum
-	payload := make([]byte, 3)
-	payload[0] = req.Version
-	payload[1] = req.Command
-	payload[2] = byte(req.MachineType)
-	return payload, nil
+	return EncodeCircpadNegotiate(&CircpadNegotiate{
+		Version:     req.Version,
+		Command:     req.Command,
+		MachineType: byte(req.MachineType),
+		MachineCtr:  req.MachineCtr,
+	})
 }
 
-// DecodePaddingNegotiate decodes a PADDING_NEGOTIATE request
+// DecodePaddingNegotiate 解码 PADDING_NEGOTIATE。
 func DecodePaddingNegotiate(data []byte) (*PaddingNegotiateRequest, error) {
-	if len(data) < 3 {
-		return nil, fmt.Errorf("padding negotiate payload too short: %d < 3", len(data))
+	n, err := DecodeCircpadNegotiate(data)
+	if err != nil {
+		return nil, err
 	}
 	return &PaddingNegotiateRequest{
-		Version:     data[0],
-		Command:     data[1],
-		MachineType: PaddingMachineType(data[2]),
+		Version:     n.Version,
+		Command:     n.Command,
+		MachineType: PaddingMachineType(n.MachineType),
+		MachineCtr:  n.MachineCtr,
 	}, nil
 }
 
-// EncodePaddingNegotiated encodes a PADDING_NEGOTIATED response
+// EncodePaddingNegotiated 编码 PADDING_NEGOTIATED（8 字节）。
 func EncodePaddingNegotiated(resp *PaddingNegotiateResponse) ([]byte, error) {
 	if resp == nil {
 		return nil, errors.New("response cannot be nil")
 	}
-	payload := make([]byte, 3)
-	payload[0] = resp.Version
-	payload[1] = resp.Command
-	payload[2] = byte(resp.MachineType)
-	return payload, nil
+	return EncodeCircpadNegotiated(&CircpadNegotiated{
+		Version:     resp.Version,
+		Command:     resp.Command,
+		Response:    resp.Response,
+		MachineType: byte(resp.MachineType),
+		MachineCtr:  resp.MachineCtr,
+	})
 }
 
-// DecodePaddingNegotiated decodes a PADDING_NEGOTIATED response
+// DecodePaddingNegotiated 解码 PADDING_NEGOTIATED。
 func DecodePaddingNegotiated(data []byte) (*PaddingNegotiateResponse, error) {
-	if len(data) < 3 {
-		return nil, fmt.Errorf("padding negotiated payload too short: %d < 3", len(data))
+	n, err := DecodeCircpadNegotiated(data)
+	if err != nil {
+		return nil, err
 	}
 	return &PaddingNegotiateResponse{
-		Version:     data[0],
-		Command:     data[1],
-		MachineType: PaddingMachineType(data[2]),
+		Version:     n.Version,
+		Command:     n.Command,
+		Response:    n.Response,
+		MachineType: PaddingMachineType(n.MachineType),
+		MachineCtr:  n.MachineCtr,
 	}, nil
 }
 
@@ -381,6 +395,7 @@ func (c *Circuit) SendPaddingNegotiate(machineType PaddingMachineType, start boo
 		Version:     0,
 		Command:     cmd,
 		MachineType: machineType,
+		MachineCtr:  1,
 	}
 
 	payload, err := EncodePaddingNegotiate(req)
@@ -403,19 +418,18 @@ func (c *Circuit) HandlePaddingNegotiate(data []byte) error {
 		return fmt.Errorf("failed to decode padding negotiate: %w", err)
 	}
 
-	// For now, we accept all padding negotiation requests
-	// In a full implementation, we would check machine type support
-	var responseCmd byte
-	if req.Command == PaddingCommandStart {
-		responseCmd = PaddingResponseStarted
-	} else {
-		responseCmd = PaddingResponseStopped
+	respCmd := req.Command
+	response := PaddingResponseOK
+	if req.MachineType != PaddingMachineType(CircpadMachineCircSetup) && req.MachineType != PaddingMachineCircuitSetup {
+		response = PaddingResponseErr
 	}
 
 	resp := &PaddingNegotiateResponse{
 		Version:     0,
-		Command:     responseCmd,
+		Command:     respCmd,
+		Response:    response,
 		MachineType: req.MachineType,
+		MachineCtr:  req.MachineCtr,
 	}
 
 	payload, err := EncodePaddingNegotiated(resp)

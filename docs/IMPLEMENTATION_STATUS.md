@@ -53,7 +53,7 @@
 | Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
-| Circuit padding (Padding=2) | PARTIAL | 有定时器骨架，无 HS setup machine（proposal 302） |
+| Circuit padding (Padding=2) | PARTIAL | 协商单元已按 padding-spec 修正（8 字节 + machine_ctr）；HS setup 状态表对齐 C Tor；onion 接线待 Phase 4 |
 | Onion Service v3 | BROKEN / MISSING | **明确不做**，直到 client 主链路剩余缺口完成 |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
 | Control Protocol | PARTIAL | 框架存在，非本轮验收 |

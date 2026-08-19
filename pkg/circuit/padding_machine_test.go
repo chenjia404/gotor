@@ -1,6 +1,7 @@
 package circuit
 
 import (
+	"encoding/binary"
 	"testing"
 	"time"
 )
@@ -247,7 +248,8 @@ func TestEncodePaddingNegotiate(t *testing.T) {
 	req := &PaddingNegotiateRequest{
 		Version:     0,
 		Command:     PaddingCommandStart,
-		MachineType: PaddingMachineAPE,
+		MachineType: PaddingMachineCircuitSetup,
+		MachineCtr:  1,
 	}
 
 	payload, err := EncodePaddingNegotiate(req)
@@ -255,8 +257,8 @@ func TestEncodePaddingNegotiate(t *testing.T) {
 		t.Fatalf("EncodePaddingNegotiate() error = %v", err)
 	}
 
-	if len(payload) < 3 {
-		t.Errorf("payload length = %d, want >= 3", len(payload))
+	if len(payload) != 8 {
+		t.Errorf("payload length = %d, want 8", len(payload))
 	}
 	if payload[0] != 0 {
 		t.Errorf("version = %d, want 0", payload[0])
@@ -264,8 +266,8 @@ func TestEncodePaddingNegotiate(t *testing.T) {
 	if payload[1] != PaddingCommandStart {
 		t.Errorf("command = %d, want %d", payload[1], PaddingCommandStart)
 	}
-	if payload[2] != byte(PaddingMachineAPE) {
-		t.Errorf("machineType = %d, want %d", payload[2], PaddingMachineAPE)
+	if payload[2] != byte(PaddingMachineCircuitSetup) {
+		t.Errorf("machineType = %d, want %d", payload[2], PaddingMachineCircuitSetup)
 	}
 
 	// Test nil request
@@ -276,7 +278,11 @@ func TestEncodePaddingNegotiate(t *testing.T) {
 }
 
 func TestDecodePaddingNegotiate(t *testing.T) {
-	payload := []byte{0, PaddingCommandStart, byte(PaddingMachineAPE)}
+	payload := make([]byte, 8)
+	payload[0] = 0
+	payload[1] = PaddingCommandStart
+	payload[2] = byte(PaddingMachineCircuitSetup)
+	binary.BigEndian.PutUint32(payload[4:8], 3)
 
 	req, err := DecodePaddingNegotiate(payload)
 	if err != nil {
@@ -289,8 +295,11 @@ func TestDecodePaddingNegotiate(t *testing.T) {
 	if req.Command != PaddingCommandStart {
 		t.Errorf("Command = %d, want %d", req.Command, PaddingCommandStart)
 	}
-	if req.MachineType != PaddingMachineAPE {
-		t.Errorf("MachineType = %d, want %d", req.MachineType, PaddingMachineAPE)
+	if req.MachineType != PaddingMachineCircuitSetup {
+		t.Errorf("MachineType = %d, want %d", req.MachineType, PaddingMachineCircuitSetup)
+	}
+	if req.MachineCtr != 3 {
+		t.Errorf("MachineCtr = %d, want 3", req.MachineCtr)
 	}
 
 	// Test short payload
@@ -303,8 +312,10 @@ func TestDecodePaddingNegotiate(t *testing.T) {
 func TestEncodePaddingNegotiated(t *testing.T) {
 	resp := &PaddingNegotiateResponse{
 		Version:     0,
-		Command:     PaddingResponseStarted,
-		MachineType: PaddingMachineAPE,
+		Command:     PaddingCommandStart,
+		Response:    PaddingResponseOK,
+		MachineType: PaddingMachineCircuitSetup,
+		MachineCtr:  1,
 	}
 
 	payload, err := EncodePaddingNegotiated(resp)
@@ -312,14 +323,17 @@ func TestEncodePaddingNegotiated(t *testing.T) {
 		t.Fatalf("EncodePaddingNegotiated() error = %v", err)
 	}
 
-	if len(payload) < 3 {
-		t.Errorf("payload length = %d, want >= 3", len(payload))
+	if len(payload) != 8 {
+		t.Errorf("payload length = %d, want 8", len(payload))
 	}
 	if payload[0] != 0 {
 		t.Errorf("version = %d, want 0", payload[0])
 	}
-	if payload[1] != PaddingResponseStarted {
-		t.Errorf("command = %d, want %d", payload[1], PaddingResponseStarted)
+	if payload[2] != PaddingResponseOK {
+		t.Errorf("response = %d, want %d", payload[2], PaddingResponseOK)
+	}
+	if payload[1] != PaddingCommandStart {
+		t.Errorf("command = %d, want %d", payload[1], PaddingCommandStart)
 	}
 
 	// Test nil response
@@ -330,7 +344,12 @@ func TestEncodePaddingNegotiated(t *testing.T) {
 }
 
 func TestDecodePaddingNegotiated(t *testing.T) {
-	payload := []byte{0, PaddingResponseStarted, byte(PaddingMachineAPE)}
+	payload := make([]byte, 8)
+	payload[0] = 0
+	payload[1] = PaddingCommandStart
+	payload[2] = PaddingResponseOK
+	payload[3] = byte(PaddingMachineCircuitSetup)
+	binary.BigEndian.PutUint32(payload[4:8], 2)
 
 	resp, err := DecodePaddingNegotiated(payload)
 	if err != nil {
@@ -340,11 +359,14 @@ func TestDecodePaddingNegotiated(t *testing.T) {
 	if resp.Version != 0 {
 		t.Errorf("Version = %d, want 0", resp.Version)
 	}
-	if resp.Command != PaddingResponseStarted {
-		t.Errorf("Command = %d, want %d", resp.Command, PaddingResponseStarted)
+	if resp.Command != PaddingCommandStart {
+		t.Errorf("Command = %d, want %d", resp.Command, PaddingCommandStart)
 	}
-	if resp.MachineType != PaddingMachineAPE {
-		t.Errorf("MachineType = %d, want %d", resp.MachineType, PaddingMachineAPE)
+	if resp.Response != PaddingResponseOK {
+		t.Errorf("Response = %d, want %d", resp.Response, PaddingResponseOK)
+	}
+	if resp.MachineType != PaddingMachineCircuitSetup {
+		t.Errorf("MachineType = %d, want %d", resp.MachineType, PaddingMachineCircuitSetup)
 	}
 
 	// Test short payload
@@ -359,6 +381,7 @@ func TestPaddingNegotiateRoundTrip(t *testing.T) {
 		Version:     0,
 		Command:     PaddingCommandStart,
 		MachineType: PaddingMachineCircuitSetup,
+		MachineCtr:  9,
 	}
 
 	payload, err := EncodePaddingNegotiate(req)
@@ -380,13 +403,18 @@ func TestPaddingNegotiateRoundTrip(t *testing.T) {
 	if decoded.MachineType != req.MachineType {
 		t.Errorf("MachineType = %d, want %d", decoded.MachineType, req.MachineType)
 	}
+	if decoded.MachineCtr != req.MachineCtr {
+		t.Errorf("MachineCtr = %d, want %d", decoded.MachineCtr, req.MachineCtr)
+	}
 }
 
 func TestPaddingNegotiatedRoundTrip(t *testing.T) {
 	resp := &PaddingNegotiateResponse{
 		Version:     0,
-		Command:     PaddingResponseStopped,
-		MachineType: PaddingMachineAPE,
+		Command:     PaddingCommandStop,
+		Response:    PaddingResponseOK,
+		MachineType: PaddingMachineCircuitSetup,
+		MachineCtr:  4,
 	}
 
 	payload, err := EncodePaddingNegotiated(resp)
@@ -405,8 +433,14 @@ func TestPaddingNegotiatedRoundTrip(t *testing.T) {
 	if decoded.Command != resp.Command {
 		t.Errorf("Command = %d, want %d", decoded.Command, resp.Command)
 	}
+	if decoded.Response != resp.Response {
+		t.Errorf("Response = %d, want %d", decoded.Response, resp.Response)
+	}
 	if decoded.MachineType != resp.MachineType {
 		t.Errorf("MachineType = %d, want %d", decoded.MachineType, resp.MachineType)
+	}
+	if decoded.MachineCtr != resp.MachineCtr {
+		t.Errorf("MachineCtr = %d, want %d", decoded.MachineCtr, resp.MachineCtr)
 	}
 }
 
