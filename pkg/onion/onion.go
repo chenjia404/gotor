@@ -22,7 +22,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 
@@ -622,7 +621,7 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 			}
 			if len(certLines) > 0 {
 				certB64 := strings.Join(certLines, "")
-				certData, err := base64.StdEncoding.DecodeString(certB64)
+				certData, err := decodeDescriptorBase64(certB64)
 				if err == nil {
 					desc.DescriptorSigningKeyCert = certData
 				}
@@ -698,8 +697,8 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 			}
 
 		case "signature":
-			// Descriptor signature - marks end of descriptor
-			decoded, err := base64.StdEncoding.DecodeString(args)
+			// Descriptor signature - marks end of descriptor（常无 padding）
+			decoded, err := decodeDescriptorBase64(args)
 			if err == nil {
 				desc.Signature = decoded
 			}
@@ -721,120 +720,32 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 	return desc, nil
 }
 
-// DecryptDescriptor decrypts the superencrypted layer of a v3 onion service descriptor
-// Per rend-spec-v3.txt section 2.5.1.2, the outer layer is encrypted with XChaCha20-Poly1305
-// using keys derived from the blinded public key.
-//
-// Parameters:
-//   - descriptor: The parsed descriptor with encrypted superencrypted section
-//   - address: The onion service address (contains public key for key derivation)
-//   - timePeriod: The time period number for the descriptor
-//
-// Returns:
-//   - Decrypted descriptor with parsed introduction points
-//   - Error if decryption fails
-func DecryptDescriptor(descriptor *Descriptor, address *Address, timePeriod uint64) (*Descriptor, error) {
-	if descriptor == nil {
-		return nil, fmt.Errorf("descriptor is nil")
+// decodeDescriptorBase64 尝试 Std / RawStd，并去掉空白。
+func decodeDescriptorBase64(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, "\r", "")
+	if s == "" {
+		return nil, fmt.Errorf("empty base64")
 	}
-	if address == nil {
-		return nil, fmt.Errorf("address is nil")
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return b, nil
 	}
-	if len(address.Pubkey) != 32 {
-		return nil, fmt.Errorf("invalid public key length: %d", len(address.Pubkey))
+	if b, err := base64.RawStdEncoding.DecodeString(s); err == nil {
+		return b, nil
 	}
-
-	// Find the superencrypted section in the raw descriptor
-	raw := descriptor.RawDescriptor
-	superencryptedMarker := []byte("superencrypted")
-	superencryptedIdx := bytes.Index(raw, superencryptedMarker)
-	if superencryptedIdx == -1 {
-		// No encrypted section - descriptor might already be decrypted
-		return descriptor, nil
+	// 补 padding
+	pad := (4 - len(s)%4) % 4
+	if pad > 0 {
+		s2 := s + strings.Repeat("=", pad)
+		if b, err := base64.StdEncoding.DecodeString(s2); err == nil {
+			return b, nil
+		}
 	}
-
-	// Extract encrypted data between "-----BEGIN MESSAGE-----" and "-----END MESSAGE-----"
-	beginMarker := []byte("-----BEGIN MESSAGE-----")
-	endMarker := []byte("-----END MESSAGE-----")
-
-	beginIdx := bytes.Index(raw[superencryptedIdx:], beginMarker)
-	if beginIdx == -1 {
-		return nil, fmt.Errorf("superencrypted section missing BEGIN MESSAGE marker")
-	}
-	beginIdx += superencryptedIdx + len(beginMarker)
-
-	endIdx := bytes.Index(raw[beginIdx:], endMarker)
-	if endIdx == -1 {
-		return nil, fmt.Errorf("superencrypted section missing END MESSAGE marker")
-	}
-	endIdx += beginIdx
-
-	// Extract and decode base64 encrypted data
-	encryptedB64 := bytes.TrimSpace(raw[beginIdx:endIdx])
-	encryptedData, err := base64.StdEncoding.DecodeString(string(encryptedB64))
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode encrypted data: %w", err)
-	}
-
-	// Per rend-spec-v3.txt section 2.5.1.2:
-	// The encrypted data format is: SALT (16 bytes) || ENCRYPTED (variable) || MAC (16 bytes)
-	// Using XChaCha20-Poly1305 (24-byte nonce derived from SALT and SECRET_INPUT)
-
-	if len(encryptedData) < 32 {
-		return nil, fmt.Errorf("encrypted data too short: %d bytes", len(encryptedData))
-	}
-
-	salt := encryptedData[:16]
-	ciphertext := encryptedData[16:]
-
-	// Derive encryption keys per rend-spec-v3.txt section 2.5.1.2
-	// SECRET_INPUT = blinded_pubkey
-	// SECRET_DATA = SALT
-	// Keys = HKDF-SHA256(SECRET_INPUT, SALT, "hsdir-superencrypted-data", 32)
-
-	blindedPubkey := ComputeBlindedPubkey(ed25519.PublicKey(address.Pubkey), timePeriod)
-	keys, err := deriveDescriptorKeys(blindedPubkey, salt, "hsdir-superencrypted-data")
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive encryption keys: %w", err)
-	}
-	defer security.SecureZeroMemory(keys) // Clean up key material
-
-	// XChaCha20-Poly1305 requires 24-byte nonce
-	// Derive nonce from SALT using HKDF
-	nonce, err := deriveDescriptorKeys(blindedPubkey, salt, "hsdir-superencrypted-nonce")
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive nonce: %w", err)
-	}
-	defer security.SecureZeroMemory(nonce)
-
-	if len(nonce) < chacha20poly1305.NonceSizeX {
-		return nil, fmt.Errorf("derived nonce too short: %d bytes", len(nonce))
-	}
-
-	// Create XChaCha20-Poly1305 cipher
-	aead, err := chacha20poly1305.NewX(keys[:32])
-	if err != nil {
-		return nil, fmt.Errorf("failed to create XChaCha20-Poly1305 cipher: %w", err)
-	}
-
-	// Decrypt the ciphertext
-	plaintext, err := aead.Open(nil, nonce[:chacha20poly1305.NonceSizeX], ciphertext, nil)
-	if err != nil {
-		return nil, fmt.Errorf("decryption failed: %w", err)
-	}
-
-	// Parse the decrypted plaintext to extract introduction points
-	// The plaintext contains the introduction-point section per rend-spec-v3.txt
-	decryptedDesc, err := parseDecryptedLayer(plaintext)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse decrypted layer: %w", err)
-	}
-
-	// Merge introduction points into the original descriptor
-	descriptor.IntroPoints = decryptedDesc.IntroPoints
-
-	return descriptor, nil
+	return nil, fmt.Errorf("invalid base64")
 }
+
+
 
 // deriveDescriptorKeys derives keys for descriptor encryption/decryption
 // Per rend-spec-v3.txt: Uses HKDF-SHA256 with provided salt and info
@@ -1053,10 +964,9 @@ func VerifyDescriptorSignature(descriptor *Descriptor, address *Address) error {
 		return fmt.Errorf("failed to parse descriptor signing key certificate: %w", err)
 	}
 
-	// Verify certificate type (should be type 4 for Ed25519 signing key signed with Ed25519 identity)
-	// Per cert-spec.txt section 2.1
-	if cert.CertType != 4 {
-		return fmt.Errorf("invalid certificate type: %d, expected 4 (Ed25519 signing key)", cert.CertType)
+	// Cert type 8 = BLINDED_ID_V_SIGNING（HS 外层）；4 = 旧测试用 IDENTITY_V_SIGNING
+	if cert.CertType != 8 && cert.CertType != 4 {
+		return fmt.Errorf("invalid certificate type: %d, expected 8 (HS blinded) or 4", cert.CertType)
 	}
 
 	// Check certificate expiration
@@ -1064,10 +974,19 @@ func VerifyDescriptorSignature(descriptor *Descriptor, address *Address) error {
 		return fmt.Errorf("certificate expired at %v", cert.ExpiresAt)
 	}
 
-	// Step 2: Verify certificate signature with identity key (onion address public key)
-	// The certificate's signature covers all fields before the signature field
-	if !ed25519.Verify(ed25519.PublicKey(address.Pubkey), cert.SignedData, cert.Signature) {
-		return fmt.Errorf("certificate signature verification failed: identity key did not sign certificate")
+	// Step 2: 证书由致盲身份公钥（type 8）或主身份（type 4）签名
+	var signer ed25519.PublicKey
+	if cert.CertType == 8 {
+		blinded := descriptor.BlindedPubkey
+		if len(blinded) != 32 {
+			blinded = ComputeBlindedPubkey(ed25519.PublicKey(address.Pubkey), GetTimePeriod(time.Now()))
+		}
+		signer = ed25519.PublicKey(blinded)
+	} else {
+		signer = ed25519.PublicKey(address.Pubkey)
+	}
+	if !ed25519.Verify(signer, cert.SignedData, cert.Signature) {
+		return fmt.Errorf("certificate signature verification failed: signer did not sign certificate")
 	}
 
 	// Step 3: Extract the descriptor signing key from the certificate
@@ -1476,10 +1395,42 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 	srv := SelectSRVForFetch(now, timePeriod, h.sharedRandCurrent, h.sharedRandPrev)
 	selectedHSDirs := SelectResponsibleHSDirs(blindedPubkey, hsdirs, srv, timePeriod, 0, 0)
 	if len(selectedHSDirs) == 0 {
+		// 尝试另一份 SRV
+		alt := h.sharedRandPrev
+		if UseCurrentSRVForFetch(now) {
+			alt = h.sharedRandCurrent
+		}
+		if len(alt) == 32 && (len(srv) != 32 || string(alt) != string(srv)) {
+			selectedHSDirs = SelectResponsibleHSDirs(blindedPubkey, hsdirs, alt, timePeriod, 0, 0)
+			srv = alt
+		}
+	}
+	if len(selectedHSDirs) == 0 {
 		// 无 Ed25519 身份时回退旧启发式（仍可能 503）
 		h.logger.Warn("HSDir ring empty (need microdesc identities); falling back to XOR select")
 		for replica := 0; replica < 2; replica++ {
 			selectedHSDirs = append(selectedHSDirs, h.SelectHSDirs(descriptorID, hsdirs, replica)...)
+		}
+	} else {
+		// 合并另一 SRV 的负责节点，提高命中率（重叠描述符窗口）
+		var alt []byte
+		if UseCurrentSRVForFetch(now) {
+			alt = h.sharedRandPrev
+		} else {
+			alt = h.sharedRandCurrent
+		}
+		if len(alt) == 32 {
+			extra := SelectResponsibleHSDirs(blindedPubkey, hsdirs, alt, timePeriod, 0, 0)
+			seen := map[string]struct{}{}
+			for _, d := range selectedHSDirs {
+				seen[d.Fingerprint] = struct{}{}
+			}
+			for _, d := range extra {
+				if _, ok := seen[d.Fingerprint]; !ok {
+					selectedHSDirs = append(selectedHSDirs, d)
+					seen[d.Fingerprint] = struct{}{}
+				}
+			}
 		}
 	}
 

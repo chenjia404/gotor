@@ -11,7 +11,6 @@ import (
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/onion"
-	"github.com/opd-ai/go-tor/pkg/path"
 	"golang.org/x/crypto/ed25519"
 )
 
