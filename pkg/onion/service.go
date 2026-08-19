@@ -126,7 +126,8 @@ type ServiceIntroPoint struct {
 type PendingIntro struct {
 	Cookie          []byte // Rendezvous cookie
 	RendezvousPoint string // Rendezvous point fingerprint
-	ClientOnionKey  []byte // Client's onion key
+	ClientOnionKey  []byte // Client's ephemeral X (32 bytes)
+	IntroAuthKey    []byte // Intro point AUTH_KEY (Ed25519, 32 bytes) for hs-ntor
 	ReceivedAt      time.Time
 }
 
@@ -1031,6 +1032,7 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 		Cookie:          request.RendezvousCookie,
 		RendezvousPoint: rendezvousAddr,
 		ClientOnionKey:  request.ClientOnionKey,
+		IntroAuthKey:    append([]byte(nil), introPoint.AuthKey...),
 		ReceivedAt:      time.Now(),
 	}
 	s.mu.Unlock()
@@ -1073,33 +1075,43 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 				"cookie", cookieStr[:16],
 				"circuit_id", circ.ID)
 
-			// Store circuit ID for this rendezvous
+			// Store circuit ID and read hs-ntor keys under lock
 			s.mu.Lock()
 			s.rendezvousCircuits[cookieStr] = circ.ID
+			pending := s.pendingIntros[cookieStr]
+			var introAuth, clientX []byte
+			if pending != nil {
+				introAuth = append([]byte(nil), pending.IntroAuthKey...)
+				clientX = append([]byte(nil), pending.ClientOnionKey...)
+			}
 			s.mu.Unlock()
 
-			// Build client handshake data for ntor server-side processing
-			// Format: NODEID (20) || KEYID (32) || CLIENT_PK (32) = 84 bytes
-			// For onion services, we use our own identity as NODEID/KEYID
-			clientHandshake := make([]byte, 84)
-			copy(clientHandshake[0:20], s.publicKey[0:20])       // NODEID (first 20 bytes of Ed25519)
-			copy(clientHandshake[20:52], s.publicKey[0:32])      // KEYID (full Ed25519 public key)
-			copy(clientHandshake[52:84], request.ClientOnionKey) // CLIENT_PK (from INTRODUCE2)
+			if len(introAuth) != 32 || len(clientX) != 32 {
+				s.logger.Error("missing hs-ntor keys for RENDEZVOUS1",
+					"cookie", cookieStr[:16],
+					"auth_len", len(introAuth),
+					"x_len", len(clientX))
+				if s.config.Metrics != nil {
+					s.config.Metrics.RecordOnionServiceRendezvous(false)
+				}
+				s.mu.Lock()
+				delete(s.pendingIntros, cookieStr)
+				delete(s.rendezvousCircuits, cookieStr)
+				s.mu.Unlock()
+				return
+			}
 
-			// Send RENDEZVOUS1 cell with ntor handshake response
-			// Task 9.2.3: Complete the rendezvous connection
-			s.logger.Info("Sending RENDEZVOUS1 cell",
+			s.logger.Info("Sending RENDEZVOUS1 cell (hs-ntor)",
 				"cookie", cookieStr[:16],
 				"circuit_id", circ.ID)
 
-			// Build and send RENDEZVOUS1 using the circuit
 			keyMaterial, err := SendRendezvous1(
 				circ,
 				circ.ID,
 				request.RendezvousCookie,
-				clientHandshake,
+				clientX,
 				s.ntorKey,
-				s.publicKey,
+				introAuth,
 			)
 			if err != nil {
 				s.logger.Error("Failed to send RENDEZVOUS1",
