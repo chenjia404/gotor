@@ -1,5 +1,7 @@
 # DNS Leak Vulnerability Audit Report
 
+> **2026-08-19 勘误**：本文把「Stream ID 0」和「PTR 二进制 TYPE|LENGTH|ADDRESS」写成合规，与 spec / C Tor 相反。现行实现见 `docs/interop/dns.md` 与 `pkg/circuit/dns.go`。
+
 **Package**: `pkg/circuit`  
 **Audit Date**: January 26, 2026  
 **Auditor**: Automated Security Audit  

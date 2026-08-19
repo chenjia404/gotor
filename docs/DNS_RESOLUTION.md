@@ -110,15 +110,13 @@ config.DNSTimeout = 30 * time.Second  // DNS query timeout
 hostname\x00  (null-terminated string)
 ```
 
-**PTR Query (IPv4):**
+**PTR Query（与正向同一格式，NUL 结尾 arpa 名）:**
 ```
-[TYPE: 0x04][LENGTH: 4][IPv4 address: 4 bytes]
+1.2.0.192.in-addr.arpa\x00
+1.0.0.0....8.b.d.0.1.0.0.2.ip6.arpa\x00
 ```
 
-**PTR Query (IPv6):**
-```
-[TYPE: 0x06][LENGTH: 16][IPv6 address: 16 bytes]
-```
+旧实现曾误发 `TYPE|LENGTH|ADDRESS` 二进制，真实 exit 无法识别。
 
 ### RELAY_RESOLVED Payload Format
 
@@ -136,22 +134,12 @@ For each answer:
 - `0x00`: Hostname (null-terminated string)
 - `0x04`: IPv4 address (4 bytes)
 - `0x06`: IPv6 address (16 bytes)
-- `0xF0`: Error (with error code)
-- `0xF1`: Error with TTL
-
-**Error Codes:**
-- `0x00`: No error
-- `0x01`: Format error
-- `0x02`: Server failure
-- `0x03`: Name does not exist (NXDOMAIN)
-- `0x04`: Not implemented
-- `0x05`: Query refused
-- `0xF0`: Transient failure
-- `0xF1`: Non-transient failure
+- `0xF0`: 瞬时错误（Value 是字符串，C Tor 写 `"Error resolving hostname"`）
+- `0xF1`: 非瞬时错误（同样是字符串，不是 1 字节 RCODE）
 
 ## Security Considerations
 
-1. **Stream ID 0**: DNS queries use stream ID 0 as they don't require a persistent stream.
+1. **Stream ID 必须非 0**：C Tor 丢弃 `stream_id==0` 的 RELAY_RESOLVE（bug 7889）。BEGIN 与 RESOLVE 共用电路分配器。
 
 2. **Timeout**: DNS queries have a 30-second timeout to prevent indefinite waiting.
 
@@ -189,7 +177,7 @@ go test ./pkg/circuit -v
 
 3. **No DNSSEC**: DNSSEC validation is not implemented.
 
-4. **Integration Tests**: Full integration tests with real circuits require additional mocking infrastructure and are not included in the current test suite.
+4. **真实网络**：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration -run TestRealRelayResolve` 已通过。
 
 ## References
 

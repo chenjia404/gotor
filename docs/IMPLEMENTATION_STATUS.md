@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/consensus-sig-0ece`  
+**分支**：`cursor/audit-fixes-0ece`  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -33,7 +33,7 @@
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
 | SENDME / flow control | WORKING | 电路级 SENDME v1 已在真实网络 256KB+ soak 通过；流级仍为空（spec）；FlowCtrl=2 未做 |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
-| DNS / RELAY_RESOLVE | PARTIAL | 有 Resolve API；未证明无本地泄漏 |
+| DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE `www.torproject.org` 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功 |
 | Exit policy | PARTIAL | 已解析共识/microdesc `p` 行并按端口过滤；预建电路改选 443；完整策略与 IPv6 `p6` 未做 |
 | Onion Service v3 | BROKEN / MISSING | 本轮不实现；hs-ntor 未做；旧代码误用 circuit ntor |
@@ -52,6 +52,7 @@
 - `valid-after` / `fresh-until` / `valid-until`、flags、bandwidth、`m` digest 有解析。
 - Authority 列表已更新到当前公开 IP。
 - 生产 `FetchConsensus` 在 metadata 之外强制 `VerifyConsensusSignatures`：`/tor/keys/fp/<id>`、`dir-signing-key`、`dir-key-certification`、`dir-key-crosscert`、majority（5/9）。
+- `r` / `valid-*` / `params` 只解析 signed body；未签名前缀/后缀不得注入 relay 或改写有效期。
 - 真实网络：`TestRealConsensusSignatures` 验证 **9/9** 权威签名，共识含 10143 个 relay。
 - 详见 `docs/interop/consensus.md`。
 - **缺口**：证书未落盘；缺官方长期 fixture。`docs/MICRODESCRIPTOR_FETCHING.md` 仍写错 `a sha256=` 行（实际是 `m` 行）。
@@ -128,12 +129,16 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 - 真实网络：`TestRealFlowControlSoak` 经 SOCKS 下载 282KB，电路未 DESTROY。
 - **缺口**：1MB–100MB soak、FlowCtrl=2（ntor-v3 congestion control）。
 
-### SOCKS5 / DNS — WORKING（CONNECT） / PARTIAL（RESOLVE）
+### SOCKS5 / DNS — WORKING（CONNECT + RESOLVE）
 
 - SOCKS5 CONNECT：域名 / IPv4 / IPv6。
 - 域名走 Exit 解析（`socks5h` / RELAY_BEGIN hostname）。
 - 真实 `https://check.torproject.org/api/ip` 已返回 `IsTor=true`。
-- RELAY_RESOLVE / RESOLVED 有代码，独立 DNS 泄漏证明未做。
+- RELAY_RESOLVE：非 0 StreamID、arpa PTR、收集多条应答；0xF0/0xF1 Value 按字符串处理。
+- CONNECT 仍把 hostname 原样放进 RELAY_BEGIN（socks5h），不走本机 DNS。
+- 生产路径静态禁止 `net.Lookup*`。
+- 真实网络：`TestRealRelayResolve` 经 exit `artikel5ev8b` 解析 `www.torproject.org` → `204.8.99.144` + IPv6；PTR → `web-dal-07.torproject.org`；`.invalid` 回 `0xF1 Error resolving hostname`。本机 `DefaultResolver` 被指到不可达地址。
+- 详见 `docs/interop/dns.md`。
 
 ### Guard / Path / Exit policy — PARTIAL
 
@@ -174,9 +179,10 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 | 14 | HTTPS 选到只放行 80 的 exit | `SelectPath(80)` 且只看 Exit flag | 预建用 443；解析 `p` 行摘要 |
 | 15 | 大流量 DESTROY / hang | 电路级 SENDME 发空 v0，现代 exit 拒收 | flow-control SENDME v1；C Tor sendme.c；Arti SendmeValidator |
 | 16 | 共识只数签名个数 | `VerifyConsensusSignatures` 从未被 `FetchConsensus` 调用；证书取第一把 RSA（identity） | dir-spec consensus-formats / authority-key-certificates；C Tor signed boundaries |
-| 17 | 验签未绑定解析结果 | 整份 HTTP 文档都解析，签名只覆盖 prefix；可注入未签名 r 行 | 只解析 signed body；签名行另取 |
-| 18 | SENDME 竞态 / 重复发出 / window=0 漏 tag | 减窗与记 tag 分锁；inbound 突发重复 SENDME；`packageWindow > 0` | 原子减窗；凑满 100 立即占位；含 window=0 |
-| 19 | CREATE2 waiter 竞态与 mux 泄漏 | 先发 CREATE2 再登记 waiter；失败不关 mux | ExpectCreated2 在发送前；Close 停 mux |
+| 17 | RELAY_RESOLVE 被 exit 丢掉 | StreamID=0（C Tor bug 7889）；PTR 发二进制而非 arpa 名 | remote-hostname-lookup；relay-cells |
+| 18 | 验签未绑定解析结果 | 整份 HTTP 文档都解析，签名只覆盖 prefix；可注入未签名 r 行 | 只解析 signed body；签名行另取 |
+| 19 | SENDME 竞态 / 重复发出 / window=0 漏 tag | 减窗与记 tag 分锁；inbound 突发重复 SENDME；`packageWindow > 0` | 原子减窗；凑满 100 立即占位；含 window=0 |
+| 20 | CREATE2 waiter 竞态与 mux 泄漏 | 先发 CREATE2 再登记 waiter；失败不关 mux | ExpectCreated2 在发送前；Close 停 mux |
 
 ---
 
@@ -188,7 +194,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 | `pkg/directory` microdesc 单测 | 同行 identity、raw digest | 运行 |
 | `pkg/directory` 共识验签单测 | 自生成 RSA 证书 + 迷你共识；篡改必失败 | 运行 |
 | `integration/link_test.go` | 真实 TLS+handshake | 需 `-tags=integration` + `TOR_INTEGRATION_TEST=1` |
-| `integration/e2e_real_tor_test.go` | 共识验签 / CREATE2 / 3-hop / IsTor / SENDME soak | 同上 |
+| `integration/e2e_real_tor_test.go` | 共识验签 / CREATE2 / 3-hop / IsTor / SENDME soak / RELAY_RESOLVE | 同上 |
 | `scripts/test-real-tor.sh` | 启动 client + socks5h curl | 手动 |
 
 `testdata/ctor-vectors/crypto/ntor_handshake.json` 与 `testdata/arti-vectors/...` 已按**正确算法重生**，目前不是从 C Tor/Arti 仓库原样导出。不得据此宣称已有官方 cross-impl 向量。
@@ -215,5 +221,5 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 CREATE2、EXTEND2、3-hop、`IsTor=true`、SENDME v1 soak（≥256KB）。  
-**Tor Client basic interoperability 可标 WORKING（经典 ntor / AES-CTR-SHA1 / SENDME v1）**。ntor-v3、FlowCtrl=2、更大流量 soak 仍未做。
+当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 CREATE2、EXTEND2、3-hop、`IsTor=true`、SENDME v1 soak（≥256KB）、RELAY_RESOLVE（本机 DNS 不可达）。  
+**Tor Client basic interoperability 可标 WORKING（经典 ntor / AES-CTR-SHA1 / SENDME v1 / RELAY_RESOLVE）**。ntor-v3、FlowCtrl=2、更大流量 soak 仍未做。

@@ -68,6 +68,8 @@ type Circuit struct {
 	// Stream protocol support
 	relayReceiveChan chan *cell.RelayCell // Channel for receiving relay cells
 	streamManager    interface{}          // Stream manager (interface{} to avoid circular import)
+	nextStreamID     uint16               // 本电路下一个可用 StreamID（跳过 0）
+	usedStreamIDs    map[uint16]struct{}  // 已占用的 StreamID（BEGIN 与 RESOLVE 共用）
 	// Flow control per tor-spec.txt §7.4
 	packageWindow  int // Circuit-level package window (cells we can send)
 	deliverWindow  int // Circuit-level deliver window (cells we can receive)
@@ -140,6 +142,8 @@ func NewCircuit(id uint32) *Circuit {
 		backwardDigest:   sha1.New(),                     // CRYPTO-001: Initialize backward digest
 		relayReceiveChan: make(chan *cell.RelayCell, 32), // Buffer for incoming relay cells
 		streamManager:    nil,                            // Stream manager set later
+		nextStreamID:     1,                              // spec：RESOLVE/BEGIN 都必须用非 0 StreamID
+		usedStreamIDs:    make(map[uint16]struct{}),
 		packageWindow:    1000,                           // tor-spec.txt §7.4: Initial circuit window is 1000
 		deliverWindow:    1000,                           // tor-spec.txt §7.4: Initial circuit window is 1000
 		sendmeReceived:   0,                              // No DATA cells received yet
@@ -626,6 +630,51 @@ func (c *Circuit) SetStreamManager(mgr interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.streamManager = mgr
+}
+
+// AllocateStreamID 分配本电路上未占用的非 0 StreamID。
+// RELAY_RESOLVE 与 RELAY_BEGIN 必须共用此分配器，否则会撞号。
+// C Tor 对 RELAY_RESOLVE + stream_id==0 直接丢弃（bug 7889）。
+func (c *Circuit) AllocateStreamID() (uint16, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.usedStreamIDs == nil {
+		c.usedStreamIDs = make(map[uint16]struct{})
+	}
+	if c.nextStreamID == 0 {
+		c.nextStreamID = 1
+	}
+
+	start := c.nextStreamID
+	for {
+		id := c.nextStreamID
+		c.nextStreamID++
+		if c.nextStreamID == 0 {
+			c.nextStreamID = 1
+		}
+		if id == 0 {
+			continue
+		}
+		if _, used := c.usedStreamIDs[id]; used {
+			if c.nextStreamID == start {
+				return 0, fmt.Errorf("no free stream IDs on circuit %d", c.ID)
+			}
+			continue
+		}
+		c.usedStreamIDs[id] = struct{}{}
+		return id, nil
+	}
+}
+
+// ReleaseStreamID 释放本电路上的 StreamID，供后续 BEGIN/RESOLVE 复用。
+func (c *Circuit) ReleaseStreamID(id uint16) {
+	if id == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.usedStreamIDs, id)
 }
 
 // encryptForward encrypts a relay cell payload with each hop's forward cipher
