@@ -176,9 +176,12 @@ func TestHandleTruncate(t *testing.T) {
 		t.Fatalf("handleTruncate failed: %v", err)
 	}
 
-	// Verify next hop connection was closed
-	if !mockNextHopConn.closed {
-		t.Error("Next hop connection was not closed")
+	// 共享出站连接不得因单电路 TRUNCATE 而关闭
+	if mockNextHopConn.closed {
+		t.Error("Next hop pooled connection should not be closed on truncate")
+	}
+	if len(mockNextHopConn.writeData) == 0 {
+		t.Error("expected DESTROY cell written to next hop")
 	}
 
 	// Verify extended circuit was removed
@@ -216,8 +219,8 @@ func TestHandleDestroy(t *testing.T) {
 		t.Fatalf("HandleDestroy failed: %v", err)
 	}
 
-	if !mockConn.closed {
-		t.Error("Next hop connection was not closed")
+	if mockConn.closed {
+		t.Error("Next hop pooled connection should not be closed on destroy")
 	}
 
 	if handler.GetExtendedCircuitCount() != 0 {
@@ -225,9 +228,8 @@ func TestHandleDestroy(t *testing.T) {
 	}
 
 	// Verify DESTROY cell was sent to next hop
-	if len(mockConn.writeData) > 0 {
-		// A DESTROY cell should have been written
-		t.Log("DESTROY cell was sent to next hop")
+	if len(mockConn.writeData) == 0 {
+		t.Error("expected DESTROY cell written to next hop")
 	}
 }
 
@@ -254,8 +256,11 @@ func TestCloseAll(t *testing.T) {
 	}
 
 	for i, conn := range mockConns {
-		if !conn.closed {
-			t.Errorf("Connection %d was not closed", i)
+		if conn.closed {
+			t.Errorf("pooled connection %d should not be closed by CloseAll", i)
+		}
+		if len(conn.writeData) == 0 {
+			t.Errorf("expected DESTROY written on connection %d", i)
 		}
 	}
 }

@@ -7,195 +7,9 @@ import (
 	"fmt"
 	"net"
 	"strings"
-	"sync"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
-	"github.com/opd-ai/go-tor/pkg/logger"
 )
-
-// ExtendedCircuit tracks a circuit that has been extended to next hop
-type ExtendedCircuit struct {
-	ClientCircuitID  uint32 // Circuit ID on client side
-	NextHopCircuitID uint32 // Circuit ID on next hop side
-	NextHopAddress   string // Address of next hop
-	NextHopConn      net.Conn
-	RelayEarlyCount  int // Count of RELAY_EARLY cells forwarded
-	mu               sync.Mutex
-}
-
-// ForwardingHandler manages cell forwarding between circuits
-type ForwardingHandler struct {
-	circuits   *CircuitHandler
-	extended   map[uint32]*ExtendedCircuit // Map from client circuit ID to extended circuit
-	extendedMu sync.RWMutex
-	logger     *logger.Logger
-}
-
-// NewForwardingHandler creates a new forwarding handler
-func NewForwardingHandler(circuits *CircuitHandler, log *logger.Logger) *ForwardingHandler {
-	if log == nil {
-		log = logger.NewDefault()
-	}
-	return &ForwardingHandler{
-		circuits: circuits,
-		extended: make(map[uint32]*ExtendedCircuit),
-		logger:   log.Component("forwarding"),
-	}
-}
-
-// RegisterExtendedCircuit registers an extended circuit for forwarding
-func (h *ForwardingHandler) RegisterExtendedCircuit(clientCircID, nextHopCircID uint32, nextHopAddr string, nextHopConn net.Conn) error {
-	h.extendedMu.Lock()
-	defer h.extendedMu.Unlock()
-
-	if _, exists := h.extended[clientCircID]; exists {
-		return fmt.Errorf("circuit %d already extended", clientCircID)
-	}
-
-	h.extended[clientCircID] = &ExtendedCircuit{
-		ClientCircuitID:  clientCircID,
-		NextHopCircuitID: nextHopCircID,
-		NextHopAddress:   nextHopAddr,
-		NextHopConn:      nextHopConn,
-		RelayEarlyCount:  0,
-	}
-
-	h.logger.Info("Registered extended circuit",
-		"client_circuit_id", clientCircID,
-		"next_hop_circuit_id", nextHopCircID,
-		"next_hop_address", nextHopAddr)
-
-	return nil
-}
-
-// ForwardRelayCell forwards a relay cell from client to next hop
-// Per tor-spec.txt §5.5:
-// - RELAY_EARLY cells are limited to 8 per circuit direction
-// - After 8 RELAY_EARLY cells, convert to RELAY cells
-// - Track counts to prevent circuit extension attacks
-func (h *ForwardingHandler) ForwardRelayCell(ctx context.Context, fromClient bool, circuitID uint32, c *cell.Cell, clientConn net.Conn) error {
-	// Check if this is an extended circuit
-	h.extendedMu.RLock()
-	ext, isExtended := h.extended[circuitID]
-	h.extendedMu.RUnlock()
-
-	if !isExtended {
-		return h.handleLocalRelayCell(ctx, circuitID, c, clientConn)
-	}
-
-	// 已扩展：先剥本跳洋葱层，再转发剩余密文（或本跳处理）
-	if fromClient {
-		return h.forwardExtendedFromClient(ctx, ext, circuitID, c, clientConn)
-	}
-	return h.forwardToClient(ext, c)
-}
-
-// forwardExtendedFromClient 解密本跳后转发或本跳处理。
-func (h *ForwardingHandler) forwardExtendedFromClient(ctx context.Context, ext *ExtendedCircuit, circuitID uint32, c *cell.Cell, clientConn net.Conn) error {
-	circ, ok := h.circuits.GetCircuit(circuitID)
-	if !ok || circ == nil || circ.crypto == nil {
-		return h.forwardToNextHop(ext, c)
-	}
-	peeled, forUs, digest, err := circ.crypto.peelInbound(c.Payload)
-	if err != nil {
-		return err
-	}
-	if forUs {
-		if h.circuits.exits != nil {
-			h.circuits.exits.NoteFwdDigest(circuitID, digest)
-		}
-		relayCell, err := cell.DecodeRelayCell(peeled)
-		if err != nil {
-			return fmt.Errorf("invalid local relay cell: %w", err)
-		}
-		switch relayCell.Command {
-		case cell.RelaySendme:
-			if h.circuits.exits != nil {
-				h.circuits.exits.HandleSendme(circuitID, relayCell.StreamID)
-			}
-			return nil
-		case cell.RelayTruncate:
-			return h.handleTruncate(circuitID)
-		case cell.RelayExtend2:
-			return fmt.Errorf("circuit already extended")
-		default:
-			h.logger.Debug("local command on extended circuit", "cmd", cell.RelayCmdString(relayCell.Command))
-			return nil
-		}
-	}
-	fwd := &cell.Cell{
-		CircID:  ext.NextHopCircuitID,
-		Command: c.Command,
-		Payload: peeled,
-	}
-	if c.Command == cell.CmdRelayEarly {
-		ext.mu.Lock()
-		if ext.RelayEarlyCount >= 8 {
-			fwd.Command = cell.CmdRelay
-		} else {
-			ext.RelayEarlyCount++
-		}
-		ext.mu.Unlock()
-	}
-	if err := fwd.Encode(ext.NextHopConn); err != nil {
-		return fmt.Errorf("forward peeled cell: %w", err)
-	}
-	return nil
-}
-
-// forwardToNextHop forwards a cell from client to next hop
-func (h *ForwardingHandler) forwardToNextHop(ext *ExtendedCircuit, c *cell.Cell) error {
-	ext.mu.Lock()
-	defer ext.mu.Unlock()
-
-	// Handle RELAY_EARLY cell counting (tor-spec.txt §5.5)
-	if c.Command == cell.CmdRelayEarly {
-		if ext.RelayEarlyCount >= 8 {
-			// Convert to RELAY cell after 8 RELAY_EARLY cells
-			h.logger.Debug("Converting RELAY_EARLY to RELAY",
-				"circuit_id", ext.ClientCircuitID,
-				"count", ext.RelayEarlyCount)
-			c.Command = cell.CmdRelay
-		} else {
-			ext.RelayEarlyCount++
-			h.logger.Debug("Forwarding RELAY_EARLY",
-				"circuit_id", ext.ClientCircuitID,
-				"count", ext.RelayEarlyCount)
-		}
-	}
-
-	// Create forwarded cell with next hop circuit ID
-	forwardedCell := &cell.Cell{
-		CircID:  ext.NextHopCircuitID,
-		Command: c.Command,
-		Payload: c.Payload,
-	}
-
-	// Send to next hop
-	if err := forwardedCell.Encode(ext.NextHopConn); err != nil {
-		h.logger.Error("Failed to forward cell to next hop",
-			"circuit_id", ext.ClientCircuitID,
-			"error", err)
-		return fmt.Errorf("forward to next hop failed: %w", err)
-	}
-
-	h.logger.Debug("Forwarded cell to next hop",
-		"client_circuit_id", ext.ClientCircuitID,
-		"next_hop_circuit_id", ext.NextHopCircuitID,
-		"command", c.Command)
-
-	return nil
-}
-
-// forwardToClient forwards a cell from next hop to client
-func (h *ForwardingHandler) forwardToClient(ext *ExtendedCircuit, c *cell.Cell) error {
-	// This would be called when receiving cells from next hop
-	// For now, this is a placeholder as we need connection tracking
-	h.logger.Debug("Forwarding cell to client",
-		"circuit_id", ext.ClientCircuitID,
-		"command", c.Command)
-	return nil
-}
 
 // handleLocalRelayCell handles relay cells for circuits that end at this relay
 func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID uint32, c *cell.Cell, clientConn net.Conn) error {
@@ -303,56 +117,60 @@ func (h *ForwardingHandler) rejectExitAttempt(circ *ServerCircuit, clientConn ne
 }
 
 // handleTruncate handles RELAY_TRUNCATE cells per tor-spec.txt §5.5
-// Returns true if the circuit had an extension that was torn down
+// 只拆除本电路在下一跳的映射，不关闭共享出站 OR 连接。
 func (h *ForwardingHandler) handleTruncate(circuitID uint32) error {
 	h.logger.Info("Received RELAY_TRUNCATE", "circuit_id", circuitID)
 
-	// Remove extended circuit if it exists
 	h.extendedMu.Lock()
-	defer h.extendedMu.Unlock()
-
-	if ext, exists := h.extended[circuitID]; exists {
-		// Close connection to next hop
-		if ext.NextHopConn != nil {
-			ext.NextHopConn.Close()
-		}
+	ext, exists := h.extended[circuitID]
+	if exists {
 		delete(h.extended, circuitID)
-		h.logger.Info("Truncated extended circuit",
-			"circuit_id", circuitID,
-			"next_hop_circuit_id", ext.NextHopCircuitID)
-
-		// Note: RELAY_TRUNCATED response should be sent by the OR handler
-		// that has access to the client connection. The truncation itself
-		// is complete - we've torn down the extension to the next hop.
 	}
+	h.extendedMu.Unlock()
 
+	if !exists {
+		return nil
+	}
+	destroyCell := &cell.Cell{
+		CircID:  ext.NextHopCircuitID,
+		Command: cell.CmdDestroy,
+		Payload: []byte{cell.DestroyReasonDestroyed},
+	}
+	if err := ext.sendToNextHop(destroyCell); err != nil {
+		h.logger.Debug("truncate: DESTROY to next hop failed", "error", err)
+	}
+	h.logger.Info("Truncated extended circuit",
+		"circuit_id", circuitID,
+		"next_hop_circuit_id", ext.NextHopCircuitID)
 	return nil
 }
 
 // HandleDestroy handles DESTROY cells and cleans up extended circuits
+// 发送 DESTROY 到下一跳电路，但不关闭池化 OR 连接。
 func (h *ForwardingHandler) HandleDestroy(circuitID uint32) error {
 	h.logger.Info("Handling DESTROY", "circuit_id", circuitID)
 
-	// Clean up extended circuit
 	h.extendedMu.Lock()
-	if ext, exists := h.extended[circuitID]; exists {
-		// Send DESTROY to next hop
-		if ext.NextHopConn != nil {
-			destroyCell := &cell.Cell{
-				CircID:  ext.NextHopCircuitID,
-				Command: cell.CmdDestroy,
-				Payload: []byte{cell.DestroyReasonDestroyed},
-			}
-			destroyCell.Encode(ext.NextHopConn)
-			ext.NextHopConn.Close()
-		}
+	ext, exists := h.extended[circuitID]
+	if exists {
 		delete(h.extended, circuitID)
-		h.logger.Info("Destroyed extended circuit",
-			"circuit_id", circuitID,
-			"next_hop_circuit_id", ext.NextHopCircuitID)
 	}
 	h.extendedMu.Unlock()
 
+	if !exists {
+		return nil
+	}
+	destroyCell := &cell.Cell{
+		CircID:  ext.NextHopCircuitID,
+		Command: cell.CmdDestroy,
+		Payload: []byte{cell.DestroyReasonDestroyed},
+	}
+	if err := ext.sendToNextHop(destroyCell); err != nil {
+		h.logger.Debug("destroy: DESTROY to next hop failed", "error", err)
+	}
+	h.logger.Info("Destroyed extended circuit",
+		"circuit_id", circuitID,
+		"next_hop_circuit_id", ext.NextHopCircuitID)
 	return nil
 }
 
@@ -363,15 +181,18 @@ func (h *ForwardingHandler) GetExtendedCircuitCount() int {
 	return len(h.extended)
 }
 
-// CloseAll closes all extended circuits
+// CloseAll closes all extended circuits（不关闭池化出站连接，由 ExtensionHandler.Close 负责）。
 func (h *ForwardingHandler) CloseAll() {
 	h.extendedMu.Lock()
 	defer h.extendedMu.Unlock()
 
 	for circID, ext := range h.extended {
-		if ext.NextHopConn != nil {
-			ext.NextHopConn.Close()
+		destroyCell := &cell.Cell{
+			CircID:  ext.NextHopCircuitID,
+			Command: cell.CmdDestroy,
+			Payload: []byte{cell.DestroyReasonDestroyed},
 		}
+		_ = ext.sendToNextHop(destroyCell)
 		h.logger.Debug("Closed extended circuit", "circuit_id", circID)
 	}
 	h.extended = make(map[uint32]*ExtendedCircuit)

@@ -1053,18 +1053,41 @@ func VerifyDescriptorSignature(descriptor *Descriptor, address *Address) error {
 	}
 
 	// Step 2: 证书由致盲身份公钥（type 8）或主身份（type 4）签名
+	// type 8 尝试当前/上一/下一周期（HSDir 旋转窗口）
 	var signer ed25519.PublicKey
 	if cert.CertType == 8 {
-		expectedBlinded := ComputeBlindedPubkey(ed25519.PublicKey(address.Pubkey), GetTimePeriod(time.Now()))
-		if len(descriptor.BlindedPubkey) == 32 && !bytes.Equal(descriptor.BlindedPubkey, expectedBlinded) {
+		nowPeriod := GetTimePeriod(time.Now())
+		periods := []uint64{nowPeriod, nowPeriod + 1}
+		if nowPeriod > 0 {
+			periods = append(periods, nowPeriod-1)
+		}
+		var matched []byte
+		seenBlind := false
+		for _, p := range periods {
+			b := ComputeBlindedPubkey(ed25519.PublicKey(address.Pubkey), p)
+			if len(descriptor.BlindedPubkey) == 32 {
+				if !bytes.Equal(descriptor.BlindedPubkey, b) {
+					continue
+				}
+				seenBlind = true
+			}
+			if ed25519.Verify(ed25519.PublicKey(b), cert.SignedData, cert.Signature) {
+				matched = b
+				break
+			}
+		}
+		if len(descriptor.BlindedPubkey) == 32 && !seenBlind {
 			return fmt.Errorf("descriptor BlindedPubkey does not match address")
 		}
-		signer = ed25519.PublicKey(expectedBlinded)
+		if matched == nil {
+			return fmt.Errorf("certificate signature verification failed: no matching blinded period")
+		}
+		signer = ed25519.PublicKey(matched)
 	} else {
 		signer = ed25519.PublicKey(address.Pubkey)
-	}
-	if !ed25519.Verify(signer, cert.SignedData, cert.Signature) {
-		return fmt.Errorf("certificate signature verification failed: signer did not sign certificate")
+		if !ed25519.Verify(signer, cert.SignedData, cert.Signature) {
+			return fmt.Errorf("certificate signature verification failed: signer did not sign certificate")
+		}
 	}
 
 	// Step 3: Extract the descriptor signing key from the certificate

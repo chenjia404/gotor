@@ -696,16 +696,7 @@ func (s *Service) signDescriptor(desc *Descriptor) error {
 		return fmt.Errorf("blinded signing material: %w", err)
 	}
 
-	// 1) 双层加密引言点
-	introPlain := encodeIntroPointsPlaintext(desc.IntroPoints)
-	subcred := ComputeHSSubcredential(s.identityKey.Public().(ed25519.PublicKey), desc.BlindedPubkey)
-	superBlob, err := SealDescriptorLayers(desc.BlindedPubkey, subcred, desc.RevisionCounter, introPlain)
-	if err != nil {
-		return fmt.Errorf("seal layers: %w", err)
-	}
-	desc.SuperencryptedBlob = superBlob
-
-	// 2) 临时描述符签名密钥 + type-8 证书（由致盲身份密钥签发）
+	// 1) 描述符签名密钥（引言点 auth-key/enc-key-cert 需用其签名）
 	signingPub, signingPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		return fmt.Errorf("generate descriptor signing key: %w", err)
@@ -714,6 +705,19 @@ func (s *Service) signDescriptor(desc *Descriptor) error {
 	if desc.Lifetime <= 0 {
 		expires = time.Now().Add(3 * time.Hour)
 	}
+
+	introPlain, err := encodeIntroPointsPlaintext(desc.IntroPoints, signingPriv, expires)
+	if err != nil {
+		return fmt.Errorf("encode intro plaintext: %w", err)
+	}
+	subcred := ComputeHSSubcredential(s.identityKey.Public().(ed25519.PublicKey), desc.BlindedPubkey)
+	superBlob, err := SealDescriptorLayers(desc.BlindedPubkey, subcred, desc.RevisionCounter, introPlain)
+	if err != nil {
+		return fmt.Errorf("seal layers: %w", err)
+	}
+	desc.SuperencryptedBlob = superBlob
+
+	// 2) type-8 证书（由致盲身份密钥签发）
 	cert, err := buildType8SigningKeyCert(blindedMat, signingPub, expires)
 	if err != nil {
 		return fmt.Errorf("type8 cert: %w", err)
@@ -731,7 +735,6 @@ func (s *Service) signDescriptor(desc *Descriptor) error {
 		return fmt.Errorf("encode signed descriptor: %w", err)
 	}
 	desc.RawDescriptor = encoded
-	_ = signingPriv
 	return nil
 }
 

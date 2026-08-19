@@ -94,14 +94,17 @@ func extractAddressFromLinkSpecs(specs []LinkSpecifier) (string, error) {
 
 // ExtensionHandler handles circuit extension for relay servers
 type ExtensionHandler struct {
-	keys        *RelayKeys
-	circuits    *CircuitHandler
-	forwarder   *ForwardingHandler
-	logger      *logger.Logger
-	connPool    map[string]*connection.Connection // Pool of outbound connections
-	connMutex   sync.Mutex
-	clientConns map[uint32]net.Conn // circuitID → 入向 OR 连接（发送 EXTENDED2）
-	clientMu    sync.Mutex
+	keys          *RelayKeys
+	circuits      *CircuitHandler
+	forwarder     *ForwardingHandler
+	logger        *logger.Logger
+	connPool      map[string]*connection.Connection // Pool of outbound connections
+	connMutex     sync.Mutex
+	clientConns   map[uint32]net.Conn // circuitID → 入向 OR 连接（发送 EXTENDED2）
+	clientMu      sync.Mutex
+	linkReaders   map[string]bool                       // address → 读循环已启动
+	pendingCreate map[string]map[uint32]chan *cell.Cell // addr → circID → waiter
+	pendingMu     sync.Mutex
 }
 
 // NewExtensionHandler creates a new extension handler
@@ -110,11 +113,13 @@ func NewExtensionHandler(keys *RelayKeys, circuits *CircuitHandler, log *logger.
 		log = logger.NewDefault()
 	}
 	return &ExtensionHandler{
-		keys:        keys,
-		circuits:    circuits,
-		logger:      log.Component("extension"),
-		connPool:    make(map[string]*connection.Connection),
-		clientConns: make(map[uint32]net.Conn),
+		keys:          keys,
+		circuits:      circuits,
+		logger:        log.Component("extension"),
+		connPool:      make(map[string]*connection.Connection),
+		clientConns:   make(map[uint32]net.Conn),
+		linkReaders:   make(map[string]bool),
+		pendingCreate: make(map[string]map[uint32]chan *cell.Cell),
 	}
 }
 
@@ -201,7 +206,7 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 
 	handshakeResponse := created2Cell.Payload[2 : 2+responseLen]
 
-	if err := h.registerExtendedCircuit(circuitID, nextCircuitID, address, nextConn); err != nil {
+	if err := h.registerExtendedCircuit(circuitID, nextCircuitID, address, nextConn, clientConn); err != nil {
 		h.logger.Error("Failed to register extended circuit", "error", err)
 		return fmt.Errorf("registration failed: %w", err)
 	}
@@ -291,9 +296,22 @@ func (h *ExtensionHandler) performLinkHandshake(ctx context.Context, conn *conne
 		return fmt.Errorf("expected VERSIONS, got %d", respCell.Command)
 	}
 
-	// For simplicity, skip full CERTS/AUTH/NETINFO exchange
-	// In production, would need complete link protocol
-	h.logger.Debug("Link handshake completed (simplified)")
+	// 协商到 v≥4 时使用 4 字节 CircID（与后续 CREATE2/RELAY 一致）
+	negotiated := uint16(3)
+	for i := 0; i+1 < len(respCell.Payload); i += 2 {
+		v := binary.BigEndian.Uint16(respCell.Payload[i : i+2])
+		if v >= 4 && v > negotiated {
+			negotiated = v
+		}
+	}
+	if negotiated >= 4 {
+		conn.SetCircIDLen(4)
+	} else {
+		conn.SetCircIDLen(2)
+	}
+
+	// CERTS/AUTH/NETINFO 完整交换后续补齐；CircID 宽度已对齐
+	h.logger.Debug("Link handshake completed (simplified)", "link_version", negotiated)
 	return nil
 }
 
@@ -323,37 +341,127 @@ func (h *ExtensionHandler) receiveCreated2FromNextHop(ctx context.Context, conn 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	respCell, err := conn.ReceiveCellWithContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to receive cell: %w", err)
+	addr := conn.Address()
+	h.connMutex.Lock()
+	readerActive := h.linkReaders[addr]
+	h.connMutex.Unlock()
+
+	var respCell *cell.Cell
+	var err error
+	if readerActive {
+		ch := h.registerPending(addr, expectedCircuitID)
+		defer h.unregisterPending(addr, expectedCircuitID)
+		select {
+		case respCell = <-ch:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("timeout waiting CREATED2: %w", ctx.Err())
+		}
+	} else {
+		respCell, err = conn.ReceiveCellWithContext(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to receive cell: %w", err)
+		}
 	}
 
 	if respCell.Command != cell.CmdCreated2 {
 		return nil, fmt.Errorf("expected CREATED2, got %d", respCell.Command)
 	}
-
 	if respCell.CircID != expectedCircuitID {
 		return nil, fmt.Errorf("circuit ID mismatch: expected %d, got %d", expectedCircuitID, respCell.CircID)
 	}
-
 	return respCell, nil
 }
 
 // registerExtendedCircuit registers the extended circuit mapping
-func (h *ExtensionHandler) registerExtendedCircuit(incomingCircID, outgoingCircID uint32, nextHop string, nextConn *connection.Connection) error {
+func (h *ExtensionHandler) registerExtendedCircuit(incomingCircID, outgoingCircID uint32, nextHop string, nextConn *connection.Connection, clientConn net.Conn) error {
 	if _, exists := h.circuits.GetCircuit(incomingCircID); !exists {
 		return fmt.Errorf("circuit %d not found", incomingCircID)
 	}
 	if h.forwarder != nil && nextConn != nil {
-		if err := h.forwarder.RegisterExtendedCircuit(incomingCircID, outgoingCircID, nextHop, nextConn.NetConn()); err != nil {
+		if err := h.forwarder.RegisterExtendedCircuitOR(incomingCircID, outgoingCircID, nextHop, nextConn, clientConn); err != nil {
 			return err
 		}
 	}
+	h.ensureLinkReader(nextHop, nextConn)
 	h.logger.Debug("Registered circuit extension",
 		"incoming_circ", incomingCircID,
 		"outgoing_circ", outgoingCircID,
 		"next_hop", nextHop)
 	return nil
+}
+
+func (h *ExtensionHandler) ensureLinkReader(addr string, conn *connection.Connection) {
+	if conn == nil {
+		return
+	}
+	h.connMutex.Lock()
+	if h.linkReaders[addr] {
+		h.connMutex.Unlock()
+		return
+	}
+	h.linkReaders[addr] = true
+	h.connMutex.Unlock()
+	go h.readOutboundLink(addr, conn)
+}
+
+func (h *ExtensionHandler) readOutboundLink(addr string, conn *connection.Connection) {
+	for {
+		c, err := conn.ReceiveCell()
+		if err != nil {
+			h.logger.Debug("outbound link read ended", "address", addr, "error", err)
+			h.connMutex.Lock()
+			delete(h.linkReaders, addr)
+			delete(h.connPool, addr)
+			h.connMutex.Unlock()
+			return
+		}
+		if h.deliverPending(addr, c) {
+			continue
+		}
+		if h.forwarder != nil {
+			h.forwarder.DeliverFromNextHop(addr, c)
+		}
+	}
+}
+
+func (h *ExtensionHandler) registerPending(addr string, circID uint32) chan *cell.Cell {
+	ch := make(chan *cell.Cell, 1)
+	h.pendingMu.Lock()
+	if h.pendingCreate[addr] == nil {
+		h.pendingCreate[addr] = make(map[uint32]chan *cell.Cell)
+	}
+	h.pendingCreate[addr][circID] = ch
+	h.pendingMu.Unlock()
+	return ch
+}
+
+func (h *ExtensionHandler) unregisterPending(addr string, circID uint32) {
+	h.pendingMu.Lock()
+	if m := h.pendingCreate[addr]; m != nil {
+		delete(m, circID)
+	}
+	h.pendingMu.Unlock()
+}
+
+func (h *ExtensionHandler) deliverPending(addr string, c *cell.Cell) bool {
+	h.pendingMu.Lock()
+	m := h.pendingCreate[addr]
+	var ch chan *cell.Cell
+	if m != nil {
+		ch = m[c.CircID]
+		if ch != nil {
+			delete(m, c.CircID)
+		}
+	}
+	h.pendingMu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- c:
+	default:
+	}
+	return true
 }
 
 // sendExtended2 sends a RELAY_EXTENDED2 cell back to the client

@@ -340,13 +340,13 @@ func TestRegisterExtendedCircuit(t *testing.T) {
 	circuits.mu.Unlock()
 
 	// Test registering extension
-	err = handler.registerExtendedCircuit(circuitID, 456, "127.0.0.1:9001", nil)
+	err = handler.registerExtendedCircuit(circuitID, 456, "127.0.0.1:9001", nil, nil)
 	if err != nil {
 		t.Errorf("registerExtendedCircuit() error = %v", err)
 	}
 
 	// Test with non-existent circuit
-	err = handler.registerExtendedCircuit(999, 456, "127.0.0.1:9001", nil)
+	err = handler.registerExtendedCircuit(999, 456, "127.0.0.1:9001", nil, nil)
 	if err == nil {
 		t.Error("registerExtendedCircuit() expected error for non-existent circuit")
 	}
