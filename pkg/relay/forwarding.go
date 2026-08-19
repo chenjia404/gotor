@@ -152,15 +152,19 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 	}
 	plain, err := circ.crypto.decryptInbound(c.Payload)
 	if err != nil {
-		// digest mismatch：拆路；not recognized：丢弃
 		if strings.Contains(err.Error(), "digest mismatch") {
 			h.logger.Warn("relay digest mismatch, destroying circuit", "circuit_id", circuitID)
-			_ = h.circuits.sendDestroyCell(clientConn, circuitID, cell.DestroyReasonProtocol)
+			if clientConn != nil {
+				_ = h.circuits.sendDestroyCell(clientConn, circuitID, cell.DestroyReasonProtocol)
+			}
 			h.circuits.CloseCircuit(circuitID)
 			return err
 		}
 		h.logger.Debug("drop unrecognized relay cell", "circuit_id", circuitID, "error", err)
 		return nil
+	}
+	if h.circuits.exits != nil {
+		h.circuits.exits.NoteFwdDigest(circuitID, circ.crypto.FwdDigestSum())
 	}
 	relayCell, err := cell.DecodeRelayCell(plain)
 	if err != nil {

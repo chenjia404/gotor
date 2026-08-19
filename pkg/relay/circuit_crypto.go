@@ -85,6 +85,16 @@ func (cc *circuitCrypto) decryptInbound(payload []byte) ([]byte, error) {
 	return out, nil
 }
 
+// FwdDigestSum 返回当前入向滚动摘要（20 字节），供电路级 SENDME v1。
+func (cc *circuitCrypto) FwdDigestSum() []byte {
+	if cc == nil {
+		return nil
+	}
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	return cc.fwdDigest.Sum(nil)
+}
+
 // encryptOutbound 加密发往客户端的明文 509 字节 payload（填 digest）。
 func (cc *circuitCrypto) encryptOutbound(payload []byte) ([]byte, error) {
 	if cc == nil || len(payload) != 509 {

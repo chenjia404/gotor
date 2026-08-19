@@ -137,3 +137,35 @@ func TestExitPolicyRecheckResolvedIP(t *testing.T) {
 		t.Fatal("loopback must be rejected after resolve")
 	}
 }
+
+func TestExitPolicyRejectsPrivateEvenWithAcceptStar(t *testing.T) {
+	p := NewExitPolicyFromConfig(true, []string{"accept *:80", "accept *:443", "reject *:*"}, false, false, logger.NewDefault())
+	ok, _ := p.CheckExitAllowed("93.184.216.34", 80)
+	if !ok {
+		t.Fatal("public IPv4:80 should allow")
+	}
+	ok, _ = p.CheckExitAllowed("127.0.0.1", 80)
+	if ok {
+		t.Fatal("loopback must reject")
+	}
+	ok, _ = p.CheckExitAllowed("10.0.0.1", 443)
+	if ok {
+		t.Fatal("RFC1918 must reject")
+	}
+	ok, _ = p.CheckExitAllowed("2001:db8::1", 80)
+	if ok {
+		t.Fatal("IPv6 without IPv6Exit must reject")
+	}
+}
+
+func TestExitPolicyIPv6RequiresFlagAndRejectStar6(t *testing.T) {
+	p := NewExitPolicyFromConfig(true, nil, true, true, logger.NewDefault())
+	ok, _ := p.CheckExitAllowed("2001:4860:4860::8888", 80)
+	if !ok {
+		t.Fatal("public IPv6:80 with IPv6Exit should allow via accept *6:80")
+	}
+	ok, _ = p.CheckExitAllowed("::1", 80)
+	if ok {
+		t.Fatal("::1 must reject")
+	}
+}

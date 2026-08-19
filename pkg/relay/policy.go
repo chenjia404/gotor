@@ -12,9 +12,24 @@ import (
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
-// 精简默认出口策略（对照 C Tor DEFAULT_EXIT_POLICY 子集 + ReduceExitPolicy 常用端口）
-var reducedExitPolicyLines = []string{
+// 私网/特殊用途：ExitRelay 启用时始终前置拒绝
+var privateRejectLines = []string{
+	"reject 0.0.0.0/8:*",
+	"reject 127.0.0.0/8:*",
+	"reject 10.0.0.0/8:*",
+	"reject 172.16.0.0/12:*",
+	"reject 192.168.0.0/16:*",
+	"reject 169.254.0.0/16:*",
+	"reject 100.64.0.0/10:*",
+	"reject [::]/128:*",
+	"reject [::1]/128:*",
+	"reject [fe80::]/10:*",
+	"reject [fc00::]/7:*",
+	"reject [2001:db8::]/32:*",
 	"reject *:25",
+}
+
+var reducedExitPolicyLines = []string{
 	"reject *:119",
 	"reject *:135-139",
 	"reject *:445",
@@ -29,13 +44,13 @@ var reducedExitPolicyLines = []string{
 	"reject *:*",
 }
 
-var defaultRejectAll = []string{"reject *:*"}
+var defaultRejectAll = []string{"reject *:*", "reject *6:*"}
 
 // ExitPolicy 封装出口判定。
 type ExitPolicy struct {
 	AllowExit bool
 	rules     *directory.ExitPolicy
-	ipv6OK    bool // IPv6Exit
+	ipv6OK    bool
 
 	rejectedConnections uint64
 	logger              *logger.Logger
@@ -54,7 +69,8 @@ func NewExitPolicy(log *logger.Logger) *ExitPolicy {
 	}
 }
 
-// NewExitPolicyFromConfig 根据 ExitRelay / ExitPolicy / ReduceExitPolicy / IPv6Exit 构建。
+// NewExitPolicyFromConfig 构建出口策略。
+// 始终前置私网拒绝；末尾 reject *6:*（IPv6Exit 时先插入 accept *6:80/443）。
 func NewExitPolicyFromConfig(exitRelay bool, lines []string, reduce, ipv6Exit bool, log *logger.Logger) *ExitPolicy {
 	p := NewExitPolicy(log)
 	p.ipv6OK = ipv6Exit
@@ -62,21 +78,24 @@ func NewExitPolicyFromConfig(exitRelay bool, lines []string, reduce, ipv6Exit bo
 		return p
 	}
 	p.AllowExit = true
-	use := append([]string(nil), lines...)
-	if len(use) == 0 {
+	use := append([]string(nil), privateRejectLines...)
+	if len(lines) == 0 {
+		use = append(use, reducedExitPolicyLines...)
+		p.logger.Info("ExitRelay 1 使用精简默认 ExitPolicy（含私网拒绝）")
+	} else {
 		if reduce {
-			use = append([]string(nil), reducedExitPolicyLines...)
-		} else {
-			// C Tor ExitRelay 1 且无显式策略时默认较宽松；此处用 reduce 子集更安全
-			use = append([]string(nil), reducedExitPolicyLines...)
-			p.logger.Info("ExitRelay 1 未配置 ExitPolicy，使用 ReduceExitPolicy 风格默认集")
+			use = append(use, "reject *:119", "reject *:135-139", "reject *:445")
 		}
-	} else if reduce {
-		// ReduceExitPolicy 在自定义策略前附加拒绝高危端口
-		use = append([]string{
-			"reject *:25", "reject *:119", "reject *:135-139", "reject *:445",
-		}, use...)
+		use = append(use, lines...)
 	}
+	if ipv6Exit {
+		if len(lines) == 0 || reduce {
+			use = append(use, "accept *6:80", "accept *6:443")
+		}
+	}
+	// 封闭 IPv6：无匹配不得默认 accept（directory.Allows 无命中为 true）
+	use = append(use, "reject *6:*")
+
 	pol, _, err := directory.ParseExitPolicyLines(use)
 	if err != nil {
 		p.logger.Warn("ExitPolicy 解析失败，回退 reject *:*", "error", err)
@@ -103,16 +122,14 @@ func (p *ExitPolicy) CheckExitAllowed(address string, port uint16) (bool, byte) 
 	if h, _, err := net.SplitHostPort(address); err == nil {
 		host = h
 	}
-	ip := net.ParseIP(host)
+	ip := net.ParseIP(strings.Trim(host, "[]"))
 	var ok bool
 	if ip == nil {
 		ok = p.rules != nil && p.rules.AllowsUnknown(int(port))
+	} else if ip.To4() == nil && !p.ipv6OK {
+		ok = false
 	} else {
-		if ip.To4() == nil && !p.ipv6OK {
-			ok = false
-		} else {
-			ok = p.rules != nil && p.rules.Allows(ip, int(port))
-		}
+		ok = p.rules != nil && p.rules.Allows(ip, int(port))
 	}
 	if !ok {
 		atomic.AddUint64(&p.rejectedConnections, 1)
@@ -149,7 +166,9 @@ func (p *ExitPolicy) GetExitPolicyString() string {
 func (p *ExitPolicy) ValidateExitAttempt(command byte, address string, port uint16) error {
 	if command == cell.RelayBeginDir {
 		if p == nil || !p.AllowExit {
-			atomic.AddUint64(&p.rejectedConnections, 1)
+			if p != nil {
+				atomic.AddUint64(&p.rejectedConnections, 1)
+			}
 			return &ExitPolicyViolation{Address: address, Port: port, Reason: cell.EndReasonExitPolicy}
 		}
 		return nil

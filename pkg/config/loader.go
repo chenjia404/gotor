@@ -264,7 +264,7 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 		cfg.ExitPolicyLines = append(cfg.ExitPolicyLines, value)
 
 	case "ExitPolicyRejectPrivate":
-		// 简化：开启时前置常见私网拒绝（与 C Tor 默认接近的子集）
+		// 与出口路径 privateRejectLines 对齐的显式前置（即便 ExitRelay 也会再加一层）
 		if parseBool(value) {
 			cfg.ExitPolicyLines = append([]string{
 				"reject 0.0.0.0/8:*",
@@ -273,6 +273,11 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 				"reject 172.16.0.0/12:*",
 				"reject 192.168.0.0/16:*",
 				"reject 169.254.0.0/16:*",
+				"reject 100.64.0.0/10:*",
+				"reject [::]/128:*",
+				"reject [::1]/128:*",
+				"reject [fe80::]/10:*",
+				"reject [fc00::]/7:*",
 				"reject *:25",
 			}, cfg.ExitPolicyLines...)
 		}
