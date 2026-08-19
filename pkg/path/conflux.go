@@ -42,6 +42,18 @@ func sameRelayIdentity(a, b *directory.Relay) bool {
 	return ia != "" && ia == ib
 }
 
+func sharesFamilyOrSubnet(r *directory.Relay, others ...*directory.Relay) bool {
+	if r == nil {
+		return false
+	}
+	for _, o := range others {
+		if o != nil && (r.InSameFamily(o) || r.InSameSubnet(o)) {
+			return true
+		}
+	}
+	return false
+}
+
 func identityIn(r *directory.Relay, others ...*directory.Relay) bool {
 	for _, o := range others {
 		if sameRelayIdentity(r, o) {
@@ -90,7 +102,8 @@ func (s *Selector) selectConfluxGuardFrom(first *Path) (*directory.Relay, error)
 		if !confluxHopOK(relay) {
 			continue
 		}
-		if first != nil && identityIn(relay, first.Guard, first.Middle, first.Exit) {
+		if first != nil && (identityIn(relay, first.Guard, first.Middle, first.Exit) ||
+			sharesFamilyOrSubnet(relay, first.Guard, first.Middle)) {
 			continue
 		}
 		candidates = append(candidates, relay)
@@ -128,7 +141,8 @@ func (s *Selector) selectConfluxExit(port int, avoid *directory.Relay) (*directo
 	return exits[idx], nil
 }
 
-// SelectConfluxSecondPath 选第二条腿：同一 Exit，不同 Guard/Middle（按身份键，不是 family/IP）。
+// SelectConfluxSecondPath 选第二条腿：同一 Exit，不同 Guard/Middle。
+// 第二腿 Guard/Middle 不得与第一腿 Guard/Middle 同身份、同 family 或同 /16。
 // first 的三条 hop 必须已宣告 Conflux；否则返回错误，调用方应保持单电路。
 func (s *Selector) SelectConfluxSecondPath(first *Path) (*Path, error) {
 	s.mu.RLock()
@@ -176,6 +190,9 @@ func (s *Selector) selectConfluxMiddle(first *Path, guard, exit *directory.Relay
 			continue
 		}
 		if identityIn(relay, first.Guard, first.Middle, first.Exit, guard, exit) {
+			continue
+		}
+		if first != nil && sharesFamilyOrSubnet(relay, first.Guard, first.Middle) {
 			continue
 		}
 		// 单条腿内部仍遵守 path-spec family/subnet，避免与本腿 Guard/Exit 共享瓶颈。

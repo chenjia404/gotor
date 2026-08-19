@@ -33,7 +33,7 @@ SWITCH：`SeqNum [4]` 相对序号 = 全局已发绝对序号 − 目标腿上�
 
 - 两条腿 Guard/Middle/Exit **均**宣告 `Conflux=1` **或** `Conflux=2`（proposal 346：号是 flag；mainnet 常见只写 `Conflux=2`）。
 - 两条腿都必须已协商 **FlowCtrl=2**；否则关第二腿，不标 Conflux。
-- 同一 Exit，不同 Guard / Middle（按身份键，不是 family/IP）。
+- 同一 Exit，不同 Guard / Middle：不得同身份，也不得与第一腿 Guard/Middle 同 family 或同 /16。
 - 每条腿发 LINK → 等 LINKED → 回 LINKED_ACK。任一条 LINKED 超时则两条都关。
 - 发送用 **LowRTT**（HIGH_THROUGHPUT）：有窗的腿里选 RTT 最低的。
 - 计入序号：BEGIN / DATA / END / CONNECTED / RESOLVE / RESOLVED / BEGIN_DIR / XON / XOFF。

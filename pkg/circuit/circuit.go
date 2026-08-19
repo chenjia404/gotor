@@ -340,16 +340,28 @@ func (m *Manager) GetCircuit(id uint32) (*Circuit, error) {
 // CloseCircuit closes a circuit
 func (m *Manager) CloseCircuit(id uint32) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	circuit, exists := m.circuits[id]
 	if !exists {
+		m.mu.Unlock()
 		return fmt.Errorf("circuit %d not found", id)
 	}
-
-	circuit.SetState(StateClosed)
 	delete(m.circuits, id)
+	m.mu.Unlock()
+	// 必须走 Circuit.Close，才能拆掉 Conflux 另一条腿并释放连接。
+	circuit.Close()
+	m.sweepClosed()
 	return nil
+}
+
+// sweepClosed 清掉已被对腿 Close 带下来、但仍留在 map 里的电路。
+func (m *Manager) sweepClosed() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, circ := range m.circuits {
+		if circ.GetState() == StateClosed {
+			delete(m.circuits, id)
+		}
+	}
 }
 
 // ListCircuits returns a list of all circuit IDs
@@ -383,11 +395,16 @@ func (m *Manager) Close(ctx context.Context) error {
 	// Mark as closed to prevent new circuits
 	m.closed = true
 
-	// Close all circuits
-	for id, circuit := range m.circuits {
-		circuit.SetState(StateClosed)
+	circuits := make([]*Circuit, 0, len(m.circuits))
+	for id, circ := range m.circuits {
+		circuits = append(circuits, circ)
 		delete(m.circuits, id)
 	}
+	m.mu.Unlock()
+	for _, circ := range circuits {
+		circ.Close()
+	}
+	m.mu.Lock()
 
 	return nil
 }
@@ -1384,9 +1401,9 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 	c.RecordActivity()
 
 	if set := c.confluxSet(); set != nil {
-		handled, err := set.onRelayCell(c, relayCell)
+		handled, err := set.onRelayCell(c, relayCell, hopIdx)
 		if err != nil {
-			c.SetState(StateFailed)
+			set.failAndClose()
 			c.NotifyDestroyed(1)
 			return fmt.Errorf("conflux: %w", err)
 		}

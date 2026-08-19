@@ -524,6 +524,12 @@ func (c *Client) tryLinkConflux(ctx context.Context, builder *circuit.Builder, f
 		return fmt.Errorf("conflux handshake: %w", err)
 	}
 
+	// 第二腿也纳入列表，dirtiness / Stop 才能走到 Close 并拆套。
+	c.circuitsMu.Lock()
+	c.circuits = append(c.circuits, secondary)
+	c.metrics.ActiveCircuits.Set(int64(len(c.circuits)))
+	c.circuitsMu.Unlock()
+
 	info := primary.ConfluxInfo()
 	c.logger.Info("Conflux linked",
 		"primary", primary.ID,
@@ -566,13 +572,13 @@ func (c *Client) checkAndRebuildCircuits(ctx context.Context) {
 		// Remove circuits that are not open or too old
 		if state != circuit.StateOpen {
 			c.logger.Info("Removing inactive circuit", "circuit_id", circ.ID, "state", state.String())
+			// 可能已被 Conflux 对腿拆掉；再走一遍 CloseCircuit 清 manager。
+			_ = c.circuitMgr.CloseCircuit(circ.ID)
 			continue
 		}
 
 		if age > maxAge {
 			c.logger.Info("Removing old circuit", "circuit_id", circ.ID, "age", age, "max_age", maxAge)
-			// Close the old circuit
-			circ.SetState(circuit.StateClosed)
 			if err := c.circuitMgr.CloseCircuit(circ.ID); err != nil {
 				c.logger.Warn("Failed to close old circuit", "circuit_id", circ.ID, "error", err)
 			}

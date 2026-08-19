@@ -10,9 +10,9 @@ import (
 
 type stubMuxConn struct{}
 
-func (stubMuxConn) SendCell(*cell.Cell) error      { return nil }
+func (stubMuxConn) SendCell(*cell.Cell) error        { return nil }
 func (stubMuxConn) ReceiveCell() (*cell.Cell, error) { return nil, context.Canceled }
-func (stubMuxConn) Close() error                   { return nil }
+func (stubMuxConn) Close() error                     { return nil }
 
 func TestExpectCreated2CatchesEarlyResponse(t *testing.T) {
 	mux := NewCellMux(stubMuxConn{}, nil)

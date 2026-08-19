@@ -25,9 +25,13 @@
 // AUTH 仍会通过，但 Df/Db/Kf/Kb 与 Guard 不一致，第一个 RELAY 会被 DESTROY reason=1。
 //
 // C Tor: src/core/crypto/onion_ntor.c
-//        crypto_expand_key_material_rfc5869_sha256(secret_input, t_key, m_expand)
+//
+//	crypto_expand_key_material_rfc5869_sha256(secret_input, t_key, m_expand)
+//
 // Arti: crates/tor-proto/src/crypto/handshake/ntor.rs
-//        Ntor1Kdf::derive(secret_input)
+//
+//	Ntor1Kdf::derive(secret_input)
+//
 // Spec：https://spec.torproject.org/tor-spec/setting-circuit-keys.html （IKM == secret_input）
 package crypto
 

@@ -255,14 +255,28 @@ func (s *ConfluxSet) legOf(c *Circuit) *confluxLeg {
 	return nil
 }
 
-func (s *ConfluxSet) onRelayCell(from *Circuit, rc *cell.RelayCell) (handled bool, err error) {
+func (s *ConfluxSet) requireExitHop(from *Circuit, hopIdx int) error {
+	last := from.Length() - 1
+	if last < 0 || hopIdx != last {
+		return fmt.Errorf("conflux cell from hop %d, want exit %d", hopIdx, last)
+	}
+	return nil
+}
+
+func (s *ConfluxSet) onRelayCell(from *Circuit, rc *cell.RelayCell, hopIdx int) (handled bool, err error) {
 	if rc == nil {
 		return false, nil
 	}
 	switch rc.Command {
 	case cell.RelayConfluxLinked:
+		if err := s.requireExitHop(from, hopIdx); err != nil {
+			return true, err
+		}
 		return true, s.handleLinked(from, rc)
 	case cell.RelayConfluxSwitch:
+		if err := s.requireExitHop(from, hopIdx); err != nil {
+			return true, err
+		}
 		return true, s.handleSwitch(from, rc)
 	case cell.RelayConfluxLink, cell.RelayConfluxLinkedAck:
 		return true, fmt.Errorf("unexpected %s on client circuit %d", cell.RelayCmdString(rc.Command), from.ID)
@@ -271,6 +285,9 @@ func (s *ConfluxSet) onRelayCell(from *Circuit, rc *cell.RelayCell) (handled boo
 	linked := s.linked && !s.closed
 	s.mu.Unlock()
 	if linked && cell.ConfluxShouldMultiplex(rc.Command) {
+		if err := s.requireExitHop(from, hopIdx); err != nil {
+			return true, err
+		}
 		return true, s.reorder(from, rc)
 	}
 	return false, nil
@@ -333,17 +350,54 @@ func (s *ConfluxSet) handleSwitch(from *Circuit, rc *cell.RelayCell) error {
 	if err != nil {
 		return err
 	}
+	if rel < 1 {
+		return fmt.Errorf("SWITCH relative seq must be >= 1")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
-		return fmt.Errorf("conflux set closed")
+	if s.closed || !s.linked {
+		return fmt.Errorf("SWITCH before LINK complete")
 	}
 	leg := s.legOf(from)
 	if leg == nil {
 		return fmt.Errorf("SWITCH on unknown circuit")
 	}
-	leg.lastRecv += uint64(rel)
+	if leader := s.uniqueRecvLeaderLocked(); leader == leg {
+		return fmt.Errorf("SWITCH from current receive leg")
+	}
+	next := leg.lastRecv + uint64(rel)
+	if next <= s.lastRecv {
+		return fmt.Errorf("SWITCH does not advance seq")
+	}
+	if next > s.lastRecv+uint64(confluxOOOLimit)+1 {
+		return fmt.Errorf("SWITCH gap too large")
+	}
+	leg.lastRecv = next
 	return nil
+}
+
+func (s *ConfluxSet) uniqueRecvLeaderLocked() *confluxLeg {
+	var best *confluxLeg
+	var bestRecv uint64
+	unique := false
+	for _, l := range s.legs {
+		if l == nil {
+			continue
+		}
+		if best == nil || l.lastRecv > bestRecv {
+			best = l
+			bestRecv = l.lastRecv
+			unique = true
+			continue
+		}
+		if l.lastRecv == bestRecv {
+			unique = false
+		}
+	}
+	if !unique {
+		return nil
+	}
+	return best
 }
 
 func (s *ConfluxSet) reorder(from *Circuit, rc *cell.RelayCell) error {
@@ -392,6 +446,10 @@ func (s *ConfluxSet) reorder(from *Circuit, rc *cell.RelayCell) error {
 		s.mu.Unlock()
 		return fmt.Errorf("conflux seq gap too large")
 	}
+	if _, exists := s.ooo[seq]; exists {
+		s.mu.Unlock()
+		return fmt.Errorf("conflux OOO slot %d already occupied", seq)
+	}
 	s.ooo[seq] = rc
 	s.mu.Unlock()
 	return nil
@@ -421,15 +479,19 @@ func (s *ConfluxSet) sendMultiplexed(rc *cell.RelayCell) error {
 	}
 
 	s.mu.Lock()
-	needSwitch := s.current != nil && s.current != chosen.circ
+	needSwitch := false
 	var rel uint32
-	if needSwitch {
+	if s.current != nil && s.current != chosen.circ {
 		gap := s.lastSent - chosen.lastSent
 		if gap > uint64(^uint32(0)) {
 			s.mu.Unlock()
 			return fmt.Errorf("conflux SWITCH relative seq overflows 32 bits")
 		}
-		rel = uint32(gap)
+		// rel=0 的 SWITCH 非法；尚未发过序号时只改 current，不发 SWITCH。
+		if gap >= 1 {
+			needSwitch = true
+			rel = uint32(gap)
+		}
 	}
 	circ := chosen.circ
 	s.mu.Unlock()
@@ -442,8 +504,18 @@ func (s *ConfluxSet) sendMultiplexed(rc *cell.RelayCell) error {
 		if err := circ.sendRelayCellLocal(sw); err != nil {
 			return fmt.Errorf("SWITCH: %w", err)
 		}
+		// Exit 已应用相对序号；即使随后 DATA 失败也不能再发同一 SWITCH。
+		s.mu.Lock()
+		s.current = circ
+		if leg := s.legOf(circ); leg != nil {
+			leg.lastSent = s.lastSent
+		}
+		s.mu.Unlock()
 	}
 	if err := circ.sendRelayCellLocal(rc); err != nil {
+		if needSwitch {
+			s.failAndClose()
+		}
 		return err
 	}
 	s.mu.Lock()
@@ -518,6 +590,13 @@ func (s *ConfluxSet) onLegClosed(c *Circuit) {
 		o.detachConflux()
 		o.Close()
 	}
+}
+
+func (s *ConfluxSet) failAndClose() {
+	if s.logger != nil {
+		s.logger.Warn("Conflux protocol error, tearing down both legs")
+	}
+	s.teardown(true)
 }
 
 func (s *ConfluxSet) teardown(closeLegs bool) {

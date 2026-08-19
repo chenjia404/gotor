@@ -12,12 +12,12 @@ import (
 
 // CellMux 在一条 OR 连接上分发 cell：CREATED2 交给握手等待者，RELAY 交给对应 circuit。
 type CellMux struct {
-	conn     CellConnection
-	logger   *logger.Logger
-	mu       sync.Mutex
-	circuits map[uint32]*Circuit
-	created  map[uint32]chan *cell.Cell
-	closed   chan struct{}
+	conn      CellConnection
+	logger    *logger.Logger
+	mu        sync.Mutex
+	circuits  map[uint32]*Circuit
+	created   map[uint32]chan *cell.Cell
+	closed    chan struct{}
 	closeOnce sync.Once
 }
 
@@ -146,8 +146,9 @@ func (m *CellMux) dispatch(c *cell.Cell) {
 				if len(c.Payload) > 0 {
 					reason = c.Payload[0]
 				}
-				circ.SetState(StateFailed)
 				circ.NotifyDestroyed(reason)
+				// Close 才会走 Conflux onLegClosed，拆掉另一条腿。
+				circ.Close()
 			}
 		}
 	case cell.CmdRelay, cell.CmdRelayEarly:
