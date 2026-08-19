@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/family-ids-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
+**分支**：`cursor/path-fast-middleonly-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + **现行** Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -48,7 +48,7 @@
 | SENDME / flow control | WORKING | FlowCtrl=2 TOR_VEGAS 已实现；真实 soak **1059120** 字节，电路未 DESTROY。10–100MB / 多流仍见 P0.2 |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
-| Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family-ids（Desc=4）已用于避让，待真实验收 |
+| Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功；family-ids 与 Fast/MiddleOnly/BadExit 已用于避让，待真实验收 |
 | Exit policy | PARTIAL | 已解析 `p`/`p6` 与完整 accept/reject；IPv6 字面量按 p6 选路。真实验收待 `TestRealExitPolicyP6` |
 | Relay=5 subproto_request | WORKING | 真实 CREATE2/EXTEND2 发出 type 3 `[02 06]`，对端接受并启用 CGO |
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
@@ -226,7 +226,20 @@
 - **验收**：同一 family ID 不会出现在同一条电路的多个 hop。真实验收后标 WORKING。
 - **禁止**：忽略 family-ids 只靠 nickname；为过测试放松双向列表；C 库 / CGO。
 
-#### 13. 文档债务
+#### 13. 选路 Fast / MiddleOnly / BadExit
+
+- **状态**：PARTIAL（选路强制；未跑真实网络）。
+- **已做**：
+  - 非测试电路每一跳要求 Fast
+  - MiddleOnly 不得作 Guard / Exit，可作 middle
+  - BadExit 不得作 Exit
+  - 持久化 Guard 失效后跳过；Conflux 选路同一套判断
+- **Spec**：path-spec universal constraints；proposal 334
+- **现有代码**：`pkg/directory/directory.go`（`UsableAs*`）；`pkg/path`；文档 `docs/interop/path-flags.md`
+- **验收**：非 Fast / MiddleOnly Guard 或 Exit 不会出现在生产电路。真实验收后标 WORKING。
+- **禁止**：为过测试去掉 Fast；把 MiddleOnly 当出口；C 库 / CGO。
+
+#### 14. 文档债务
 
 - `ROADMAP.md` 声称 ~98% 完成、Onion/Bridge 已完成：**过期且不实**。
 - `GAPS.md` 部分条目过期。
@@ -332,6 +345,7 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 - 预建按端口 443 选 exit；禁止把非 Exit 当 fallback。
 - IPv6 字面量按 `p6` 选路；缺 p6 拒绝。完整 `accept`/`reject` 已解析。
 - 选路按 `family-ids` 与双向 `family` 列表避让；见 `docs/interop/family-ids.md`。
+- 非测试电路要求 Fast；MiddleOnly 不得作 Guard/Exit；BadExit 不得作 Exit。见 `docs/interop/path-flags.md`。
 
 ---
 

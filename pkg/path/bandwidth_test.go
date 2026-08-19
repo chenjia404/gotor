@@ -189,42 +189,42 @@ func TestBandwidthWeightedPathSelection(t *testing.T) {
 			Nickname:    "HighBWGuard",
 			Fingerprint: "AAAA",
 			Address:     "10.1.1.1",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   100_000_000, // 100 MB/s
 		},
 		{
 			Nickname:    "LowBWGuard",
 			Fingerprint: "BBBB",
 			Address:     "10.2.1.1",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   1_000_000, // 1 MB/s
 		},
 		{
 			Nickname:    "MiddleRelay1",
 			Fingerprint: "CCCC",
 			Address:     "10.3.1.1",
-			Flags:       []string{"Running", "Valid"},
+			Flags:       []string{"Running", "Valid", "Fast"},
 			Bandwidth:   50_000_000,
 		},
 		{
 			Nickname:    "MiddleRelay2",
 			Fingerprint: "DDDD",
 			Address:     "10.4.1.1",
-			Flags:       []string{"Running", "Valid"},
+			Flags:       []string{"Running", "Valid", "Fast"},
 			Bandwidth:   5_000_000,
 		},
 		{
 			Nickname:    "ExitRelay1",
 			Fingerprint: "EEEE",
 			Address:     "10.5.1.1",
-			Flags:       []string{"Exit", "Running", "Valid"},
+			Flags:       []string{"Exit", "Running", "Valid", "Fast"},
 			Bandwidth:   80_000_000,
 		},
 		{
 			Nickname:    "ExitRelay2",
 			Fingerprint: "FFFF",
 			Address:     "10.6.1.1",
-			Flags:       []string{"Exit", "Running", "Valid"},
+			Flags:       []string{"Exit", "Running", "Valid", "Fast"},
 			Bandwidth:   8_000_000,
 		},
 	}

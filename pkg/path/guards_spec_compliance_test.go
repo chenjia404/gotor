@@ -21,14 +21,24 @@ func TestGuardSelectionSpecCompliance_GuardFlags(t *testing.T) {
 		isGuard bool // Should be selectable as guard
 	}{
 		{
-			name: "Guard+Running+Valid+Stable (VALID GUARD)",
+			name: "Guard+Running+Valid+Stable+Fast (VALID GUARD)",
 			relay: &directory.Relay{
 				Fingerprint: "AAAA0000000000000000000000000000AAAA0001",
 				Nickname:    "ValidGuard",
-				Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+				Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 				Bandwidth:   1000,
 			},
 			isGuard: true,
+		},
+		{
+			name: "Missing Fast flag",
+			relay: &directory.Relay{
+				Fingerprint: "AAAA0000000000000000000000000000AAAA0006",
+				Nickname:    "NotFast",
+				Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+				Bandwidth:   1000,
+			},
+			isGuard: false,
 		},
 		{
 			name: "Missing Guard flag",
@@ -75,7 +85,7 @@ func TestGuardSelectionSpecCompliance_GuardFlags(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Test if relay meets guard criteria
-			isGuard := tt.relay.IsGuard() && tt.relay.IsRunning() && tt.relay.IsValid() && tt.relay.IsStable()
+			isGuard := tt.relay.UsableAsGuard()
 
 			if isGuard != tt.isGuard {
 				t.Errorf("Guard flag check failed: got %v, want %v (flags: %v)", isGuard, tt.isGuard, tt.relay.Flags)
@@ -86,7 +96,7 @@ func TestGuardSelectionSpecCompliance_GuardFlags(t *testing.T) {
 			selector.relays = []*directory.Relay{tt.relay}
 			selector.guards = make([]*directory.Relay, 0)
 			for _, relay := range selector.relays {
-				if relay.IsGuard() && relay.IsRunning() && relay.IsValid() && relay.IsStable() {
+				if relay.UsableAsGuard() {
 					selector.guards = append(selector.guards, relay)
 				}
 			}
@@ -128,14 +138,14 @@ func TestGuardSelectionSpecCompliance_GuardPersistence(t *testing.T) {
 		Fingerprint: "AAAA0000000000000000000000000000AAAA1111",
 		Nickname:    "Guard1",
 		Address:     "1.2.3.4",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		Bandwidth:   1000,
 	}
 	guard2 := &directory.Relay{
 		Fingerprint: "BBBB0000000000000000000000000000BBBB2222",
 		Nickname:    "Guard2",
 		Address:     "5.6.7.8",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		Bandwidth:   2000,
 	}
 
@@ -271,7 +281,7 @@ func TestGuardSelectionSpecCompliance_GuardConfirmation(t *testing.T) {
 		Fingerprint: "AAAA0000000000000000000000000000AAAA0001",
 		Nickname:    "UnconfirmedGuard",
 		Address:     "1.2.3.4",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		Bandwidth:   1000,
 	}
 
@@ -327,7 +337,7 @@ func TestGuardSelectionSpecCompliance_GuardLimit(t *testing.T) {
 			Fingerprint: fmt.Sprintf("AAAA000000000000000000000000000000%02d", i),
 			Nickname:    fmt.Sprintf("Guard%d", i),
 			Address:     fmt.Sprintf("1.2.3.%d", i),
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   uint64(1000 * i),
 		}
 		if err := guardMgr.AddGuard(guard); err != nil {
@@ -352,13 +362,13 @@ func TestGuardSelectionSpecCompliance_BiasedGuardAvoidance(t *testing.T) {
 	goodGuard := &directory.Relay{
 		Fingerprint: "AAAA0000000000000000000000000000AAAA0001",
 		Nickname:    "GoodGuard",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		Bandwidth:   1000,
 	}
 	biasedGuard := &directory.Relay{
 		Fingerprint: "BBBB0000000000000000000000000000BBBB0002",
 		Nickname:    "BiasedGuard",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		Bandwidth:   2000, // Higher bandwidth but biased
 	}
 
@@ -404,13 +414,13 @@ func TestGuardSelectionSpecCompliance_BandwidthWeighted(t *testing.T) {
 	lowBWGuard := &directory.Relay{
 		Fingerprint: "AAAA0000000000000000000000000000AAAA0001",
 		Nickname:    "LowBWGuard",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		Bandwidth:   100, // Low bandwidth
 	}
 	highBWGuard := &directory.Relay{
 		Fingerprint: "BBBB0000000000000000000000000000BBBB0002",
 		Nickname:    "HighBWGuard",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		Bandwidth:   10000, // 100x higher bandwidth
 	}
 
@@ -462,14 +472,14 @@ func TestGuardSelectionSpecCompliance_PersistentGuardPreference(t *testing.T) {
 		Fingerprint: "AAAA0000000000000000000000000000AAAA0001",
 		Nickname:    "PersistentGuard",
 		Address:     "1.2.3.4",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		Bandwidth:   1000,
 	}
 	newGuard := &directory.Relay{
 		Fingerprint: "BBBB0000000000000000000000000000BBBB0002",
 		Nickname:    "NewGuard",
 		Address:     "5.6.7.8",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		Bandwidth:   2000, // Higher bandwidth
 	}
 
@@ -528,7 +538,7 @@ func TestGuardSelectionSpecCompliance_UpdateConsensus(t *testing.T) {
 		{
 			Fingerprint: "AAAA0000000000000000000000000000AAAA0001",
 			Nickname:    "ValidGuard",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 			Bandwidth:   1000,
 		},
 		{
@@ -549,21 +559,27 @@ func TestGuardSelectionSpecCompliance_UpdateConsensus(t *testing.T) {
 			Flags:       []string{"Guard", "Valid", "Stable"},
 			Bandwidth:   1000,
 		},
+		{
+			Fingerprint: "AAAA0000000000000000000000000000AAAA0005",
+			Nickname:    "NotFast",
+			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Bandwidth:   1000,
+		},
 	}
 
-	// Simulate UpdateConsensus filtering logic
+	// 与生产 UpdateConsensus 相同：Running/Valid 入全表，UsableAsGuard 入 Guard 表
 	selector.mu.Lock()
 	guards := make([]*directory.Relay, 0)
 	allRelays := make([]*directory.Relay, 0)
 
 	for _, relay := range relays {
 		if !relay.IsRunning() || !relay.IsValid() {
-			continue // Skip non-running or invalid relays
+			continue
 		}
 
 		allRelays = append(allRelays, relay)
 
-		if relay.IsGuard() && relay.IsStable() {
+		if relay.UsableAsGuard() {
 			guards = append(guards, relay)
 		}
 	}
@@ -582,8 +598,8 @@ func TestGuardSelectionSpecCompliance_UpdateConsensus(t *testing.T) {
 		t.Errorf("Expected 1 guard relay after filtering, got %d", numGuards)
 	}
 
-	if numRelays != 3 {
-		t.Errorf("Expected 3 total relays after filtering (Running+Valid), got %d", numRelays)
+	if numRelays != 4 {
+		t.Errorf("Expected 4 total relays after filtering (Running+Valid), got %d", numRelays)
 	}
 
 	// Verify the guard is ValidGuard

@@ -368,7 +368,7 @@ func (c *Client) anyRelayAllows(target path.ExitTarget) bool {
 		return false
 	}
 	for _, r := range c.pathSelector.GetRelays() {
-		if r != nil && r.AllowsExitTarget(target.Port, target.IP) {
+		if r != nil && r.UsableAsExit() && r.AllowsExitTarget(target.Port, target.IP) {
 			return true
 		}
 	}
@@ -382,7 +382,7 @@ func (c *Client) prefetchExitPolicies(ctx context.Context, limit int) {
 	}
 	need := make([]*directory.Relay, 0, limit)
 	for _, r := range c.pathSelector.GetRelays() {
-		if r == nil || !r.IsExit() || !r.IsRunning() || !r.IsValid() {
+		if r == nil || !r.IsExit() || !r.UsableAsExit() {
 			continue
 		}
 		if r.MicrodescDigest == "" || r.HasExtendKeys() {

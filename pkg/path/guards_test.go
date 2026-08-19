@@ -40,7 +40,7 @@ func TestGuardManagerAddGuard(t *testing.T) {
 		Nickname:    "TestGuard",
 		Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	if err := gm.AddGuard(relay); err != nil {
@@ -68,7 +68,7 @@ func TestGuardManagerConfirmGuard(t *testing.T) {
 		Nickname:    "TestGuard",
 		Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	if err := gm.AddGuard(relay); err != nil {
@@ -106,13 +106,13 @@ func TestGuardManagerSaveLoad(t *testing.T) {
 		Nickname:    "Guard1",
 		Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 	relay2 := &directory.Relay{
 		Nickname:    "Guard2",
 		Fingerprint: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
 		Address:     "192.0.2.2:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	if err := gm1.AddGuard(relay1); err != nil {
@@ -166,7 +166,7 @@ func TestGuardManagerMaxGuards(t *testing.T) {
 			Nickname:    "Guard" + string(rune('A'+i)),
 			Fingerprint: string(rune('A'+i)) + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			Address:     "192.0.2." + string(rune('1'+i)) + ":9001",
-			Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+			Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 		}
 		if err := gm.AddGuard(relay); err != nil {
 			t.Fatalf("AddGuard() failed: %v", err)
@@ -190,7 +190,7 @@ func TestGuardManagerRemoveGuard(t *testing.T) {
 		Nickname:    "TestGuard",
 		Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	if err := gm.AddGuard(relay); err != nil {
@@ -221,7 +221,7 @@ func TestGuardManagerCleanupExpired(t *testing.T) {
 		Nickname:    "TestGuard",
 		Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	if err := gm.AddGuard(relay); err != nil {
@@ -250,13 +250,13 @@ func TestGuardManagerGetStats(t *testing.T) {
 		Nickname:    "Guard1",
 		Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 	relay2 := &directory.Relay{
 		Nickname:    "Guard2",
 		Fingerprint: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
 		Address:     "192.0.2.2:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	if err := gm.AddGuard(relay1); err != nil {
@@ -337,7 +337,7 @@ func TestGuardManagerEnhancedPersistenceSaveLoad(t *testing.T) {
 		Nickname:    "EnhancedGuard",
 		Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	if err := gm1.AddGuard(relay); err != nil {
@@ -385,7 +385,7 @@ func TestGuardManagerBackupCreation(t *testing.T) {
 		Nickname:    "BackupGuard",
 		Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	// Save multiple times to create backups
@@ -429,7 +429,7 @@ func TestGuardManagerSnapshotLoop(t *testing.T) {
 		Nickname:    "SnapshotGuard",
 		Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	if err := gm.AddGuard(relay); err != nil {
@@ -468,7 +468,7 @@ func TestGuardManagerLegacyCompatibility(t *testing.T) {
 		Nickname:    "LegacyGuard",
 		Fingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		Address:     "192.0.2.1:9001",
-		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		Flags:       []string{"Guard", "Running", "Valid", "Stable", "Fast"},
 	}
 
 	if err := gm.AddGuard(relay); err != nil {

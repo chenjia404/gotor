@@ -759,6 +759,36 @@ func (r *Relay) IsValid() bool {
 	return r.HasFlag("Valid")
 }
 
+// IsFast 非测试电路的每一跳都必须有 Fast（path-spec universal constraints）。
+func (r *Relay) IsFast() bool {
+	return r != nil && r.HasFlag("Fast")
+}
+
+// IsMiddleOnly 只能当 middle：不得做 Guard / Exit（proposal 334）。
+func (r *Relay) IsMiddleOnly() bool {
+	return r != nil && r.HasFlag("MiddleOnly")
+}
+
+// IsBadExit 不得选为出口（除非用户显式要求；本客户端无该覆盖）。
+func (r *Relay) IsBadExit() bool {
+	return r != nil && r.HasFlag("BadExit")
+}
+
+// UsableAsCircuitHop 最新 Tor 非测试电路的每一跳：Running + Valid + Fast。
+func (r *Relay) UsableAsCircuitHop() bool {
+	return r != nil && r.IsRunning() && r.IsValid() && r.IsFast()
+}
+
+// UsableAsGuard Guard 位另需 Guard + Stable，且不得 MiddleOnly。
+func (r *Relay) UsableAsGuard() bool {
+	return r.UsableAsCircuitHop() && r.IsGuard() && r.IsStable() && !r.IsMiddleOnly()
+}
+
+// UsableAsExit Exit 位不得 MiddleOnly / BadExit。端口策略另由 AllowsExitTarget 判断。
+func (r *Relay) UsableAsExit() bool {
+	return r.UsableAsCircuitHop() && !r.IsMiddleOnly() && !r.IsBadExit()
+}
+
 // String returns a string representation of the relay
 func (r *Relay) String() string {
 	return fmt.Sprintf("%s (%s:%d)", r.Nickname, r.Address, r.ORPort)
