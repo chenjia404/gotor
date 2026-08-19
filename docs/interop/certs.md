@@ -1,6 +1,6 @@
 # CERTS / Ed25519 证书互操作
 
-**日期**：2026-08-18
+**日期**：2026-08-19
 
 ## 问题
 
@@ -85,4 +85,17 @@ w.write_all(pk);           // 32 bytes
 - type 4/5/6/7 解析失败为硬错误
 - type 4 必须由 type 7 identity 验签；扩展中的 key 必须与之相同
 
-type 7 的 RSA 签名（对照 type 2）本轮尚未强制校验，记为后续 gap。
+现代链路的主密码体制是 Ed25519（身份 / 证书）+ Curve25519 ntor（电路握手）。
+RSA-1024 不再做流量加密或电路密钥协商，但仍出现在：
+
+- 共识 `r` 行指纹与 ntor NODEID（20 字节 SHA-1）
+- CERTS type 2（遗留 RSA identity 证书）
+- CERTS type 7（RSA 对 Ed25519 主身份的交叉签名）
+
+因此 type 7 的 RSA 签名必须对照 type 2 强制校验，否则 Ed25519 主身份可被替换而共识指纹仍匹配：
+
+- 签名覆盖 `SHA256("Tor TLS RSA/Ed25519 cross-certificate" || ED25519_KEY || EXPIRATION)`（36 字节）。cert-spec 字面含 SIGLEN，但 C Tor / 真实 CERTS 不含。
+- PKCS#1，不含 algorithmIdentifier（`rsa.VerifyPKCS1v15(pub, 0, hash, sig)`）
+- 缺 type 2 或验签失败均为硬错误
+
+真实网络：`TestRealCertsType7RSA` 已通过（Guard `SENDNOOSEplz`，type 2/4/7 全链）。
