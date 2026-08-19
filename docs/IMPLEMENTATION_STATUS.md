@@ -329,12 +329,13 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 - RESOLVE：非 0 StreamID、arpa PTR、多条应答。
 - 真实：`www.torproject.org` → `116.202.120.166` + IPv6；PTR → `web-fsn-02.torproject.org`。
 
-### Guard / Path / Exit policy — PARTIAL
+### Guard / Path / Exit policy — PARTIAL（Exit policy 已 WORKING）
 
 - build 前 `FetchMicrodescriptorsFor`，缺 key 则失败。
 - 预建按端口 443 选 exit；禁止把非 Exit 当 fallback。
 - IPv6 字面量按 `p6` 选路；缺 p6 拒绝。完整 `accept`/`reject` 已解析。
 - 选路按 `family-ids` 与双向 `family` 列表避让；见 `docs/interop/family-ids.md`。
+- **Exit policy**：`TestRealExitPolicyP6` 已通过（2026-08-19）。
 
 ---
 

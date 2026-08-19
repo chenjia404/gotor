@@ -412,9 +412,10 @@ func soakDownload(t *testing.T, httpClient *http.Client, url string) (int64, err
 
 // TestRealFlowControlSoak10MB 连续下载至少 10MB，覆盖多次电路级 SENDME。
 // 每轮 GET 是新流；单流 window=0 由单元测试覆盖。
+// www.torproject.org 首页约 23KB，需足够迭代才能凑满 10MB（400 次上限不够）。
 func TestRealFlowControlSoak10MB(t *testing.T) {
 	requireRealTor(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
 	tor, err := client.ConnectWithContext(ctx)
@@ -428,23 +429,30 @@ func TestRealFlowControlSoak10MB(t *testing.T) {
 
 	httpClient := soakHTTPClient(t, tor, 3*time.Minute)
 	const wantBytes = 10 * 1024 * 1024
+	// 约 23KB/页 → 需 ≥450 次成功；留余量给偶发 SOCKS/出口失败。
+	const maxRounds = 800
 	var total int64
-	for i := 0; total < wantBytes && i < 400; i++ {
+	var okRounds, failRounds int
+	for i := 0; total < wantBytes && i < maxRounds; i++ {
 		n, err := soakDownload(t, httpClient, fmt.Sprintf("https://www.torproject.org/?soak10=%d", i))
 		if err != nil {
+			failRounds++
 			t.Logf("GET: %v", err)
 			if total > 0 && strings.Contains(err.Error(), "DESTROY") {
 				t.Fatalf("circuit DESTROY after %d bytes: %v", total, err)
 			}
 			continue
 		}
+		okRounds++
 		total += n
-		t.Logf("downloaded %d bytes total=%d", n, total)
+		if okRounds%50 == 0 || total >= wantBytes {
+			t.Logf("downloaded %d bytes total=%d ok=%d fail=%d", n, total, okRounds, failRounds)
+		}
 	}
 	if total < wantBytes {
-		t.Fatalf("only downloaded %d bytes, want >= %d", total, wantBytes)
+		t.Fatalf("only downloaded %d bytes, want >= %d (ok=%d fail=%d rounds=%d)", total, wantBytes, okRounds, failRounds, okRounds+failRounds)
 	}
-	t.Logf("10MB soak OK bytes=%d", total)
+	t.Logf("10MB soak OK bytes=%d ok_rounds=%d fail_rounds=%d", total, okRounds, failRounds)
 }
 
 // TestRealFlowControlMultiStream 同一 SOCKS 客户端上并发多流下载。

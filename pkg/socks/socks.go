@@ -647,7 +647,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		s.sendReply(conn, replyGeneralFailure, nil)
 		return
 	}
-	defer s.streamMgr.RemoveStream(strm.ID)
+	defer s.streamMgr.RemoveStream(circ.ID, strm.ID)
 
 	// Set isolation key on stream and register with enforcer (ROADMAP Phase 2.2)
 	if isolationKey != nil {
