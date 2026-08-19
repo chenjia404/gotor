@@ -71,8 +71,9 @@ type Circuit struct {
 	// Flow control per tor-spec.txt §7.4
 	packageWindow  int // Circuit-level package window (cells we can send)
 	deliverWindow  int // Circuit-level deliver window (cells we can receive)
-	sendmeReceived int // Count of DATA cells received (for sending SENDME)
-	sendmeSent     int // Count of SENDME cells sent
+	sendmeReceived int      // Count of DATA cells received (for sending SENDME)
+	sendmeSent     int      // Count of SENDME cells sent
+	sendmeExpected [][]byte // 发出 DATA 时记下的 v1 digest FIFO，供对端 SENDME 校验
 	// SECURITY-001: Replay protection per tor-spec.txt
 	replayProtection *cell.ReplayProtection // Replay protection for cells
 	// AUDIT-MED-4 FIX: Reusable timer to avoid GC pressure from time.After
@@ -143,6 +144,7 @@ func NewCircuit(id uint32) *Circuit {
 		deliverWindow:    1000,                           // tor-spec.txt §7.4: Initial circuit window is 1000
 		sendmeReceived:   0,                              // No DATA cells received yet
 		sendmeSent:       0,                              // No SENDME cells sent yet
+		sendmeExpected:   nil,
 		replayProtection: cell.NewReplayProtection(),     // SECURITY-001: Initialize replay protection
 		deliverTimer:     deliverTimer,                   // AUDIT-MED-4 FIX: Reusable timer
 		destroyCh:        make(chan struct{}),
@@ -832,21 +834,6 @@ func (c *Circuit) shouldSendCircuitSendme() bool {
 	return c.sendmeReceived >= 100
 }
 
-// sendCircuitSendme sends a circuit-level SENDME cell
-func (c *Circuit) sendCircuitSendme() error {
-	c.mu.Lock()
-	c.sendmeReceived = 0
-	c.sendmeSent++
-	c.deliverWindow += 100 // Increment our deliver window
-	c.mu.Unlock()
-
-	// Send SENDME cell (stream ID 0 indicates circuit-level)
-	sendmeCell, err := cell.NewRelayCell(0, cell.RelaySendme, []byte{})
-	if err != nil {
-		return fmt.Errorf("failed to create SENDME cell: %w", err)
-	}
-	return c.SendRelayCell(sendmeCell)
-}
 
 // Stream-level flow control methods
 
@@ -1118,8 +1105,19 @@ func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
 		return fmt.Errorf("failed to encode relay cell: %w", err)
 	}
 
+	// DATA cell 的未用 padding 填随机字节，使每 100 cell 窗口内 digest 不可预测（flow-control）。
+	if relayCell.Command == cell.RelayData {
+		padStart := cell.RelayCellHeaderLen + int(relayCell.Length)
+		if padStart < len(payload) {
+			if _, err := rand.Read(payload[padStart:]); err != nil {
+				return fmt.Errorf("failed to randomize DATA padding: %w", err)
+			}
+		}
+	}
+
 	// Compute the digest for the exit hop (last hop in the circuit)
 	// Per tor-spec.txt §6.1, each hop maintains its own running digest
+	var forwardTag []byte
 	if len(hops) > 0 {
 		exitHop := hops[len(hops)-1]
 		if exitHop.ForwardDigest != nil {
@@ -1142,7 +1140,12 @@ func (c *Circuit) SendRelayCell(relayCell *cell.RelayCell) error {
 			payload[6] = digestSum[1]
 			payload[7] = digestSum[2]
 			payload[8] = digestSum[3]
+			forwardTag = digestSum
 		}
+	}
+
+	if relayCell.Command == cell.RelayData {
+		c.maybeRecordSendmeTag(forwardTag)
 	}
 
 	// Encrypt the payload with per-hop cryptography (onion encryption)
@@ -1248,6 +1251,9 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 	// Handle flow control per tor-spec.txt §7.4
 	switch relayCell.Command {
 	case cell.RelayData:
+		// 识别 hop 更新 backward digest 之后，20 字节 Sum 就是本 cell 的 SENDME tag。
+		cellTag := c.snapshotBackwardDigest(hopIdx)
+
 		// Circuit-level flow control: DATA cells count against our deliver window
 		if err := c.decrementDeliverWindow(); err != nil {
 			return fmt.Errorf("circuit flow control: %w", err)
@@ -1255,11 +1261,11 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 
 		// Check if we should send a circuit-level SENDME
 		if c.shouldSendCircuitSendme() {
-			// Send SENDME in background to avoid blocking
+			tag := cloneDigest(cellTag)
 			go func() {
-				if err := c.sendCircuitSendme(); err != nil {
-					// Log error but don't fail the delivery
-					// (in production, should have proper logging)
+				if err := c.sendCircuitSendme(tag); err != nil {
+					c.SetState(StateFailed)
+					c.NotifyDestroyed(1)
 				}
 			}()
 		}
@@ -1285,9 +1291,11 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 	case cell.RelaySendme:
 		// SENDME cell increments our package window
 		if relayCell.StreamID == 0 {
-			// Circuit-level SENDME
-			c.incrementPackageWindow()
-			// Don't deliver SENDME cells to the application layer
+			if err := c.processCircuitSendme(relayCell.Data); err != nil {
+				c.SetState(StateFailed)
+				c.NotifyDestroyed(1)
+				return fmt.Errorf("circuit SENDME: %w", err)
+			}
 			return nil
 		}
 		// Stream-level SENDME

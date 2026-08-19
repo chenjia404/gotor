@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
-**日期**：2026-08-18  
-**分支**：`cursor/extend2-torprotocol-0ece`  
+**日期**：2026-08-19  
+**分支**：`cursor/sendme-auth-0ece`  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -31,7 +31,7 @@
 | EXTEND2 / EXTENDED2 | WORKING | 真实 Guard→Middle / Middle→Exit EXTEND2 已成功 |
 | Circuit crypto / digest | WORKING | 真实 RELAY_DROP / EXTEND2 / BEGIN / DATA 已证明 AES-CTR + SHA-1 digest 与 Guard 一致；仍缺官方 cell 向量 |
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
-| SENDME / flow control | PARTIAL | 有 window 计数；SENDME 认证与 1MB+ soak 未完成 |
+| SENDME / flow control | WORKING | 电路级 SENDME v1 已在真实网络 256KB+ soak 通过；流级仍为空（spec）；FlowCtrl=2 未做 |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | PARTIAL | 有 Resolve API；未证明无本地泄漏 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功 |
@@ -115,10 +115,15 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 - 真实 RELAY_DROP 不再触发 DESTROY；EXTEND2 / BEGIN / DATA 已跑通。
 - **缺口**：缺官方 C Tor/Arti relay-cell 向量；cell tracer（`pkg/debug`，`GOTOR_CELL_TRACE=1`）默认关闭且不记用户 payload。
 
-### SENDME / Flow control — PARTIAL
+### SENDME / Flow control — WORKING（电路级 v1）
 
-- circuit/stream window 初始值与 +100 逻辑存在。
-- SENDME authentication、大流量（1MB–100MB）soak、无 hang/leak 证明：未完成。
+- circuit window 1000 / +100；stream window 500 / +50。
+- 电路级 SENDME 发 version 1，DIGEST=触发 cell 的完整 20 字节滚动 SHA-1。
+- 发出 DATA 时在 `package_window % 100 == 0` 入队；收到 SENDME 必须 FIFO 匹配，否则拆路。
+- 流级 SENDME 仍为空（spec）。
+- DATA padding 随机化。
+- 真实网络：`TestRealFlowControlSoak` 经 SOCKS 下载 282KB，电路未 DESTROY。
+- **缺口**：1MB–100MB soak、FlowCtrl=2（ntor-v3 congestion control）。
 
 ### SOCKS5 / DNS — WORKING（CONNECT） / PARTIAL（RESOLVE）
 
@@ -164,6 +169,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 | 12 | EXTEND2 DESTROY reason=1 | ntor 电路密钥对 KEY_SEED 二次 HKDF-Extract；AUTH 仍过，AES/digest 与 Guard 不一致 | C Tor onion_ntor.c IKM=secret_input；setting-circuit-keys |
 | 13 | 预建电路假就绪 | `buildInitialCircuits` sleep 1s 后宣称已建好；pool 要等 30s ticker 才动手 | Start 与 WaitUntilReady 分离；pool 立即 prebuild |
 | 14 | HTTPS 选到只放行 80 的 exit | `SelectPath(80)` 且只看 Exit flag | 预建用 443；解析 `p` 行摘要 |
+| 15 | 大流量 DESTROY / hang | 电路级 SENDME 发空 v0，现代 exit 拒收 | flow-control SENDME v1；C Tor sendme.c；Arti SendmeValidator |
 
 ---
 
@@ -174,7 +180,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 | `pkg/crypto` ntor 单测 / 正确性 | HMAC + 20-byte NODEID | 运行 |
 | `pkg/directory` microdesc 单测 | 同行 identity、raw digest | 运行 |
 | `integration/link_test.go` | 真实 TLS+handshake | 需 `-tags=integration` + `TOR_INTEGRATION_TEST=1` |
-| `integration/e2e_real_tor_test.go` | CREATE2 / 3-hop / check.torproject.org | 同上 |
+| `integration/e2e_real_tor_test.go` | CREATE2 / 3-hop / IsTor / SENDME soak | 同上 |
 | `scripts/test-real-tor.sh` | 启动 client + socks5h curl | 手动 |
 
 `testdata/ctor-vectors/crypto/ntor_handshake.json` 与 `testdata/arti-vectors/...` 已按**正确算法重生**，目前不是从 C Tor/Arti 仓库原样导出。不得据此宣称已有官方 cross-impl 向量。
@@ -201,5 +207,5 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 CREATE2、EXTEND2、3-hop、`IsTor=true`（ExitIP ≠ 本机）。  
-**Tor Client basic interoperability 可标 WORKING（经典 ntor / AES-CTR-SHA1 路径）**。ntor-v3、SENDME 认证、大流量 soak 仍未做。
+当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 CREATE2、EXTEND2、3-hop、`IsTor=true`、SENDME v1 soak（≥256KB）。  
+**Tor Client basic interoperability 可标 WORKING（经典 ntor / AES-CTR-SHA1 / SENDME v1）**。ntor-v3、FlowCtrl=2、更大流量 soak 仍未做。
