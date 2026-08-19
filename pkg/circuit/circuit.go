@@ -1488,7 +1488,7 @@ func stopAndDrainTimer(t *time.Timer) {
 // AUDIT-MED-2 FIX: Now accepts context parameter to respect caller's cancellation
 func (c *Circuit) OpenStream(ctx context.Context, streamID uint16, target string, port uint16) error {
 	// Send RELAY_BEGIN cell
-	beginPayload := []byte(fmt.Sprintf("%s:%d\x00", target, port))
+	beginPayload := encodeBeginAddrPort(target, port)
 	beginCell, err := cell.NewRelayCell(streamID, cell.RelayBegin, beginPayload)
 	if err != nil {
 		return fmt.Errorf("failed to create RELAY_BEGIN cell: %w", err)

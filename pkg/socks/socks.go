@@ -253,7 +253,7 @@ func (s *Server) SetCircuitForExit(fn CircuitForExit) {
 	s.circuitForExit = fn
 }
 
-func replaceIfExitRejected(ctx context.Context, circ *circuit.Circuit, ip net.IP, port int, circuitPool *pool.CircuitPool, build CircuitForExit) (*circuit.Circuit, error) {
+func replaceIfExitRejected(ctx context.Context, circ *circuit.Circuit, ip net.IP, port int, circuitPool *pool.CircuitPool, build CircuitForExit, isolationKey *circuit.IsolationKey) (*circuit.Circuit, error) {
 	if circ != nil && circ.AllowsExit(ip, port) {
 		return circ, nil
 	}
@@ -272,6 +272,9 @@ func replaceIfExitRejected(ctx context.Context, circ *circuit.Circuit, ip net.IP
 			built.Close()
 		}
 		return nil, fmt.Errorf("newly built circuit rejects exit target")
+	}
+	if isolationKey != nil {
+		built.SetIsolationKey(isolationKey)
 	}
 	return built, nil
 }
@@ -593,7 +596,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			s.sendReply(conn, replyGeneralFailure, nil)
 			return
 		}
-		circ, err = replaceIfExitRejected(timeoutCtx, circ, destIP, int(port), circuitPool, circuitForExit)
+		circ, err = replaceIfExitRejected(timeoutCtx, circ, destIP, int(port), circuitPool, circuitForExit, isolationKey)
 		if err != nil {
 			s.logger.Error("Exit policy rejects target", "target", targetAddr, "error", err)
 			s.sendReply(conn, replyNetworkUnreachable, nil)

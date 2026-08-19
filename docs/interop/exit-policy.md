@@ -18,6 +18,8 @@
 | `pkg/path` | `ExitTarget` + `SelectPathFor`；IPv6 字面量只选 p6 放行的 exit |
 | `pkg/circuit/exitfilter.go` | 建路后绑定 Exit；未绑定不得盲放行 IPv6 |
 | `pkg/pool` `GetIf` / SOCKS | 池中挑允许该目标的电路；否则按目标再建 |
+| `pkg/client` `prefetchExitPolicies` | IPv6 建路前补齐一批 Exit 的 p6，避免选路空集 |
+| `pkg/circuit` `encodeBeginAddrPort` | RELAY_BEGIN 的 IPv6 为 `[addr]:port` |
 
 ## 匹配规则
 

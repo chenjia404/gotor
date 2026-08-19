@@ -353,6 +353,49 @@ func (c *Client) circuitBuilderFunc() pool.CircuitBuilder {
 // HTTPS（含 check.torproject.org）走 443；只看 Exit flag / 按 80 选路会误选只放行 80 的 exit。
 const generalPurposeExitPort = 443
 const maxCircuitPathAttempts = 5
+const exitPolicyPrefetchLimit = 96
+
+func ipv6Literal(ip net.IP) bool {
+	return ip != nil && ip.To4() == nil && ip.To16() != nil
+}
+
+func (c *Client) anyRelayAllows(target path.ExitTarget) bool {
+	if c == nil || c.pathSelector == nil {
+		return false
+	}
+	for _, r := range c.pathSelector.GetRelays() {
+		if r != nil && r.AllowsExitTarget(target.Port, target.IP) {
+			return true
+		}
+	}
+	return false
+}
+
+// prefetchExitPolicies 给一批 Exit 拉 microdesc，补齐 p/p6。失败只记日志，由后续按路径拉取兜底。
+func (c *Client) prefetchExitPolicies(ctx context.Context, limit int) {
+	if c == nil || c.pathSelector == nil || c.directory == nil || limit <= 0 {
+		return
+	}
+	need := make([]*directory.Relay, 0, limit)
+	for _, r := range c.pathSelector.GetRelays() {
+		if r == nil || !r.IsExit() || !r.IsRunning() || !r.IsValid() {
+			continue
+		}
+		if r.MicrodescDigest == "" || r.HasExtendKeys() {
+			continue
+		}
+		need = append(need, r)
+		if len(need) >= limit {
+			break
+		}
+	}
+	if len(need) == 0 {
+		return
+	}
+	if err := c.directory.FetchMicrodescriptorsFor(ctx, need); err != nil {
+		c.logger.Debug("prefetch exit microdescriptors", "error", err, "count", len(need))
+	}
+}
 
 // buildInitialCircuits builds a pool of circuits for use
 func (c *Client) buildInitialCircuits(ctx context.Context) error {
@@ -388,13 +431,21 @@ func (c *Client) buildCircuitForTarget(ctx context.Context, target path.ExitTarg
 	if target.Port < 1 || target.Port > 65535 {
 		return nil, fmt.Errorf("invalid exit port %d", target.Port)
 	}
+	// IPv6 选路依赖 microdesc 的 p6；共识阶段通常还没有。先补一批 exit 的策略。
+	if ipv6Literal(target.IP) {
+		c.prefetchExitPolicies(ctx, 96)
+	}
 	var selectedPath *path.Path
 	var err error
 	for attempt := 1; attempt <= maxCircuitPathAttempts; attempt++ {
-		selectedPath, err = c.pathSelector.SelectConfluxPathFor(target)
+		pick := target
+		if ipv6Literal(target.IP) && !c.anyRelayAllows(target) {
+			pick = path.ExitTarget{Port: target.Port}
+		}
+		selectedPath, err = c.pathSelector.SelectConfluxPathFor(pick)
 		if err != nil {
 			c.logger.Debug("Conflux-capable path unavailable, falling back", "error", err, "attempt", attempt)
-			selectedPath, err = c.pathSelector.SelectPathFor(target)
+			selectedPath, err = c.pathSelector.SelectPathFor(pick)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to select path: %w", err)

@@ -1,6 +1,9 @@
 package circuit
 
-import "net"
+import (
+	"net"
+	"strconv"
+)
 
 // ExitFilter 判断本电路 Exit 是否允许发往该地址:端口。
 // 由建路时绑定 directory.Relay；缺 p6 的 Exit 必须拒绝 IPv6 字面量。
@@ -34,4 +37,9 @@ func (c *Circuit) AllowsExit(ip net.IP, port int) bool {
 		return port >= 1 && port <= 65535
 	}
 	return f.AllowsExit(ip, port)
+}
+
+// encodeBeginAddrPort 生成 RELAY_BEGIN 的 ADDRPORT\0。IPv6 必须带方括号。
+func encodeBeginAddrPort(host string, port uint16) []byte {
+	return append([]byte(net.JoinHostPort(host, strconv.Itoa(int(port)))), 0)
 }

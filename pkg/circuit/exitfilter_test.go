@@ -31,6 +31,21 @@ func TestCircuitAllowsExitNilFilter(t *testing.T) {
 	}
 }
 
+func TestEncodeBeginAddrPort(t *testing.T) {
+	got := string(encodeBeginAddrPort("example.com", 443))
+	if got != "example.com:443\x00" {
+		t.Fatalf("hostname BEGIN: %q", got)
+	}
+	got = string(encodeBeginAddrPort("192.0.2.1", 80))
+	if got != "192.0.2.1:80\x00" {
+		t.Fatalf("IPv4 BEGIN: %q", got)
+	}
+	got = string(encodeBeginAddrPort("2001:db8::1", 443))
+	if got != "[2001:db8::1]:443\x00" {
+		t.Fatalf("IPv6 BEGIN must be bracketed: %q", got)
+	}
+}
+
 func TestCircuitSetExitFilter(t *testing.T) {
 	c := NewCircuit(2)
 	c.SetExitFilter(stubExitFilter{allow: false})
