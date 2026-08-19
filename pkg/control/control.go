@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -98,12 +97,13 @@ type ConfigProvider interface {
 
 // connection represents a single control protocol connection
 type connection struct {
-	conn          net.Conn
-	reader        *bufio.Reader
-	writer        *bufio.Writer
-	authenticated bool
-	events        map[string]bool // subscribed events
-	mu            sync.Mutex
+	conn                 net.Conn
+	reader               *bufio.Reader
+	writer               *bufio.Writer
+	authenticated        bool
+	events               map[string]bool // subscribed events
+	safeCookieClientHash []byte          // AUTHCHALLENGE 后期望的 ClientHash
+	mu                   sync.Mutex
 }
 
 // NewServer creates a new control protocol server
@@ -328,6 +328,8 @@ func (s *Server) handleCommand(conn *connection, line string) {
 	switch cmd {
 	case "AUTHENTICATE":
 		s.handleAuthenticate(conn, args)
+	case "AUTHCHALLENGE":
+		s.handleAuthChallenge(conn, args)
 	case "GETINFO":
 		s.handleGetInfo(conn, args)
 	case "GETCONF":
@@ -452,14 +454,14 @@ func (s *Server) handleAuthenticate(conn *connection, args []string) {
 
 	token := strings.Join(args, " ")
 	token = strings.Trim(token, `"`)
+	raw, _ := decodeAuthToken(token)
 
 	ok := false
-	if s.cookieAuth && len(s.cookieBytes) > 0 && token != "" {
-		// Cookie：十六进制或原始字节（极少）
-		if decoded, err := hex.DecodeString(token); err == nil {
-			if subtle.ConstantTimeCompare(decoded, s.cookieBytes) == 1 {
-				ok = true
-			}
+	if s.cookieAuth && len(s.cookieBytes) > 0 && len(raw) > 0 {
+		if s.trySafeCookieAuthenticate(conn, raw) {
+			ok = true
+		} else if subtle.ConstantTimeCompare(raw, s.cookieBytes) == 1 {
+			ok = true // COOKIE：原始 cookie 十六进制
 		}
 	}
 	if !ok && s.hashedPass != "" && token != "" {
@@ -483,6 +485,7 @@ func (s *Server) handleAuthenticate(conn *connection, args []string) {
 	s.resetAuthRateLimit(remoteIP)
 	conn.mu.Lock()
 	conn.authenticated = true
+	conn.safeCookieClientHash = nil
 	conn.mu.Unlock()
 	conn.writeReply(250, "OK")
 	s.logger.Info("Client authenticated", "remote", conn.conn.RemoteAddr())
@@ -492,7 +495,7 @@ func (s *Server) handleAuthenticate(conn *connection, args []string) {
 func (s *Server) handleProtocolInfo(conn *connection, args []string) {
 	methods := []string{}
 	if s.cookieAuth {
-		methods = append(methods, "COOKIE") // 未实现 AUTHCHALLENGE 前不宣告 SAFECOOKIE
+		methods = append(methods, "COOKIE", "SAFECOOKIE")
 	}
 	if s.hashedPass != "" {
 		methods = append(methods, "HASHEDPASSWORD")

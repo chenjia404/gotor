@@ -50,39 +50,62 @@ func newCircuitCrypto(keyMaterial []byte) (*circuitCrypto, error) {
 	}, nil
 }
 
-// decryptInbound 解密客户端发来的 509 字节 RELAY payload。
-// 先在 digest 副本上校验，通过后再提交到 live digest。
-// 返回明文与当前完整滚动摘要（20 字节，供 SENDME v1）。
-func (cc *circuitCrypto) decryptInbound(payload []byte) (plain []byte, digest []byte, err error) {
+// peelInbound 始终推进 AES；仅当 recognized+digest 匹配时提交 digest。
+// forUs 表示本跳应处理该继电器单元。
+func (cc *circuitCrypto) peelInbound(payload []byte) (peeled []byte, forUs bool, digest []byte, err error) {
 	if cc == nil || len(payload) != 509 {
-		return nil, nil, fmt.Errorf("invalid inbound payload")
+		return nil, false, nil, fmt.Errorf("invalid inbound payload")
 	}
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
+	return cc.peelInboundLocked(payload)
+}
 
+func (cc *circuitCrypto) peelInboundLocked(payload []byte) (peeled []byte, forUs bool, digest []byte, err error) {
 	out := append([]byte(nil), payload...)
 	cc.fwdCipher.XORKeyStream(out, out)
+
 	if out[1] != 0 || out[2] != 0 {
-		return nil, nil, fmt.Errorf("relay cell not recognized")
+		return out, false, nil, nil
 	}
 	cellCopy := append([]byte(nil), out...)
 	cellCopy[5], cellCopy[6], cellCopy[7], cellCopy[8] = 0, 0, 0, 0
 
 	probe, err := crypto.CloneHash(cc.fwdDigest)
 	if err != nil {
-		return nil, nil, fmt.Errorf("clone digest: %w", err)
+		return nil, false, nil, fmt.Errorf("clone digest: %w", err)
 	}
 	if _, err := probe.Write(cellCopy); err != nil {
-		return nil, nil, err
+		return nil, false, nil, err
 	}
 	sum := probe.Sum(nil)
 	if sum[0] != out[5] || sum[1] != out[6] || sum[2] != out[7] || sum[3] != out[8] {
-		return nil, nil, fmt.Errorf("relay digest mismatch")
+		return out, false, nil, nil
 	}
 	if _, err := cc.fwdDigest.Write(cellCopy); err != nil {
+		return nil, false, nil, err
+	}
+	return out, true, sum, nil
+}
+
+// decryptInbound 解密且要求本跳识别（出口/末端）。
+func (cc *circuitCrypto) decryptInbound(payload []byte) (plain []byte, digest []byte, err error) {
+	if cc == nil || len(payload) != 509 {
+		return nil, nil, fmt.Errorf("invalid inbound payload")
+	}
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	peeled, forUs, digest, err := cc.peelInboundLocked(payload)
+	if err != nil {
 		return nil, nil, err
 	}
-	return out, sum, nil
+	if !forUs {
+		if peeled != nil && (peeled[1] != 0 || peeled[2] != 0) {
+			return nil, nil, fmt.Errorf("relay cell not recognized")
+		}
+		return nil, nil, fmt.Errorf("relay digest mismatch")
+	}
+	return peeled, digest, nil
 }
 
 // encryptOutbound 加密发往客户端的明文 509 字节 payload（填 digest）。

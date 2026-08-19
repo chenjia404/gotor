@@ -405,9 +405,20 @@ func TestDescriptorSignatureGeneration(t *testing.T) {
 			t.Fatalf("failed to parse certificate: %v", err)
 		}
 
-		// Verify certificate signature with identity key
-		if !ed25519.Verify(identityPub, cert.SignedData, cert.Signature) {
-			t.Error("certificate signature verification failed")
+		// 验证证书：type 8 由致盲公钥签名，type 4 由身份公钥签名
+		switch cert.CertType {
+		case 8:
+			period := GetTimePeriod(time.Now())
+			blinded := ComputeBlindedPubkey(identityPub, period)
+			if !ed25519.Verify(blinded, cert.SignedData, cert.Signature) {
+				t.Error("certificate signature verification failed")
+			}
+		case 4:
+			if !ed25519.Verify(identityPub, cert.SignedData, cert.Signature) {
+				t.Error("certificate signature verification failed")
+			}
+		default:
+			t.Fatalf("unexpected cert type %d", cert.CertType)
 		}
 
 		// Verify descriptor signature with signing key from certificate

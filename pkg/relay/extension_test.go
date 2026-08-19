@@ -268,7 +268,7 @@ func TestHandleExtend2_ParseErrors(t *testing.T) {
 				Data:     tt.data,
 			}
 
-			err := handler.HandleExtend2(ctx, circuitID, relayCell)
+			err := handler.HandleExtend2(ctx, circuitID, relayCell, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("HandleExtend2() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -310,7 +310,7 @@ func TestHandleExtend2_UnsupportedHandshake(t *testing.T) {
 		Data:     data,
 	}
 
-	err = handler.HandleExtend2(ctx, circuitID, relayCell)
+	err = handler.HandleExtend2(ctx, circuitID, relayCell, nil)
 	if err == nil {
 		t.Error("HandleExtend2() expected error for unsupported handshake type")
 	}
@@ -340,13 +340,13 @@ func TestRegisterExtendedCircuit(t *testing.T) {
 	circuits.mu.Unlock()
 
 	// Test registering extension
-	err = handler.registerExtendedCircuit(circuitID, 456, "127.0.0.1:9001", nil)
+	err = handler.registerExtendedCircuit(circuitID, 456, "127.0.0.1:9001", nil, nil)
 	if err != nil {
 		t.Errorf("registerExtendedCircuit() error = %v", err)
 	}
 
 	// Test with non-existent circuit
-	err = handler.registerExtendedCircuit(999, 456, "127.0.0.1:9001", nil)
+	err = handler.registerExtendedCircuit(999, 456, "127.0.0.1:9001", nil, nil)
 	if err == nil {
 		t.Error("registerExtendedCircuit() expected error for non-existent circuit")
 	}

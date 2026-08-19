@@ -94,11 +94,17 @@ func extractAddressFromLinkSpecs(specs []LinkSpecifier) (string, error) {
 
 // ExtensionHandler handles circuit extension for relay servers
 type ExtensionHandler struct {
-	keys      *RelayKeys
-	circuits  *CircuitHandler
-	logger    *logger.Logger
-	connPool  map[string]*connection.Connection // Pool of outbound connections
-	connMutex sync.Mutex
+	keys          *RelayKeys
+	circuits      *CircuitHandler
+	forwarder     *ForwardingHandler
+	logger        *logger.Logger
+	connPool      map[string]*connection.Connection // Pool of outbound connections
+	connMutex     sync.Mutex
+	clientConns   map[uint32]net.Conn // circuitID → 入向 OR 连接（发送 EXTENDED2）
+	clientMu      sync.Mutex
+	linkReaders   map[string]bool                       // address → 读循环已启动
+	pendingCreate map[string]map[uint32]chan *cell.Cell // addr → circID → waiter
+	pendingMu     sync.Mutex
 }
 
 // NewExtensionHandler creates a new extension handler
@@ -107,11 +113,19 @@ func NewExtensionHandler(keys *RelayKeys, circuits *CircuitHandler, log *logger.
 		log = logger.NewDefault()
 	}
 	return &ExtensionHandler{
-		keys:     keys,
-		circuits: circuits,
-		logger:   log.Component("extension"),
-		connPool: make(map[string]*connection.Connection),
+		keys:          keys,
+		circuits:      circuits,
+		logger:        log.Component("extension"),
+		connPool:      make(map[string]*connection.Connection),
+		clientConns:   make(map[uint32]net.Conn),
+		linkReaders:   make(map[string]bool),
+		pendingCreate: make(map[string]map[uint32]chan *cell.Cell),
 	}
+}
+
+// SetForwarder 注入转发器以便 EXTEND 成功后注册扩展电路。
+func (h *ExtensionHandler) SetForwarder(f *ForwardingHandler) {
+	h.forwarder = f
 }
 
 // HandleExtend2 processes a RELAY_EXTEND2 cell
@@ -123,19 +137,17 @@ func NewExtensionHandler(keys *RelayKeys, circuits *CircuitHandler, log *logger.
 //	  HTYPE (2 bytes) - handshake type
 //	  HLEN (2 bytes) - handshake data length
 //	  HDATA (HLEN bytes) - handshake data
-func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, relayCell *cell.RelayCell) error {
+func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, relayCell *cell.RelayCell, clientConn net.Conn) error {
 	h.logger.Info("Processing EXTEND2", "circuit_id", circuitID)
 
 	data := relayCell.Data
 
-	// Parse link specifiers
 	specs, offset, err := parseLinkSpecifiers(data)
 	if err != nil {
 		h.logger.Warn("Failed to parse link specifiers", "error", err)
 		return fmt.Errorf("invalid link specifiers: %w", err)
 	}
 
-	// Extract address from link specifiers
 	address, err := extractAddressFromLinkSpecs(specs)
 	if err != nil {
 		h.logger.Warn("Failed to extract address", "error", err)
@@ -144,7 +156,6 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 
 	h.logger.Debug("Extracted next hop address", "address", address)
 
-	// Parse handshake type and data
 	if offset+4 > len(data) {
 		return fmt.Errorf("extend2 data truncated at handshake header")
 	}
@@ -158,40 +169,32 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 	}
 
 	handshakeData := data[offset : offset+int(hlen)]
-
 	h.logger.Debug("Extend2 handshake", "type", htype, "len", hlen)
 
-	// Only support ntor handshake (0x0002)
-	if htype != 0x0002 {
+	if htype != 0x0002 && htype != 0x0003 {
 		h.logger.Warn("Unsupported handshake type", "type", htype)
 		return fmt.Errorf("unsupported handshake type: %d", htype)
 	}
 
-	// Connect to next hop relay
 	nextConn, err := h.connectToNextHop(ctx, address)
 	if err != nil {
 		h.logger.Error("Failed to connect to next hop", "address", address, "error", err)
 		return fmt.Errorf("connection failed: %w", err)
 	}
 
-	// Generate a circuit ID for the next hop
-	// Use a simple incrementing ID (in production, would need more sophisticated allocation)
 	nextCircuitID := uint32(time.Now().UnixNano() & 0x7FFFFFFF)
 
-	// Send CREATE2 to next hop
-	if err := h.sendCreate2ToNextHop(nextConn, nextCircuitID, handshakeData); err != nil {
+	if err := h.sendCreate2ToNextHop(nextConn, nextCircuitID, htype, handshakeData); err != nil {
 		h.logger.Error("Failed to send CREATE2 to next hop", "error", err)
 		return fmt.Errorf("create2 failed: %w", err)
 	}
 
-	// Wait for CREATED2 from next hop
 	created2Cell, err := h.receiveCreated2FromNextHop(ctx, nextConn, nextCircuitID)
 	if err != nil {
 		h.logger.Error("Failed to receive CREATED2 from next hop", "error", err)
 		return fmt.Errorf("created2 failed: %w", err)
 	}
 
-	// Extract handshake response
 	if len(created2Cell.Payload) < 2 {
 		return fmt.Errorf("created2 payload too short")
 	}
@@ -203,13 +206,17 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 
 	handshakeResponse := created2Cell.Payload[2 : 2+responseLen]
 
-	// Register the extended circuit
-	if err := h.registerExtendedCircuit(circuitID, nextCircuitID, address, nextConn); err != nil {
+	if err := h.registerExtendedCircuit(circuitID, nextCircuitID, address, nextConn, clientConn); err != nil {
 		h.logger.Error("Failed to register extended circuit", "error", err)
 		return fmt.Errorf("registration failed: %w", err)
 	}
 
-	// Send RELAY_EXTENDED2 back to client
+	if clientConn != nil {
+		h.clientMu.Lock()
+		h.clientConns[circuitID] = clientConn
+		h.clientMu.Unlock()
+	}
+
 	if err := h.sendExtended2(circuitID, handshakeResponse); err != nil {
 		h.logger.Error("Failed to send EXTENDED2", "error", err)
 		return fmt.Errorf("extended2 failed: %w", err)
@@ -223,7 +230,6 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 	return nil
 }
 
-// connectToNextHop establishes a connection to the next relay
 func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string) (*connection.Connection, error) {
 	// Check if we already have a connection to this relay
 	h.connMutex.Lock()
@@ -290,18 +296,34 @@ func (h *ExtensionHandler) performLinkHandshake(ctx context.Context, conn *conne
 		return fmt.Errorf("expected VERSIONS, got %d", respCell.Command)
 	}
 
-	// For simplicity, skip full CERTS/AUTH/NETINFO exchange
-	// In production, would need complete link protocol
-	h.logger.Debug("Link handshake completed (simplified)")
+	// 协商到 v≥4 时使用 4 字节 CircID（与后续 CREATE2/RELAY 一致）
+	negotiated := uint16(3)
+	for i := 0; i+1 < len(respCell.Payload); i += 2 {
+		v := binary.BigEndian.Uint16(respCell.Payload[i : i+2])
+		if v >= 4 && v > negotiated {
+			negotiated = v
+		}
+	}
+	if negotiated >= 4 {
+		conn.SetCircIDLen(4)
+	} else {
+		conn.SetCircIDLen(2)
+	}
+
+	// CERTS/AUTH/NETINFO 完整交换后续补齐；CircID 宽度已对齐
+	h.logger.Debug("Link handshake completed (simplified)", "link_version", negotiated)
 	return nil
 }
 
 // sendCreate2ToNextHop sends a CREATE2 cell to the next hop
-func (h *ExtensionHandler) sendCreate2ToNextHop(conn *connection.Connection, circuitID uint32, handshakeData []byte) error {
+func (h *ExtensionHandler) sendCreate2ToNextHop(conn *connection.Connection, circuitID uint32, htype uint16, handshakeData []byte) error {
+	if len(handshakeData) > 0xffff {
+		return fmt.Errorf("handshake data too large: %d", len(handshakeData))
+	}
 	// Build CREATE2 payload: HTYPE (2) || HLEN (2) || HDATA
 	payload := make([]byte, 4+len(handshakeData))
-	binary.BigEndian.PutUint16(payload[0:2], 0x0002) // ntor
-	binary.BigEndian.PutUint16(payload[2:4], uint16(len(handshakeData)))
+	binary.BigEndian.PutUint16(payload[0:2], htype)
+	binary.BigEndian.PutUint16(payload[2:4], uint16(len(handshakeData))) // #nosec G115 -- 已校验 ≤65535
 	copy(payload[4:], handshakeData)
 
 	create2 := &cell.Cell{
@@ -319,49 +341,136 @@ func (h *ExtensionHandler) receiveCreated2FromNextHop(ctx context.Context, conn 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	respCell, err := conn.ReceiveCellWithContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to receive cell: %w", err)
+	addr := conn.Address()
+	h.connMutex.Lock()
+	readerActive := h.linkReaders[addr]
+	h.connMutex.Unlock()
+
+	var respCell *cell.Cell
+	var err error
+	if readerActive {
+		ch := h.registerPending(addr, expectedCircuitID)
+		defer h.unregisterPending(addr, expectedCircuitID)
+		select {
+		case respCell = <-ch:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("timeout waiting CREATED2: %w", ctx.Err())
+		}
+	} else {
+		respCell, err = conn.ReceiveCellWithContext(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to receive cell: %w", err)
+		}
 	}
 
 	if respCell.Command != cell.CmdCreated2 {
 		return nil, fmt.Errorf("expected CREATED2, got %d", respCell.Command)
 	}
-
 	if respCell.CircID != expectedCircuitID {
 		return nil, fmt.Errorf("circuit ID mismatch: expected %d, got %d", expectedCircuitID, respCell.CircID)
 	}
-
 	return respCell, nil
 }
 
 // registerExtendedCircuit registers the extended circuit mapping
-func (h *ExtensionHandler) registerExtendedCircuit(incomingCircID, outgoingCircID uint32, nextHop string, nextConn *connection.Connection) error {
-	// Get the circuit
-	circuit, exists := h.circuits.GetCircuit(incomingCircID)
-	if !exists {
+func (h *ExtensionHandler) registerExtendedCircuit(incomingCircID, outgoingCircID uint32, nextHop string, nextConn *connection.Connection, clientConn net.Conn) error {
+	if _, exists := h.circuits.GetCircuit(incomingCircID); !exists {
 		return fmt.Errorf("circuit %d not found", incomingCircID)
 	}
-
-	circuit.mu.Lock()
-	defer circuit.mu.Unlock()
-
-	// Store extension information in circuit
-	// In a full implementation, this would track the next hop connection and circuit ID
-	// for proper cell forwarding
+	if h.forwarder != nil && nextConn != nil {
+		if err := h.forwarder.RegisterExtendedCircuitOR(incomingCircID, outgoingCircID, nextHop, nextConn, clientConn); err != nil {
+			return err
+		}
+	}
+	h.ensureLinkReader(nextHop, nextConn)
 	h.logger.Debug("Registered circuit extension",
 		"incoming_circ", incomingCircID,
 		"outgoing_circ", outgoingCircID,
 		"next_hop", nextHop)
-
 	return nil
+}
+
+func (h *ExtensionHandler) ensureLinkReader(addr string, conn *connection.Connection) {
+	if conn == nil {
+		return
+	}
+	h.connMutex.Lock()
+	if h.linkReaders[addr] {
+		h.connMutex.Unlock()
+		return
+	}
+	h.linkReaders[addr] = true
+	h.connMutex.Unlock()
+	go h.readOutboundLink(addr, conn)
+}
+
+func (h *ExtensionHandler) readOutboundLink(addr string, conn *connection.Connection) {
+	for {
+		c, err := conn.ReceiveCell()
+		if err != nil {
+			h.logger.Debug("outbound link read ended", "address", addr, "error", err)
+			h.connMutex.Lock()
+			delete(h.linkReaders, addr)
+			delete(h.connPool, addr)
+			h.connMutex.Unlock()
+			return
+		}
+		if h.deliverPending(addr, c) {
+			continue
+		}
+		if h.forwarder != nil {
+			h.forwarder.DeliverFromNextHop(addr, c)
+		}
+	}
+}
+
+func (h *ExtensionHandler) registerPending(addr string, circID uint32) chan *cell.Cell {
+	ch := make(chan *cell.Cell, 1)
+	h.pendingMu.Lock()
+	if h.pendingCreate[addr] == nil {
+		h.pendingCreate[addr] = make(map[uint32]chan *cell.Cell)
+	}
+	h.pendingCreate[addr][circID] = ch
+	h.pendingMu.Unlock()
+	return ch
+}
+
+func (h *ExtensionHandler) unregisterPending(addr string, circID uint32) {
+	h.pendingMu.Lock()
+	if m := h.pendingCreate[addr]; m != nil {
+		delete(m, circID)
+	}
+	h.pendingMu.Unlock()
+}
+
+func (h *ExtensionHandler) deliverPending(addr string, c *cell.Cell) bool {
+	h.pendingMu.Lock()
+	m := h.pendingCreate[addr]
+	var ch chan *cell.Cell
+	if m != nil {
+		ch = m[c.CircID]
+		if ch != nil {
+			delete(m, c.CircID)
+		}
+	}
+	h.pendingMu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- c:
+	default:
+	}
+	return true
 }
 
 // sendExtended2 sends a RELAY_EXTENDED2 cell back to the client
 func (h *ExtensionHandler) sendExtended2(circuitID uint32, handshakeResponse []byte) error {
-	// Build EXTENDED2 relay cell data: HLEN (2) || HDATA
+	if len(handshakeResponse) > 0xffff {
+		return fmt.Errorf("EXTENDED2 response too large: %d", len(handshakeResponse))
+	}
 	data := make([]byte, 2+len(handshakeResponse))
-	binary.BigEndian.PutUint16(data[0:2], uint16(len(handshakeResponse)))
+	binary.BigEndian.PutUint16(data[0:2], uint16(len(handshakeResponse))) // #nosec G115 -- 已校验 ≤65535
 	copy(data[2:], handshakeResponse)
 
 	relayCell := &cell.RelayCell{
@@ -369,23 +478,44 @@ func (h *ExtensionHandler) sendExtended2(circuitID uint32, handshakeResponse []b
 		StreamID: 0,
 		Data:     data,
 	}
-
-	// Encode relay cell
-	_, err := relayCell.Encode()
+	plain, err := relayCell.Encode()
 	if err != nil {
 		return fmt.Errorf("failed to encode relay cell: %w", err)
 	}
 
-	// Note: In a complete implementation, would send this back through the circuit
-	// For now, this is a placeholder showing the cell is prepared correctly
-	h.logger.Debug("EXTENDED2 cell prepared",
+	circ, ok := h.circuits.GetCircuit(circuitID)
+	if !ok || circ == nil || circ.crypto == nil {
+		// 单元测试/无加密状态：仅验证可编码
+		h.logger.Debug("EXTENDED2 prepared without crypto", "circuit_id", circuitID)
+		return nil
+	}
+	encrypted, err := circ.crypto.encryptOutbound(plain)
+	if err != nil {
+		return fmt.Errorf("encrypt EXTENDED2: %w", err)
+	}
+
+	h.clientMu.Lock()
+	clientConn := h.clientConns[circuitID]
+	h.clientMu.Unlock()
+	if clientConn == nil {
+		return fmt.Errorf("no client connection for circuit %d", circuitID)
+	}
+
+	out := &cell.Cell{
+		CircID:  circuitID,
+		Command: cell.CmdRelay,
+		Payload: encrypted,
+	}
+	if err := out.Encode(clientConn); err != nil {
+		return fmt.Errorf("send EXTENDED2: %w", err)
+	}
+
+	h.logger.Debug("EXTENDED2 cell sent",
 		"circuit_id", circuitID,
 		"response_len", len(handshakeResponse))
-
 	return nil
 }
 
-// Close cleans up extension handler resources
 func (h *ExtensionHandler) Close() error {
 	h.connMutex.Lock()
 	defer h.connMutex.Unlock()

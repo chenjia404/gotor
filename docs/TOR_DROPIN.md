@@ -26,7 +26,7 @@ gotor --version
 | SocksPort [addr:]port [Isolate*] | 监听地址/端口与隔离 flag |
 | ControlPort | 控制口 |
 | DataDirectory | 数据目录 |
-| CookieAuthentication / CookieAuthFile | 写 `control_auth_cookie`，PROTOCOLINFO 宣告 COOKIE |
+| CookieAuthentication / CookieAuthFile | 写 `control_auth_cookie`；PROTOCOLINFO 宣告 COOKIE+SAFECOOKIE；支持 AUTHCHALLENGE |
 | HashedControlPassword | RFC2440 S2K（`16:`），AUTHENTICATE 明文校验 |
 | Log / LogLevel | 级别与可选 file |
 | UseBridges / Bridge / ClientTransportPlugin | 桥梁与 PT |

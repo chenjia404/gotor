@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -714,13 +715,13 @@ func TestPanicRecoveryNoLeaks(t *testing.T) {
 
 	// Simulate panic recovery pattern from pkg/client/client.go:218
 	var wg sync.WaitGroup
-	panicRecovered := false
+	var panicRecovered atomic.Bool
 
 	wg.Add(1)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				panicRecovered = true
+				panicRecovered.Store(true)
 			}
 		}()
 		defer wg.Done()
@@ -738,7 +739,7 @@ func TestPanicRecoveryNoLeaks(t *testing.T) {
 
 	select {
 	case <-done:
-		if !panicRecovered {
+		if !panicRecovered.Load() {
 			t.Error("Panic was not recovered")
 		}
 		t.Log("Panic recovered successfully, goroutine terminated")
