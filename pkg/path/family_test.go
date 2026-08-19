@@ -260,3 +260,96 @@ func TestPathSelectionWithFamilyConstraints(t *testing.T) {
 		t.Error("Middle2 should be valid choice (no family/subnet conflict)")
 	}
 }
+
+func TestSelectMiddleAvoidsSharedFamilyID(t *testing.T) {
+	guard := &directory.Relay{
+		Fingerprint: "G1",
+		Nickname:    "g",
+		Address:     "198.51.100.1",
+		Flags:       []string{"Guard", "Running", "Valid", "Stable"},
+		FamilyIDs:   []string{"ed25519:SHAREDKEY"},
+	}
+	bad := &directory.Relay{
+		Fingerprint: "M1",
+		Nickname:    "bad",
+		Address:     "203.0.113.1",
+		Flags:       []string{"Running", "Valid"},
+		FamilyIDs:   []string{"ed25519:SHAREDKEY"},
+	}
+	good := &directory.Relay{
+		Fingerprint: "M2",
+		Nickname:    "good",
+		Address:     "192.0.2.1",
+		Flags:       []string{"Running", "Valid"},
+		FamilyIDs:   []string{"ed25519:OTHER"},
+	}
+	exit := &directory.Relay{
+		Fingerprint: "E1",
+		Nickname:    "e",
+		Address:     "172.16.0.8",
+		Flags:       []string{"Exit", "Running", "Valid"},
+	}
+
+	s := NewSelector(directory.NewClient(nil), nil)
+	s.relays = []*directory.Relay{guard, bad, good, exit}
+
+	got, err := s.selectMiddle(guard, exit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fingerprint != "M2" {
+		t.Fatalf("middle = %s, 应避开共享 family-ids 的 M1", got.Fingerprint)
+	}
+}
+
+func TestPathHopsShareFamily(t *testing.T) {
+	shared := []string{"ed25519:SHAREDKEY"}
+	g := &directory.Relay{Fingerprint: "G", FamilyIDs: shared}
+	mOK := &directory.Relay{Fingerprint: "M", FamilyIDs: []string{"ed25519:OTHER"}}
+	mBad := &directory.Relay{Fingerprint: "MB", FamilyIDs: shared}
+	e := &directory.Relay{Fingerprint: "E"}
+
+	if PathHopsShareFamily(nil, &Path{Guard: g, Middle: mOK, Exit: e}) {
+		t.Fatal("不同 family-ids 不得判为同家族")
+	}
+	if !PathHopsShareFamily(nil, &Path{Guard: g, Middle: mBad, Exit: e}) {
+		t.Fatal("Guard/Middle 共享 family-ids 必须重选")
+	}
+	if PathHopsShareFamily(nil, nil) {
+		t.Fatal("nil path 不得判为同家族")
+	}
+}
+
+func TestConfluxLegsShareFamily(t *testing.T) {
+	id := []string{"ed25519:LEGSHARE"}
+	first := &Path{
+		Guard:  &directory.Relay{Fingerprint: "G1", FamilyIDs: id},
+		Middle: &directory.Relay{Fingerprint: "M1"},
+		Exit:   &directory.Relay{Fingerprint: "E"},
+	}
+	ok := &Path{
+		Guard:  &directory.Relay{Fingerprint: "G2", FamilyIDs: []string{"ed25519:OTHER"}},
+		Middle: &directory.Relay{Fingerprint: "M2"},
+		Exit:   first.Exit,
+	}
+	bad := &Path{
+		Guard:  &directory.Relay{Fingerprint: "G3", FamilyIDs: id},
+		Middle: &directory.Relay{Fingerprint: "M3"},
+		Exit:   first.Exit,
+	}
+	if ConfluxLegsShareFamily(nil, first, ok) {
+		t.Fatal("不同 family-ids 的第二腿不得判冲突")
+	}
+	if !ConfluxLegsShareFamily(nil, first, bad) {
+		t.Fatal("第二腿 Guard 与第一腿 Guard 共享 family-ids 必须冲突")
+	}
+	// 共享 Exit 本身不是家族冲突。
+	sameExitOnly := &Path{
+		Guard:  &directory.Relay{Fingerprint: "G4"},
+		Middle: &directory.Relay{Fingerprint: "M4"},
+		Exit:   first.Exit,
+	}
+	if ConfluxLegsShareFamily(nil, first, sameExitOnly) {
+		t.Fatal("仅共享 Exit 不得视为两腿家族冲突")
+	}
+}

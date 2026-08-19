@@ -42,12 +42,12 @@ func sameRelayIdentity(a, b *directory.Relay) bool {
 	return ia != "" && ia == ib
 }
 
-func sharesFamilyOrSubnet(r *directory.Relay, others ...*directory.Relay) bool {
+func (s *Selector) sharesFamilyOrSubnet(r *directory.Relay, others ...*directory.Relay) bool {
 	if r == nil {
 		return false
 	}
 	for _, o := range others {
-		if o != nil && (r.InSameFamily(o) || r.InSameSubnet(o)) {
+		if o != nil && (s.sameFamily(r, o) || r.InSameSubnet(o)) {
 			return true
 		}
 	}
@@ -108,7 +108,7 @@ func (s *Selector) selectConfluxGuardFrom(first *Path) (*directory.Relay, error)
 			continue
 		}
 		if first != nil && (identityIn(relay, first.Guard, first.Middle, first.Exit) ||
-			sharesFamilyOrSubnet(relay, first.Guard, first.Middle)) {
+			s.sharesFamilyOrSubnet(relay, first.Guard, first.Middle, first.Exit)) {
 			continue
 		}
 		candidates = append(candidates, relay)
@@ -129,7 +129,7 @@ func (s *Selector) selectConfluxExit(target ExitTarget, avoid *directory.Relay) 
 		if !confluxHopOK(relay) {
 			continue
 		}
-		if avoid != nil && (sameRelayIdentity(relay, avoid) || relay.InSameFamily(avoid) || relay.InSameSubnet(avoid)) {
+		if avoid != nil && (sameRelayIdentity(relay, avoid) || s.sameFamily(relay, avoid) || relay.InSameSubnet(avoid)) {
 			continue
 		}
 		if relay.AllowsExitTarget(target.Port, target.IP) {
@@ -197,14 +197,14 @@ func (s *Selector) selectConfluxMiddle(first *Path, guard, exit *directory.Relay
 		if identityIn(relay, first.Guard, first.Middle, first.Exit, guard, exit) {
 			continue
 		}
-		if first != nil && sharesFamilyOrSubnet(relay, first.Guard, first.Middle) {
+		if first != nil && s.sharesFamilyOrSubnet(relay, first.Guard, first.Middle) {
 			continue
 		}
 		// 单条腿内部仍遵守 path-spec family/subnet，避免与本腿 Guard/Exit 共享瓶颈。
-		if guard != nil && (relay.InSameFamily(guard) || relay.InSameSubnet(guard)) {
+		if guard != nil && (s.sameFamily(relay, guard) || relay.InSameSubnet(guard)) {
 			continue
 		}
-		if exit != nil && (relay.InSameFamily(exit) || relay.InSameSubnet(exit)) {
+		if exit != nil && (s.sameFamily(relay, exit) || relay.InSameSubnet(exit)) {
 			continue
 		}
 		candidates = append(candidates, relay)

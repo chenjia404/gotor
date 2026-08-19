@@ -64,6 +64,51 @@ func NewSelector(dirClient *directory.Client, log *logger.Logger) *Selector {
 	}
 }
 
+func familyPolicyFromDir(dir *directory.Client) (useIDs, useLists bool) {
+	if dir == nil {
+		return true, true
+	}
+	return directory.FamilyPolicyFromParams(dir.LastConsensusParams())
+}
+
+// sameFamily 用最近共识的 use-family-ids / use-family-lists（缺省均为 1）。
+func (s *Selector) sameFamily(a, b *directory.Relay) bool {
+	var dir *directory.Client
+	if s != nil {
+		dir = s.dirClient
+	}
+	useIDs, useLists := familyPolicyFromDir(dir)
+	return a.InSameFamilyPolicy(b, useIDs, useLists)
+}
+
+// PathHopsShareFamily 在 microdesc 补齐 family-ids / family 后检查三跳是否同家族。
+// 选路发生在拉 microdesc 之前，建路前必须再验一次；冲突则由调用方重选。
+func PathHopsShareFamily(dir *directory.Client, p *Path) bool {
+	if p == nil {
+		return false
+	}
+	useIDs, useLists := familyPolicyFromDir(dir)
+	return p.Guard.InSameFamilyPolicy(p.Middle, useIDs, useLists) ||
+		p.Guard.InSameFamilyPolicy(p.Exit, useIDs, useLists) ||
+		p.Middle.InSameFamilyPolicy(p.Exit, useIDs, useLists)
+}
+
+// ConfluxLegsShareFamily 检查两腿 Guard/Middle 是否同家族。共享 Exit 是设计如此，不比较。
+func ConfluxLegsShareFamily(dir *directory.Client, first, second *Path) bool {
+	if first == nil || second == nil {
+		return false
+	}
+	useIDs, useLists := familyPolicyFromDir(dir)
+	for _, a := range []*directory.Relay{second.Guard, second.Middle} {
+		for _, b := range []*directory.Relay{first.Guard, first.Middle} {
+			if a.InSameFamilyPolicy(b, useIDs, useLists) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // NewSelectorWithGuards creates a new path selector with guard persistence
 func NewSelectorWithGuards(dirClient *directory.Client, guardMgr *GuardManager, log *logger.Logger) *Selector {
 	if log == nil {
@@ -317,7 +362,7 @@ func (s *Selector) selectExitFor(target ExitTarget, avoid *directory.Relay) (*di
 			}
 
 			// Skip if in same family (bidirectional family relationship)
-			if relay.InSameFamily(avoid) {
+			if s.sameFamily(relay, avoid) {
 				s.logger.Debug("Skipping exit in same family as guard",
 					"exit", relay.Nickname, "guard", avoid.Nickname)
 				continue
@@ -365,14 +410,14 @@ func (s *Selector) selectMiddle(guard, exit *directory.Relay) (*directory.Relay,
 		}
 
 		// Skip if in same family as guard
-		if guard != nil && relay.InSameFamily(guard) {
+		if guard != nil && s.sameFamily(relay, guard) {
 			s.logger.Debug("Skipping middle in same family as guard",
 				"middle", relay.Nickname, "guard", guard.Nickname)
 			continue
 		}
 
 		// Skip if in same family as exit
-		if exit != nil && relay.InSameFamily(exit) {
+		if exit != nil && s.sameFamily(relay, exit) {
 			s.logger.Debug("Skipping middle in same family as exit",
 				"middle", relay.Nickname, "exit", exit.Nickname)
 			continue
