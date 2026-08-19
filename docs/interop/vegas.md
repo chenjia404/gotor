@@ -22,7 +22,7 @@ ntor-v3 `CC_FIELD_REQUEST` / `CC_FIELD_RESPONSE` 只交换 `sendme_inc`（mainne
 - `queue_use = max(cwnd - BDP, 0)`
 - Slow Start：`queue_use < gamma` 且窗口满时按 RFC3742 Limited Slow Start 增加；否则 `cwnd = BDP + gamma` 并退出。
 - 拥塞避免：每 `CWND_UPDATE_RATE` 个 SENDME 一次。`>delta` 降到 `BDP+delta-inc`；`>beta` 或 orconn 阻塞减 `cc_cwnd_inc`；窗口满且 `<alpha` 才加窗。
-- orconn_blocked：`Connection.WriteBlocked()`（发送排队 >1 或最近 TLS 写出 ≥25ms）。`processCircuitSendme` 采样进 `vegas.blockedChan`。纯 Go。
+- orconn_blocked：`Connection.WriteBlocked()`。发送排队 >1 为真排队；单次 TLS 写出 ≥100ms 只报一次并清掉（避免 25ms sticky 把正常 RTT 当成拥塞）。`processCircuitSendme` 采样进 `vegas.blockedChan`。纯 Go。
 - 发送额度：`package_window = max(cwnd - inflight, 0)`。不得再用「收到 SENDME 就 +sendme_inc」。
 
 ## 默认值（共识未列出时）

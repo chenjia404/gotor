@@ -87,7 +87,7 @@
 - **状态**：PARTIAL（代码已实现 window=0 等待 + orconn 阻塞启发式；10/100MB 真实验收待跑）。
 - **已做**：
   - `SendRelayCell` 在电路/流窗口用尽时等待 SENDME，而不是立刻失败
-  - OR 连接 `WriteBlocked()`：发送排队或 TLS 写出 ≥25ms 视为 orconn_blocked，Vegas 采样后退出 SS / 按 beta 减窗
+  - OR 连接 `WriteBlocked()`：发送排队 >1，或单次 TLS 写出 ≥100ms（只报一次，避免 sticky 误伤 Vegas）
   - 集成：`TestRealFlowControlSoak10MB`、`TestRealFlowControlMultiStream`、`TestRealFlowControlSoak100MB`（需 `TOR_SOAK_100MB=1`）
 - **验收**：电路存活、SENDME v1 digest FIFO 匹配、无重复 SENDME。10MB / 多流通过后标 WORKING。
 - **现有代码**：`pkg/circuit/sendme.go`、`pkg/connection/connection.go`、`integration/e2e_real_tor_test.go`

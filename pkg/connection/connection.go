@@ -75,9 +75,9 @@ type Connection struct {
 	lastWriteNs         atomic.Int64  // 最近一次 TLS 写出耗时
 }
 
-// orconnOutbufSlow 对应 C Tor 写缓冲堵住：单次 EncodeLink 超过该值视为阻塞。
-// proposal 324 用 orconn_blocked 退出 Slow Start / 按 beta 减窗。
-const orconnSlowWrite = 25 * time.Millisecond
+// orconnSlowWrite 只作一次性采样：单次写出达到该值才视为堵住，采样后清掉。
+// 25ms 会把正常 Guard RTT 当成拥塞，长期 sticky 会压死 Vegas Slow Start。
+const orconnSlowWrite = 100 * time.Millisecond
 
 // Config holds connection configuration
 type Config struct {
@@ -363,13 +363,14 @@ func (c *Connection) SendCell(cell *cell.Cell) error {
 	return nil
 }
 
-// WriteBlocked 表示 OR 连接写出被堵住（有人在等 sendMu，或最近一次写过慢）。
-// 供 FlowCtrl=2 Vegas 采样 orconn_blocked，纯 Go，不碰 CGO。
+// WriteBlocked 表示 OR 连接写出被堵住。
+// 以发送排队为主（有人在等 sendMu）；单次写出 ≥100ms 只报一次并清掉，避免 sticky 误伤 Vegas。
 func (c *Connection) WriteBlocked() bool {
 	if c.sendWaiters.Load() > 1 {
 		return true
 	}
-	return time.Duration(c.lastWriteNs.Load()) >= orconnSlowWrite
+	ns := c.lastWriteNs.Swap(0)
+	return time.Duration(ns) >= orconnSlowWrite
 }
 
 // ReceiveCell receives a cell from the connection

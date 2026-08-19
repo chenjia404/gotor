@@ -95,6 +95,18 @@ func (m *CellMux) Start() {
 }
 
 // Close 停止读循环并关闭底层连接，避免失败建路泄漏读 goroutine。
+func (m *CellMux) isClosed() bool {
+	if m == nil {
+		return false
+	}
+	select {
+	case <-m.closed:
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *CellMux) Close() {
 	m.closeOnce.Do(func() {
 		close(m.closed)

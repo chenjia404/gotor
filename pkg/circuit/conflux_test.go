@@ -212,6 +212,34 @@ func TestConfluxSendSwitchRelativeSeq(t *testing.T) {
 	_ = sb
 }
 
+func TestConfluxWaitsWhenBothWindowsZero(t *testing.T) {
+	s, a, b, _, _ := newTestConfluxSet(t)
+	s.linked = true
+	s.current = a
+	a.packageWindow = 0
+	b.packageWindow = 0
+	rc, err := cell.NewRelayCell(1, cell.RelayData, []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.sendMultiplexed(rc) }()
+	select {
+	case err := <-done:
+		t.Fatalf("both windows 0 must wait for SENDME, got %v", err)
+	case <-time.After(80 * time.Millisecond):
+	}
+	a.incrementPackageWindow()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("after SENDME: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SENDME on one Conflux leg must unblock send")
+	}
+}
+
 func TestConfluxRejectsNonExitHop(t *testing.T) {
 	s, a, _, _, _ := newTestConfluxSet(t)
 	s.linked = true
