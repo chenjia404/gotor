@@ -54,7 +54,7 @@
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
 | Circuit padding (Padding=2) | PARTIAL | 电路层齐；SOCKS `AfterIntroduce1` 已接线。真实验收待 onion e2e；BEGIN_DIR 前 HSDir HTTP 有限 |
-| Onion Service v3 | PARTIAL | hs-ntor WORKING；INTRODUCE1/2 加解密 + RENDEZVOUS1 已对齐。HSDir 真实验收 / 端到端访问仍缺 |
+| Onion Service v3 | PARTIAL | hs-ntor + INTRODUCE/RENDEZVOUS 对齐；**BEGIN_DIR WORKING**（CONNECTED 真实验收）。描述符命中待完整 KEYBLIND |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
 | Control Protocol | PARTIAL | 框架存在，非本轮验收 |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
@@ -412,4 +412,4 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准：** BEGIN_DIR 拉 HS 描述符 / `.onion` e2e；Phase 3 官方向量原样导入。
+**下一轮完成标准：** 完整 Ed25519 KEYBLIND（使 HS 描述符 URL/选路正确）→ `.onion` e2e；Phase 3 官方向量。
