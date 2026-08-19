@@ -12,6 +12,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
@@ -156,6 +157,9 @@ type Client struct {
 	lastConsensusRaw  string         // 验签成功的整份共识（给 DirCache=2 diff）
 	lastSignedSHA3Hex string         // 上述文档 signed part 的 SHA3-256 hex
 	lastFetchUsedDiff bool           // 最近一次成功 ingest 是否来自 limited-ed diff
+	sharedRandCurrent []byte         // shared-rand-current-value（32 字节）
+	sharedRandPrev    []byte         // shared-rand-previous-value（32 字节）
+	consensusValidAfter time.Time
 }
 
 // AuthorityCertCache caches authority signing certificates for consensus verification
@@ -343,7 +347,11 @@ func (c *Client) copyLastConsensusRaw() string {
 	return c.lastConsensusRaw
 }
 
-func (c *Client) rememberVerifiedConsensus(doc, signedSHA3 string, params map[string]int) {
+func (c *Client) rememberVerifiedConsensus(doc, signedSHA3 string, meta *ConsensusMetadata) {
+	params := map[string]int{}
+	if meta != nil && meta.Params != nil {
+		params = meta.Params
+	}
 	copied := make(map[string]int, len(params))
 	for k, v := range params {
 		copied[k] = v
@@ -352,7 +360,26 @@ func (c *Client) rememberVerifiedConsensus(doc, signedSHA3 string, params map[st
 	c.lastConsensusRaw = doc
 	c.lastSignedSHA3Hex = signedSHA3
 	c.lastParams = copied
+	if meta != nil {
+		c.sharedRandCurrent = append([]byte(nil), meta.SharedRandCurrent...)
+		c.sharedRandPrev = append([]byte(nil), meta.SharedRandPrevious...)
+		c.consensusValidAfter = meta.ValidAfter
+	}
 	c.mu.Unlock()
+}
+
+// SharedRandomValues 返回最近验签共识中的 current/previous SRV（各 32 字节，可空）。
+func (c *Client) SharedRandomValues() (current, previous []byte) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]byte(nil), c.sharedRandCurrent...), append([]byte(nil), c.sharedRandPrev...)
+}
+
+// ConsensusValidAfter 返回最近验签共识的 valid-after。
+func (c *Client) ConsensusValidAfter() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.consensusValidAfter
 }
 
 // resolveConsensusPayload 若是 limited ed diff 则应用到已缓存共识，否则原样返回整份文档。
@@ -468,7 +495,7 @@ func (c *Client) ingestConsensusDocument(ctx context.Context, doc string) ([]*Re
 		"valid_after", metadata.ValidAfter,
 		"valid_until", metadata.ValidUntil)
 
-	c.rememberVerifiedConsensus(doc, sha3_256Hex(signedBody), metadata.Params)
+	c.rememberVerifiedConsensus(doc, sha3_256Hex(signedBody), metadata)
 	return relays, nil
 }
 
@@ -553,6 +580,18 @@ func (c *Client) parseConsensusWithMetadata(r io.Reader) ([]*Relay, *ConsensusMe
 		if strings.HasPrefix(line, "params ") {
 			paramsStr := strings.TrimPrefix(line, "params ")
 			parseConsensusParams(paramsStr, metadata.Params)
+		}
+
+		// shared-rand-*-value NumReveals Base64Value（dir-spec）
+		if strings.HasPrefix(line, "shared-rand-current-value ") {
+			if v := parseSharedRandValueLine(line); len(v) == 32 {
+				metadata.SharedRandCurrent = v
+			}
+		}
+		if strings.HasPrefix(line, "shared-rand-previous-value ") {
+			if v := parseSharedRandValueLine(line); len(v) == 32 {
+				metadata.SharedRandPrevious = v
+			}
 		}
 
 		// SPEC-003: Parse directory-signature lines
@@ -795,6 +834,24 @@ func parseConsensusParams(paramsStr string, params map[string]int) {
 	}
 }
 
+// parseSharedRandValueLine 解析 shared-rand-current/previous-value。
+// 格式：shared-rand-*-value NumReveals Base64Value
+func parseSharedRandValueLine(line string) []byte {
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(fields[2])
+	if err != nil || len(raw) != 32 {
+		// 兼容无 padding
+		raw, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(fields[2], "="))
+		if err != nil || len(raw) != 32 {
+			return nil
+		}
+	}
+	return raw
+}
+
 // HasFlag checks if a relay has a specific flag
 func (r *Relay) HasFlag(flag string) bool {
 	for _, f := range r.Flags {
@@ -922,6 +979,8 @@ type ConsensusMetadata struct {
 	AuthorityCount       int                   // Number of authorities in consensus
 	NetworkStatusVersion int                   // Consensus format version
 	Params               map[string]int        // Network-wide consensus parameters (dir-spec.txt §3.4.1)
+	SharedRandCurrent    []byte                // shared-rand-current-value（32 字节，可空）
+	SharedRandPrevious   []byte                // shared-rand-previous-value（32 字节，可空）
 }
 
 // ValidateConsensusMetadata 校验时间窗与签名个数。密码学验签在

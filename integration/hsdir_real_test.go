@@ -17,10 +17,10 @@ import (
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
 
-// TestRealHSDirFetch 经 BEGIN_DIR（ORPort）从真实 HSDir 拉取公开 v3 描述符。
+// TestRealHSDirFetch 经 BEGIN_DIR 从真实负责 HSDir 拉取公开 v3 描述符。
 func TestRealHSDirFetch(t *testing.T) {
 	requireRealTor(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	log := logger.NewDefault()
@@ -29,16 +29,42 @@ func TestRealHSDirFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchConsensus: %v", err)
 	}
+	curSRV, prevSRV := dirClient.SharedRandomValues()
+	t.Logf("consensus relays=%d srv_cur=%d srv_prev=%d valid_after=%v",
+		len(relays), len(curSRV), len(prevSRV), dirClient.ConsensusValidAfter())
+	if len(curSRV) != 32 && len(prevSRV) != 32 {
+		t.Fatal("consensus missing shared-rand values")
+	}
+
 	hsdirs := onion.HSDirectoriesFromRelays(relays)
-	var hsOnly int
+	var hsOnly []*directory.Relay
 	for _, h := range hsdirs {
-		if h.HSDir {
-			hsOnly++
+		if h.HSDir && h.Relay != nil {
+			hsOnly = append(hsOnly, h.Relay)
 		}
 	}
-	t.Logf("consensus relays=%d hsdir_entries=%d", len(relays), hsOnly)
-	if hsOnly < 100 {
-		t.Fatalf("expected many HSDir flags, got %d", hsOnly)
+	t.Logf("HSDir-flagged=%d", len(hsOnly))
+	if len(hsOnly) < 100 {
+		t.Fatalf("expected many HSDir flags, got %d", len(hsOnly))
+	}
+
+	// 哈希环需要全部 HSDir 的 Ed25519 身份（microdesc id ed25519）
+	t.Logf("fetching microdescriptors for %d HSDirs...", len(hsOnly))
+	if err := dirClient.FetchMicrodescriptorsFor(ctx, hsOnly); err != nil {
+		t.Logf("FetchMicrodescriptorsFor warning: %v", err)
+	}
+	var withID, withNtor int
+	for _, r := range hsOnly {
+		if len(r.IdentityKey) == 32 {
+			withID++
+		}
+		if r.HasNtorKeys() {
+			withNtor++
+		}
+	}
+	t.Logf("HSDir with ed25519=%d ntor=%d / %d", withID, withNtor, len(hsOnly))
+	if withID < 50 {
+		t.Fatalf("too few HSDir identities: %d", withID)
 	}
 
 	const torProjectOnion = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion"
@@ -47,47 +73,18 @@ func TestRealHSDirFetch(t *testing.T) {
 		t.Fatalf("ParseAddress: %v", err)
 	}
 
-	// 先算出负责 HSDir，只给它们拉 microdesc（BEGIN_DIR 需要 ntor 密钥）
 	timePeriod := onion.GetTimePeriod(time.Now())
 	blinded := onion.ComputeBlindedPubkey(ed25519.PublicKey(addr.Pubkey), timePeriod)
-	descID := onion.ComputeDescriptorID(blinded)
-	hs := onion.NewHSDir(log)
-	need := make([]*directory.Relay, 0, 8)
-	seen := map[string]struct{}{}
-	for replica := 0; replica < 2; replica++ {
-		for _, h := range hs.SelectHSDirs(descID, hsdirs, replica) {
-			if h.Relay == nil {
-				continue
-			}
-			fp := h.Fingerprint
-			if _, ok := seen[fp]; ok {
-				continue
-			}
-			seen[fp] = struct{}{}
-			need = append(need, h.Relay)
-		}
-	}
-	t.Logf("responsible HSDirs needing keys=%d", len(need))
-	if len(need) == 0 {
-		t.Fatal("SelectHSDirs returned no relays with Relay pointer")
-	}
-	if err := dirClient.FetchMicrodescriptorsFor(ctx, need); err != nil {
-		t.Fatalf("FetchMicrodescriptorsFor: %v", err)
-	}
-	var withKeys int
-	for _, r := range need {
-		if r.HasNtorKeys() {
-			withKeys++
-		}
-	}
-	t.Logf("responsible HSDir with keys=%d/%d", withKeys, len(need))
-	if withKeys == 0 {
-		t.Fatal("no responsible HSDir has ntor keys")
+	srv := onion.SelectSRVForFetch(time.Now(), timePeriod, curSRV, prevSRV)
+	selected := onion.SelectResponsibleHSDirs(blinded, hsdirs, srv, timePeriod, 0, 0)
+	t.Logf("period=%d blinded=%x... responsible=%d", timePeriod, blinded[:8], len(selected))
+	if len(selected) == 0 {
+		t.Fatal("SelectResponsibleHSDirs returned empty")
 	}
 
-	// 先验证 BEGIN_DIR 传输：拉共识片段应 200
 	builder := circuit.NewBuilder(circuit.NewManager(), log)
-	r0 := need[0]
+	// 验证 BEGIN_DIR 传输
+	r0 := selected[0].Relay
 	circ, err := builder.BuildFirstHop(ctx, r0, 60*time.Second)
 	if err != nil {
 		t.Fatalf("BuildFirstHop: %v", err)
@@ -110,16 +107,16 @@ func TestRealHSDirFetch(t *testing.T) {
 	client := onion.NewClient(log)
 	client.UpdateHSDirs(hsdirs)
 	client.SetBegindir(begindir)
+	client.SetSharedRandom(curSRV, prevSRV)
 
 	desc, err := client.GetDescriptor(ctx, addr)
 	if err != nil {
-		t.Logf("GetDescriptor: %v (BEGIN_DIR CONNECTED already OK; KEYBLIND may still be incomplete)", err)
-		t.Skip("HS descriptor fetch needs full KEYBLIND; BEGIN_DIR transport proven")
+		t.Fatalf("GetDescriptor: %v", err)
 	}
 	if desc == nil || len(desc.IntroPoints) == 0 {
 		t.Fatalf("empty descriptor: %#v", desc)
 	}
-	t.Logf("HSDir BEGIN_DIR OK address=%s intro_points=%d revision=%d",
+	t.Logf("HSDir fetch OK address=%s intro_points=%d revision=%d",
 		addr.String(), len(desc.IntroPoints), desc.RevisionCounter)
 	for i, ip := range desc.IntroPoints {
 		if i >= 3 {
@@ -128,4 +125,5 @@ func TestRealHSDirFetch(t *testing.T) {
 		t.Logf("  intro[%d] auth=%d enc=%d links=%d",
 			i, len(ip.AuthKey), len(ip.EncKey), len(ip.LinkSpecifiers))
 	}
+	_ = itoa
 }

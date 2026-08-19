@@ -5,6 +5,7 @@ go 1.25.0
 toolchain go1.26.6
 
 require (
+	filippo.io/edwards25519 v1.2.0
 	github.com/cretz/bine v0.2.0
 	github.com/gofrs/flock v0.13.0
 	go.opentelemetry.io/otel v1.45.0

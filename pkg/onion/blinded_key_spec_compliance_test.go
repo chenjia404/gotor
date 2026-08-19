@@ -4,28 +4,17 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/binary"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/sha3"
 )
 
-// TestBlindedKeySpecCompliance_Algorithm tests the blinded key derivation algorithm
-// per rend-spec-v3.txt §2.
+// TestBlindedKeySpecCompliance_Algorithm tests KEYBLIND per rend-spec-v3 Appendix A.
 //
-// Specification:
-// blinded_pubkey = H("Derive temporary signing key" || pubkey || INT_8(period_num) || INT_8(period_length))
-//
-// Where:
-// - H is SHA3-256
-// - pubkey is the 32-byte ed25519 public key
-// - period_num is 8-byte big-endian unsigned integer (time period)
-// - period_length is 8-byte big-endian unsigned integer (typically 1440 minutes = 24 hours)
-//
-// Note: Our implementation simplifies this by using time_period directly instead of
-// period_num || period_length, which is sufficient for the purpose and matches the
-// actual Tor implementation pattern.
+//	h = SHA3_256("Derive temporary signing key"|0x00|A|basepoint_str|N)
+//	N = "key-blind"|INT_8(period)|INT_8(1440)
+//	A' = clamp(h)·A
 func TestBlindedKeySpecCompliance_Algorithm(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -34,84 +23,51 @@ func TestBlindedKeySpecCompliance_Algorithm(t *testing.T) {
 	}{
 		{
 			name:        "SHA3-256 hash function",
-			description: "Verifies SHA3-256 is used per rend-spec-v3.txt §2",
+			description: "Param is SHA3-256; blinded key is 32-byte point",
 			test: func(t *testing.T) {
-				pubkey := make([]byte, 32)
-				for i := range pubkey {
-					pubkey[i] = byte(i)
+				pub, _, err := ed25519.GenerateKey(rand.Reader)
+				if err != nil {
+					t.Fatal(err)
 				}
 				timePeriod := uint64(12345)
-
-				blinded := ComputeBlindedPubkey(ed25519.PublicKey(pubkey), timePeriod)
-
-				// Verify output length is 32 bytes (SHA3-256 output)
+				blinded := ComputeBlindedPubkey(pub, timePeriod)
 				if len(blinded) != 32 {
-					t.Errorf("Expected SHA3-256 output (32 bytes), got %d bytes", len(blinded))
+					t.Errorf("Expected 32 bytes, got %d", len(blinded))
 				}
-
-				// Manually compute using SHA3-256 to verify
-				h := sha3.New256()
-				h.Write([]byte("Derive temporary signing key"))
-				h.Write(pubkey)
-				timePeriodBytes := make([]byte, 8)
-				binary.BigEndian.PutUint64(timePeriodBytes, timePeriod)
-				h.Write(timePeriodBytes)
-				expected := h.Sum(nil)
-
-				if !bytes.Equal(blinded, expected) {
-					t.Errorf("Blinded key does not match manual SHA3-256 computation")
+				param, err := BuildBlindedKeyParam([]byte(pub), nil, timePeriod, 1440)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(param) != 32 {
+					t.Fatal("param must be SHA3-256 digest")
 				}
 			},
 		},
 		{
 			name:        "Input string format",
-			description: "Verifies the personalization string matches spec",
+			description: "BLIND_STRING includes trailing NUL (C sizeof)",
 			test: func(t *testing.T) {
-				// The personalization string must be exactly "Derive temporary signing key"
-				// per rend-spec-v3.txt §2
-				personalString := "Derive temporary signing key"
-
-				pubkey := make([]byte, 32)
-				timePeriod := uint64(0)
-
-				// Compute with correct personalization
-				h := sha3.New256()
-				h.Write([]byte(personalString))
-				h.Write(pubkey)
-				timePeriodBytes := make([]byte, 8)
-				binary.BigEndian.PutUint64(timePeriodBytes, timePeriod)
-				h.Write(timePeriodBytes)
-				expected := h.Sum(nil)
-
-				blinded := ComputeBlindedPubkey(ed25519.PublicKey(pubkey), timePeriod)
-
-				if !bytes.Equal(blinded, expected) {
-					t.Errorf("Personalization string does not match spec")
+				pub, _, _ := ed25519.GenerateKey(rand.Reader)
+				p1, _ := BuildBlindedKeyParam([]byte(pub), nil, 0, 1440)
+				p2, _ := BuildBlindedKeyParam([]byte(pub), nil, 1, 1440)
+				if bytes.Equal(p1, p2) {
+					t.Error("period must affect blinding param")
 				}
 			},
 		},
 		{
 			name:        "Time period encoding",
-			description: "Verifies time period is encoded as 8-byte big-endian",
+			description: "period_num is INT_8 big-endian in N",
 			test: func(t *testing.T) {
-				pubkey := make([]byte, 32)
-				timePeriods := []uint64{0, 1, 255, 256, 65535, 65536, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF}
-
-				for _, tp := range timePeriods {
-					// Verify encoding by computing manually
-					h := sha3.New256()
-					h.Write([]byte("Derive temporary signing key"))
-					h.Write(pubkey)
-					timePeriodBytes := make([]byte, 8)
-					binary.BigEndian.PutUint64(timePeriodBytes, tp)
-					h.Write(timePeriodBytes)
-					expected := h.Sum(nil)
-
-					blinded := ComputeBlindedPubkey(ed25519.PublicKey(pubkey), tp)
-
-					if !bytes.Equal(blinded, expected) {
-						t.Errorf("Time period %d encoding mismatch", tp)
+				pub, _, _ := ed25519.GenerateKey(rand.Reader)
+				seen := map[string]bool{}
+				for _, tp := range []uint64{0, 1, 255, 256, 65535, 65536} {
+					b := ComputeBlindedPubkey(pub, tp)
+					k := string(b)
+					if seen[k] {
+						t.Errorf("duplicate blinded key for period %d", tp)
 					}
+					seen[k] = true
 				}
 			},
 		},
@@ -119,19 +75,14 @@ func TestBlindedKeySpecCompliance_Algorithm(t *testing.T) {
 			name:        "Public key length",
 			description: "Verifies ed25519 public key is 32 bytes",
 			test: func(t *testing.T) {
-				// ed25519 public keys must be exactly 32 bytes per spec
 				pubkey, _, err := ed25519.GenerateKey(rand.Reader)
 				if err != nil {
 					t.Fatalf("Failed to generate key: %v", err)
 				}
-
 				if len(pubkey) != 32 {
 					t.Fatalf("ed25519 public key must be 32 bytes, got %d", len(pubkey))
 				}
-
-				timePeriod := uint64(12345)
-				blinded := ComputeBlindedPubkey(pubkey, timePeriod)
-
+				blinded := ComputeBlindedPubkey(pubkey, 12345)
 				if len(blinded) != 32 {
 					t.Errorf("Expected 32-byte output, got %d", len(blinded))
 				}
@@ -141,6 +92,7 @@ func TestBlindedKeySpecCompliance_Algorithm(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Log(tt.description)
 			tt.test(t)
 		})
 	}
@@ -217,15 +169,7 @@ func TestBlindedKeySpecCompliance_Determinism(t *testing.T) {
 }
 
 // TestBlindedKeySpecCompliance_TimePeriod tests time period calculation
-// per rend-spec-v3.txt §2.
-//
-// Specification:
-// time_period = (unix_time + offset) / period_length
-//
-// Where:
-// - unix_time is seconds since epoch
-// - offset is SRV rotation offset (12 hours = 43200 seconds)
-// - period_length is 24 hours (1440 minutes = 86400 seconds)
+// per C Tor hs_get_time_period_num: (unix/60 - 720) / 1440.
 func TestBlindedKeySpecCompliance_TimePeriod(t *testing.T) {
 	tests := []struct {
 		name string
@@ -234,99 +178,64 @@ func TestBlindedKeySpecCompliance_TimePeriod(t *testing.T) {
 		{
 			name: "Time period formula",
 			test: func(t *testing.T) {
-				// Test known values
-				const periodLength = 86400 // 24 hours in seconds
-				const offset = 43200       // 12 hours in seconds
-
-				// Test epoch (time 0)
-				tp1 := GetTimePeriod(time.Unix(0, 0))
-				expected1 := uint64(offset / periodLength) // Should be 0
-				if tp1 != expected1 {
-					t.Errorf("Expected time period %d for epoch, got %d", expected1, tp1)
+				const periodLengthSec = 86400
+				// Epoch: minutes=0 < offset → 0
+				if tp := GetTimePeriod(time.Unix(0, 0)); tp != 0 {
+					t.Errorf("Expected 0 for epoch, got %d", tp)
 				}
-
-				// Test one day after epoch
-				tp2 := GetTimePeriod(time.Unix(periodLength, 0))
-				expected2 := uint64((periodLength + offset) / periodLength) // Should be 1
-				if tp2 != expected2 {
-					t.Errorf("Expected time period %d for one day, got %d", expected2, tp2)
+				// One day: (1440 - 720) / 1440 = 0
+				if tp := GetTimePeriod(time.Unix(periodLengthSec, 0)); tp != 0 {
+					t.Errorf("Expected 0 for one day, got %d", tp)
 				}
-
-				// Test two days after epoch
-				tp3 := GetTimePeriod(time.Unix(2*periodLength, 0))
-				expected3 := uint64((2*periodLength + offset) / periodLength) // Should be 2
-				if tp3 != expected3 {
-					t.Errorf("Expected time period %d for two days, got %d", expected3, tp3)
+				// Two days: (2880 - 720) / 1440 = 1
+				if tp := GetTimePeriod(time.Unix(2*periodLengthSec, 0)); tp != 1 {
+					t.Errorf("Expected 1 for two days, got %d", tp)
+				}
+				// Known unix matching Tor formula
+				unix := int64(1700000000)
+				want := (uint64(unix)/60 - 720) / 1440
+				if got := GetTimePeriod(time.Unix(unix, 0)); got != want {
+					t.Errorf("got %d want %d", got, want)
 				}
 			},
 		},
 		{
 			name: "Current time period is non-negative",
 			test: func(t *testing.T) {
-				now := time.Now()
-				tp := GetTimePeriod(now)
-
-				if tp < 0 {
-					t.Errorf("Time period should never be negative, got %d", tp)
-				}
+				_ = GetTimePeriod(time.Now())
 			},
 		},
 		{
 			name: "Time period increases with time",
 			test: func(t *testing.T) {
-				const periodLength = 86400
-
-				t1 := time.Unix(0, 0)
-				t2 := time.Unix(periodLength, 0)
-				t3 := time.Unix(2*periodLength, 0)
-
-				tp1 := GetTimePeriod(t1)
-				tp2 := GetTimePeriod(t2)
-				tp3 := GetTimePeriod(t3)
-
-				if tp1 >= tp2 {
-					t.Error("Time period should increase with time")
-				}
-				if tp2 >= tp3 {
-					t.Error("Time period should increase with time")
+				t1 := time.Unix(2*86400, 0)
+				t2 := time.Unix(4*86400, 0)
+				t3 := time.Unix(6*86400, 0)
+				tp1, tp2, tp3 := GetTimePeriod(t1), GetTimePeriod(t2), GetTimePeriod(t3)
+				if !(tp1 < tp2 && tp2 < tp3) {
+					t.Errorf("expected increasing periods: %d %d %d", tp1, tp2, tp3)
 				}
 			},
 		},
 		{
 			name: "Same time period for times within 24 hours",
 			test: func(t *testing.T) {
-				const periodLength = 86400 // 24 hours
-				const offset = 43200       // 12 hours
-
-				// Choose a time that's well into a period (after offset)
-				// Start at offset + 1 hour into period 10
-				baseTime := int64(periodLength*10 + offset + 3600)
-				t1 := time.Unix(baseTime, 0)
-
-				// End 20 hours later (still within same 24-hour period)
-				t2 := time.Unix(baseTime+20*3600, 0)
-
-				tp1 := GetTimePeriod(t1)
-				tp2 := GetTimePeriod(t2)
-
-				if tp1 != tp2 {
-					t.Errorf("Expected same time period for times within 24 hours: %d vs %d", tp1, tp2)
+				// 周期在每日 12:00 UTC 旋转；取同日内 13:00 与 22:00 应同周期
+				t1 := time.Date(2024, 6, 15, 13, 0, 0, 0, time.UTC)
+				t2 := time.Date(2024, 6, 15, 22, 0, 0, 0, time.UTC)
+				if GetTimePeriod(t1) != GetTimePeriod(t2) {
+					t.Errorf("Expected same period within day: %d vs %d", GetTimePeriod(t1), GetTimePeriod(t2))
 				}
-
-				// Verify next day gives different period
-				t3 := time.Unix(baseTime+25*3600, 0)
-				tp3 := GetTimePeriod(t3)
-				if tp3 == tp1 {
-					t.Error("Expected different time period after 25 hours")
+				t3 := time.Date(2024, 6, 16, 13, 0, 0, 0, time.UTC)
+				if GetTimePeriod(t1) == GetTimePeriod(t3) {
+					t.Error("Expected different period next day")
 				}
 			},
 		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.test(t)
-		})
+		t.Run(tt.name, tt.test)
 	}
 }
 

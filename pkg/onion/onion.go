@@ -386,6 +386,13 @@ func (c *Client) SetBegindir(f *BegindirFetcher) {
 	}
 }
 
+// SetSharedRandom 注入共识 shared-rand（供 HSDir 哈希环）。
+func (c *Client) SetSharedRandom(current, previous []byte) {
+	if c != nil && c.hsdir != nil {
+		c.hsdir.SetSharedRandom(current, previous)
+	}
+}
+
 // UpdateHSDirs updates the list of available HSDirs from consensus
 func (c *Client) UpdateHSDirs(relays []*HSDirectory) {
 	c.consensus = relays
@@ -534,41 +541,7 @@ func ComputeDescriptorID(blindedPubkey []byte) []byte {
 	return computeDescriptorID(blindedPubkey)
 }
 
-// ComputeBlindedPubkey computes the blinded public key for a given time period
-// Per Tor spec: blinded_key = h("Derive temporary signing key" || pubkey || time_period)
-func ComputeBlindedPubkey(pubkey ed25519.PublicKey, timePeriod uint64) []byte {
-	h := sha3.New256()
-	h.Write([]byte("Derive temporary signing key"))
-	h.Write(pubkey)
-
-	// Convert time period to bytes (8 bytes, big-endian)
-	timePeriodBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(timePeriodBytes, timePeriod)
-	h.Write(timePeriodBytes)
-
-	return h.Sum(nil)
-}
-
-// GetTimePeriod computes the current time period for descriptor rotation
-// Per Tor spec: time_period = (unix_time + offset) / period_length
-// For v3: period_length = 1440 minutes (24 hours), offset = 12 hours
-func GetTimePeriod(now time.Time) uint64 {
-	const periodLength = 24 * 60 * 60 // 24 hours in seconds
-	const offset = 12 * 60 * 60       // 12 hours in seconds
-
-	unixTime := now.Unix()
-	// Safe conversion: validate unixTime is non-negative before arithmetic
-	if unixTime < 0 {
-		// Invalid timestamp, return 0
-		return 0
-	}
-	// Perform calculation in int64 space, then safely convert
-	timePeriod := (unixTime + offset) / periodLength
-	if timePeriod < 0 {
-		return 0
-	}
-	return uint64(timePeriod)
-}
+// ComputeBlindedPubkey / GetTimePeriod 见 keyblind.go（完整 KEYBLIND）。
 
 // ParseDescriptor parses a raw v3 onion service descriptor
 // Implements parsing according to rend-spec-v3.txt section 2.4
@@ -1341,8 +1314,10 @@ type HSDirectory struct {
 
 // HSDir provides Hidden Service Directory operations
 type HSDir struct {
-	logger   *logger.Logger
-	begindir *BegindirFetcher
+	logger            *logger.Logger
+	begindir          *BegindirFetcher
+	sharedRandCurrent []byte
+	sharedRandPrev    []byte
 }
 
 // NewHSDir creates a new HSDir protocol handler
@@ -1356,6 +1331,15 @@ func NewHSDir(log *logger.Logger) *HSDir {
 	}
 }
 
+// SetSharedRandom 注入共识 SRV（各 32 字节）。
+func (h *HSDir) SetSharedRandom(current, previous []byte) {
+	if h == nil {
+		return
+	}
+	h.sharedRandCurrent = append([]byte(nil), current...)
+	h.sharedRandPrev = append([]byte(nil), previous...)
+}
+
 // SetBegindir 启用经 ORPort 的 BEGIN_DIR 拉取（现代网络几乎必需）。
 func (h *HSDir) SetBegindir(f *BegindirFetcher) {
 	if h != nil {
@@ -1363,7 +1347,7 @@ func (h *HSDir) SetBegindir(f *BegindirFetcher) {
 	}
 }
 
-// SelectHSDirs selects responsible HSDirs for a given descriptor ID
+// SelectHSDirs 旧 XOR 启发式（仅兼容单测）；生产请用 SelectResponsibleHSDirs。
 // Per Tor spec (rend-spec-v3.txt section 2.2.3):
 // The responsible HSDirs are chosen by:
 // 1. Computing descriptor_id = H(blinded_pubkey || time_period || replica)
@@ -1480,7 +1464,8 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 	}
 
 	// Compute current time period
-	timePeriod := GetTimePeriod(time.Now())
+	now := time.Now()
+	timePeriod := GetTimePeriod(now)
 
 	// Compute blinded public key
 	blindedPubkey := ComputeBlindedPubkey(ed25519.PublicKey(addr.Pubkey), timePeriod)
@@ -1488,94 +1473,84 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 	// Compute descriptor ID
 	descriptorID := computeDescriptorID(blindedPubkey)
 
+	srv := SelectSRVForFetch(now, timePeriod, h.sharedRandCurrent, h.sharedRandPrev)
+	selectedHSDirs := SelectResponsibleHSDirs(blindedPubkey, hsdirs, srv, timePeriod, 0, 0)
+	if len(selectedHSDirs) == 0 {
+		// 无 Ed25519 身份时回退旧启发式（仍可能 503）
+		h.logger.Warn("HSDir ring empty (need microdesc identities); falling back to XOR select")
+		for replica := 0; replica < 2; replica++ {
+			selectedHSDirs = append(selectedHSDirs, h.SelectHSDirs(descriptorID, hsdirs, replica)...)
+		}
+	}
+
 	h.logger.Debug("Fetching descriptor",
 		"address", addr.String(),
 		"time_period", timePeriod,
-		"descriptor_id", fmt.Sprintf("%x", descriptorID[:8]))
+		"descriptor_id", fmt.Sprintf("%x", descriptorID[:8]),
+		"responsible", len(selectedHSDirs),
+		"srv_prefix", fmt.Sprintf("%x", srv[:minInt(4, len(srv))]))
 
 	// AUDIT-003 FIX: Add retry backoff logic
 	var lastErr error
 	maxRetries := 3
 	baseBackoff := 100 * time.Millisecond
 
-	// Try both replicas (Tor uses 2 replicas for redundancy)
-	for replica := 0; replica < 2; replica++ {
-		// Select responsible HSDirs for this replica
-		selectedHSDirs := h.SelectHSDirs(descriptorID, hsdirs, replica)
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := baseBackoff * time.Duration(1<<uint(attempt-1))
+			h.logger.Debug("Retrying after backoff",
+				"attempt", attempt+1,
+				"backoff", backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context cancelled during backoff: %w", ctx.Err())
+			}
+		}
 
-		// Try each HSDir with retries and backoff
-		for attempt := 0; attempt < maxRetries; attempt++ {
-			// Apply exponential backoff for retries (not on first attempt)
-			if attempt > 0 {
-				backoff := baseBackoff * time.Duration(1<<uint(attempt-1))
-				h.logger.Debug("Retrying after backoff",
+		for _, hsdir := range selectedHSDirs {
+			desc, err := h.fetchFromHSDir(ctx, hsdir, blindedPubkey, -1)
+			if err != nil {
+				h.logger.Debug("Failed to fetch from HSDir",
+					"hsdir", hsdir.Fingerprint,
 					"attempt", attempt+1,
-					"backoff", backoff,
-					"replica", replica)
-
-				select {
-				case <-time.After(backoff):
-				case <-ctx.Done():
-					return nil, fmt.Errorf("context cancelled during backoff: %w", ctx.Err())
-				}
+					"error", err)
+				lastErr = err
+				continue
 			}
 
-			for _, hsdir := range selectedHSDirs {
-				desc, err := h.fetchFromHSDir(ctx, hsdir, blindedPubkey, replica)
-				if err != nil {
-					h.logger.Debug("Failed to fetch from HSDir",
-						"hsdir", hsdir.Fingerprint,
-						"replica", replica,
-						"attempt", attempt+1,
-						"error", err)
-					lastErr = err
-					continue
-				}
+			h.logger.Info("Successfully fetched descriptor",
+				"address", addr.String(),
+				"hsdir", hsdir.Fingerprint,
+				"attempt", attempt+1)
 
-				// Successfully fetched descriptor
-				h.logger.Info("Successfully fetched descriptor",
+			desc.Address = addr
+			desc.BlindedPubkey = blindedPubkey
+			desc.DescriptorID = descriptorID
+
+			if err := VerifyDescriptorSignature(desc, addr); err != nil {
+				h.logger.Warn("Descriptor signature verification failed",
 					"address", addr.String(),
 					"hsdir", hsdir.Fingerprint,
-					"replica", replica,
-					"attempt", attempt+1)
-
-				// Set metadata
-				desc.Address = addr
-				desc.BlindedPubkey = blindedPubkey
-				desc.DescriptorID = descriptorID
-
-				// MED-002 FIX: Verify descriptor signature before accepting
-				// This prevents accepting forged or tampered descriptors
-				if err := VerifyDescriptorSignature(desc, addr); err != nil {
-					h.logger.Warn("Descriptor signature verification failed",
-						"address", addr.String(),
-						"hsdir", hsdir.Fingerprint,
-						"error", err)
-					lastErr = fmt.Errorf("descriptor signature verification failed: %w", err)
-					continue // Try next HSDir
-				}
-
-				h.logger.Debug("Descriptor signature verified successfully",
-					"address", addr.String())
-
-				// Decrypt the descriptor's superencrypted layer
-				decryptedDesc, err := DecryptDescriptor(desc, addr, timePeriod)
-				if err != nil {
-					h.logger.Warn("Descriptor decryption failed (may not be encrypted)",
-						"address", addr.String(),
-						"hsdir", hsdir.Fingerprint,
-						"error", err)
-					// Continue with encrypted descriptor if decryption fails
-					// Some test descriptors might not be encrypted
-					return desc, nil
-				}
-
-				h.logger.Debug("Descriptor decrypted successfully",
-					"address", addr.String(),
-					"intro_points", len(decryptedDesc.IntroPoints))
-
-				return decryptedDesc, nil
+					"error", err)
+				lastErr = fmt.Errorf("descriptor signature verification failed: %w", err)
+				continue
 			}
+
+			decryptedDesc, err := DecryptDescriptor(desc, addr, timePeriod)
+			if err != nil {
+				h.logger.Warn("Descriptor decryption failed (may not be encrypted)",
+					"address", addr.String(),
+					"hsdir", hsdir.Fingerprint,
+					"error", err)
+				return desc, nil
+			}
+
+			h.logger.Debug("Descriptor decrypted successfully",
+				"address", addr.String(),
+				"intro_points", len(decryptedDesc.IntroPoints))
+
+			return decryptedDesc, nil
 		}
 	}
 
