@@ -3,7 +3,9 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/autoconfig"
@@ -18,10 +20,41 @@ type Config struct {
 	ControlListenAddr string // Control 绑定地址（默认 127.0.0.1；兼容 ControlPort addr:port）
 	ControlPassword   string // 明文控制口令（非 C Tor 标准；优先于空哈希时使用）
 	// HashedControlPassword 为 C Tor 标准 `16:...` 哈希；与 CookieAuthentication 可并存
-	HashedControlPassword string
-	CookieAuthentication  bool   // 启用 control_auth_cookie
-	CookieAuthFile        string // 可选 cookie 路径；空则 DataDirectory/control_auth_cookie
-	DataDirectory         string // Directory for persistent state
+	HashedControlPassword         string
+	CookieAuthentication          bool   // 启用 control_auth_cookie
+	CookieAuthFile                string // 可选 cookie 路径；空则 DataDirectory/control_auth_cookie
+	DataDirectory                 string // Directory for persistent state
+	CacheDirectory                string // 目录缓存（共识/microdesc）；空则等于 DataDirectory
+	PidFile                       string // 启动写 PID、停止删除
+	RunAsDaemon                   bool   // Unix 后台化；Windows 仅警告
+	ClientOnly                    bool   // 禁止作为中继/出口运行
+	DisableNetwork                bool   // 起监听但不拉共识/不建电路
+	HTTPTunnelPort                int    // HTTP CONNECT 隧道端口（0=关闭）
+	HTTPTunnelListenAddr          string // HTTPTunnelPort 绑定地址
+	DNSPort                       int    // UDP DNS 端口（0=关闭）
+	DNSPortListenAddr             string // DNSPort 绑定地址
+	ControlSocket                 string // Control 的 unix socket 路径
+	SocksUnixPath                 string // SocksPort unix:/path
+	ClientUseIPv4                 bool   // 是否使用 IPv4 连接 OR
+	ClientUseIPv6                 bool   // 是否使用 IPv6 连接 OR
+	ClientPreferIPv6ORPort        bool   // 优先 IPv6 ORPort
+	MapAddress                    []MapAddressEntry
+	AutomapHostsOnResolve         bool
+	AutomapHostsSuffixes          []string
+	VirtualAddrNetworkIPv4        string
+	VirtualAddrNetworkIPv6        string
+	ClientOnionAuthDir            string
+	SafeSocks                     bool
+	TestSocks                     bool
+	ClientRejectInternalAddresses bool
+	ReducedCircuitPadding         bool
+	ConnectionPadding             string // 0 / 1 / auto
+	SocksTimeout                  time.Duration
+	FallbackDirs                  []string
+	UseDefaultFallbackDirs        bool
+	AvoidDiskWrites               bool
+	TransPort                     int // 非 0 时拒绝启动（未实现）
+	NATDPort                      int // 非 0 时拒绝启动（未实现）
 
 	// Circuit settings
 	CircuitBuildTimeout time.Duration // Max time to build a circuit (default: 60s)
@@ -154,6 +187,12 @@ type Config struct {
 	BlockProfileRate    int    // Block profiling sample rate in nanoseconds (default: 0 = disabled)
 }
 
+// MapAddressEntry 是 C Tor MapAddress 的一条 from→to 映射。
+type MapAddressEntry struct {
+	From string
+	To   string
+}
+
 // OnionServiceConfig represents configuration for a single onion service
 type OnionServiceConfig struct {
 	ServiceDir  string            // Directory for service keys and state
@@ -226,6 +265,15 @@ func DefaultConfig() *Config {
 		CookieAuthentication:    false,
 		CookieAuthFile:          "",
 		DataDirectory:           dataDir,
+		CacheDirectory:          "",
+		ClientUseIPv4:           true,
+		ClientUseIPv6:           true,
+		ClientPreferIPv6ORPort:  false,
+		UseDefaultFallbackDirs:  true,
+		ConnectionPadding:       "auto",
+		VirtualAddrNetworkIPv4:  "127.192.0.0/10",
+		VirtualAddrNetworkIPv6:  "[FE80::]/10",
+		AutomapHostsSuffixes:    []string{".onion", ".exit"},
 		CircuitBuildTimeout:     60 * time.Second,
 		MaxCircuitDirtiness:     10 * time.Minute,
 		NewCircuitPeriod:        30 * time.Second,
@@ -343,6 +391,12 @@ func (c *Config) Validate() error {
 	}
 	if c.MetricsPort < 0 || c.MetricsPort > 65535 {
 		return fmt.Errorf("invalid MetricsPort: %d", c.MetricsPort)
+	}
+	if c.HTTPTunnelPort < 0 || c.HTTPTunnelPort > 65535 {
+		return fmt.Errorf("invalid HTTPTunnelPort: %d", c.HTTPTunnelPort)
+	}
+	if c.DNSPort < 0 || c.DNSPort > 65535 {
+		return fmt.Errorf("invalid DNSPort: %d", c.DNSPort)
 	}
 
 	// Check for port conflicts between enabled services
@@ -583,9 +637,46 @@ func (c *Config) Clone() *Config {
 	clone.ExitNodes = append([]string{}, c.ExitNodes...)
 	clone.EntryNodes = append([]string{}, c.EntryNodes...)
 	clone.ExitPolicyLines = append([]string{}, c.ExitPolicyLines...)
+	clone.MapAddress = append([]MapAddressEntry{}, c.MapAddress...)
+	clone.AutomapHostsSuffixes = append([]string{}, c.AutomapHostsSuffixes...)
+	clone.FallbackDirs = append([]string{}, c.FallbackDirs...)
 	clone.OnionServices = make([]OnionServiceConfig, len(c.OnionServices))
 	copy(clone.OnionServices, c.OnionServices)
 	return &clone
+}
+
+// DefaultCLIConfig 给 ParseCLI / gotor 二进制使用，对齐 C Tor 默认：
+// SocksPort=9050、ControlPort=9051，不自动抢下一个空闲端口；
+// DataDirectory 为 ~/.tor（Windows: %APPDATA%\tor）；CacheDirectory 默认等于 DataDirectory。
+// 不得替代 DefaultConfig()：库测试依赖自动选端口与 ~/.config/go-tor。
+func DefaultCLIConfig() *Config {
+	cfg := DefaultConfig()
+	cfg.SocksPort = 9050
+	cfg.ControlPort = 9051
+	cfg.DataDirectory = defaultTorDataDir()
+	if cfg.CacheDirectory == "" {
+		cfg.CacheDirectory = cfg.DataDirectory
+	}
+	if cfg.SocksTimeout == 0 {
+		cfg.SocksTimeout = 120 * time.Second
+	}
+	return cfg
+}
+
+func defaultTorDataDir() string {
+	if runtime.GOOS == "windows" {
+		if app := os.Getenv("APPDATA"); app != "" {
+			return filepath.Join(app, "tor")
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, "AppData", "Roaming", "tor")
+		}
+		return filepath.Join(".", "tor")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".tor")
+	}
+	return filepath.Join(".", ".tor")
 }
 
 // GetCheckpointPath returns the resolved checkpoint file path.

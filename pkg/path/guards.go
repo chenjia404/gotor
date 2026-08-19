@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/opd-ai/go-tor/pkg/datadir"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
@@ -70,6 +72,9 @@ type GuardManager struct {
 
 	// persistence is the enhanced persistence layer (optional)
 	persistence *Persistence
+
+	// torStatePath 是 C Tor DataDirectory/state；优先于 guard_state.json。
+	torStatePath string
 }
 
 // NewGuardManager creates a new guard manager.
@@ -104,10 +109,11 @@ func NewGuardManagerWithConfig(config *GuardManagerConfig, log *logger.Logger) (
 	stateFile := filepath.Join(config.DataDir, "guard_state.json")
 
 	gm := &GuardManager{
-		logger:      log.Component("guards"),
-		stateFile:   stateFile,
-		maxGuards:   config.MaxGuards,
-		guardExpiry: config.GuardExpiry,
+		logger:       log.Component("guards"),
+		stateFile:    stateFile,
+		torStatePath: filepath.Join(config.DataDir, datadir.StateFileName),
+		maxGuards:    config.MaxGuards,
+		guardExpiry:  config.GuardExpiry,
 	}
 
 	// Set up enhanced persistence if backups or snapshots are enabled
@@ -134,6 +140,10 @@ func NewGuardManagerWithConfig(config *GuardManagerConfig, log *logger.Logger) (
 
 // load loads guard state from disk
 func (gm *GuardManager) load() error {
+	if loaded, err := gm.loadTorState(); err == nil && loaded {
+		return nil
+	}
+
 	// Use enhanced persistence if available
 	if gm.persistence != nil {
 		ctx := context.Background()
@@ -178,7 +188,13 @@ func (gm *GuardManager) Save() error {
 		gm.mu.RUnlock()
 
 		ctx := context.Background()
-		return gm.persistence.Save(ctx, guards)
+		if err := gm.persistence.Save(ctx, guards); err != nil {
+			return err
+		}
+		if err := gm.saveTorState(); err != nil {
+			gm.logger.Warn("Failed to write C Tor state file", "error", err)
+		}
+		return nil
 	}
 
 	// Legacy save
@@ -203,6 +219,9 @@ func (gm *GuardManager) Save() error {
 	}
 
 	gm.logger.Debug("Saved guard state", "guards", len(gm.state.Guards))
+	if err := gm.saveTorState(); err != nil {
+		gm.logger.Warn("Failed to write C Tor state file", "error", err)
+	}
 	return nil
 }
 
@@ -394,4 +413,66 @@ func (gm *GuardManager) GetBackupPaths() []string {
 		return nil
 	}
 	return gm.persistence.GetBackupPaths()
+}
+
+func (gm *GuardManager) loadTorState() (bool, error) {
+	if gm.torStatePath == "" {
+		return false, nil
+	}
+	sf, err := datadir.LoadState(gm.torStatePath)
+	if err != nil || sf == nil || len(sf.Guards) == 0 {
+		return false, err
+	}
+	now := time.Now()
+	guards := make([]GuardEntry, 0, len(sf.Guards))
+	for _, g := range sf.Guards {
+		if !datadir.ValidRSAFingerprint(g.RSAID) {
+			gm.logger.Warn("忽略 state 中格式无效的 Guard rsa_id", "rsa_id", g.RSAID)
+			continue
+		}
+		confirmed := g.Fields["confirmed_on"] != "" || g.Fields["confirmed_idx"] != ""
+		guards = append(guards, GuardEntry{
+			Fingerprint: g.RSAID,
+			Nickname:    g.Nickname,
+			FirstUsed:   now,
+			LastUsed:    now,
+			Confirmed:   confirmed,
+		})
+	}
+	if len(guards) == 0 {
+		return false, nil
+	}
+	gm.mu.Lock()
+	gm.state.Guards = guards
+	gm.state.LastUpdated = now
+	gm.mu.Unlock()
+	gm.logger.Info("Loaded guards from C Tor state", "guards", len(guards), "path", gm.torStatePath)
+	return true, nil
+}
+
+func (gm *GuardManager) saveTorState() error {
+	if gm.torStatePath == "" {
+		return nil
+	}
+	existing, err := datadir.LoadState(gm.torStatePath)
+	if err != nil {
+		existing = &datadir.StateFile{}
+	}
+	gm.mu.RLock()
+	guards := append([]GuardEntry(nil), gm.state.Guards...)
+	gm.mu.RUnlock()
+	existing.Guards = existing.Guards[:0]
+	for _, g := range guards {
+		fields := map[string]string{"in": "default"}
+		if g.Confirmed {
+			fields["confirmed_on"] = g.LastUsed.UTC().Format("2006-01-02T15:04:05")
+			fields["confirmed_idx"] = "0"
+		}
+		existing.Guards = append(existing.Guards, datadir.GuardRecord{
+			RSAID:    strings.ToUpper(g.Fingerprint),
+			Nickname: g.Nickname,
+			Fields:   fields,
+		})
+	}
+	return datadir.SaveState(gm.torStatePath, existing, "Tor 0.4.9.11 (gotor)")
 }

@@ -105,12 +105,14 @@ func (c *Client) FetchMicrodescriptorsFor(ctx context.Context, relays []*Relay) 
 			needed = append(needed, r)
 		}
 	}
+	needed = c.applyMicrodescsFromDisk(needed)
 	if len(needed) == 0 {
 		return nil
 	}
 	if err := c.FetchMicrodescriptors(ctx, needed); err != nil {
 		return err
 	}
+	c.persistFetchedMicrodescs(needed)
 	missing := 0
 	for _, r := range needed {
 		if !r.HasNtorKeys() {
@@ -247,6 +249,7 @@ func (c *Client) parseMicrodescriptors(data []byte, digestMap map[string][]*Rela
 			continue
 		}
 		for _, relay := range relays {
+			relay.microdescRaw = append([]byte(nil), doc...)
 			relay.NtorOnionKey = fields.ntorKey
 			if len(fields.identityKey) == 32 {
 				relay.IdentityKey = fields.identityKey
