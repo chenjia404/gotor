@@ -191,6 +191,17 @@ func (c *Circuit) AddHop(hop *Hop) error {
 	return nil
 }
 
+// AddHSHop 在已 OPEN 的会合电路上追加 hs-ntor 末跳加密层。
+func (c *Circuit) AddHSHop(hop *Hop) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.State != StateOpen && c.State != StateBuilding {
+		return fmt.Errorf("cannot add HS hop in state %s", c.State)
+	}
+	c.Hops = append(c.Hops, hop)
+	return nil
+}
+
 // SetState sets the circuit state
 func (c *Circuit) SetState(state State) {
 	c.mu.Lock()
