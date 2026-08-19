@@ -21,13 +21,15 @@ type ServerORConnection struct {
 	remoteAddr        string
 	negotiatedVersion int
 	authenticated     bool
+	circIDLen         int // VERSIONS 后按协商版本：v≥4 为 4，否则为 2
 }
 
 // LinkProtocolHandler handles the server-side link protocol handshake
 // Following tor-spec.txt §1-2 (server-side)
 type LinkProtocolHandler struct {
-	keys   *RelayKeys
-	logger *logger.Logger
+	keys      *RelayKeys
+	logger    *logger.Logger
+	circIDLen int // 协商前为 2（CIRCID_LEN(v_in=0)=2）；VERSIONS 后再切 4
 }
 
 // NewLinkProtocolHandler creates a new link protocol handler
@@ -36,8 +38,9 @@ func NewLinkProtocolHandler(keys *RelayKeys, log *logger.Logger) *LinkProtocolHa
 		log = logger.NewDefault()
 	}
 	return &LinkProtocolHandler{
-		keys:   keys,
-		logger: log,
+		keys:      keys,
+		logger:    log,
+		circIDLen: 2, // VERSIONS 按 v=0，必须用 2 字节 CircID
 	}
 }
 
@@ -53,7 +56,12 @@ func (h *LinkProtocolHandler) HandleConnection(ctx context.Context, conn net.Con
 	orConn := &ServerORConnection{
 		conn:       conn,
 		remoteAddr: conn.RemoteAddr().String(),
+		circIDLen:  2,
 	}
+
+	// 协商前一律 2 字节 CircID。权威发 00 00|07|…（VERSIONS）；
+	// 若按 4 字节解析会把长度低位 0x06 读成 CREATED_FAST，握手失败、无法进共识。
+	h.setCircIDLen(2)
 
 	// Step 1: Receive VERSIONS from client
 	clientVersions, err := h.receiveVersions(ctx, conn)
@@ -69,10 +77,18 @@ func (h *LinkProtocolHandler) HandleConnection(ctx context.Context, conn net.Con
 	orConn.negotiatedVersion = version
 	h.logger.Info("Negotiated protocol version", "version", version, "client_versions", clientVersions)
 
-	// Send VERSIONS response
+	// Send VERSIONS response（仍按 v=0 / 2 字节 CircID）
 	if err := h.sendVersions(conn); err != nil {
 		return nil, fmt.Errorf("failed to send VERSIONS: %w", err)
 	}
+
+	// VERSIONS 之后按协商版本切换 CircID 宽度（与出站 protocol.Handshake 对称）
+	if version >= 4 {
+		h.setCircIDLen(4)
+	} else {
+		h.setCircIDLen(2)
+	}
+	orConn.circIDLen = h.circIDWidth()
 
 	// Step 3: Send CERTS cell
 	if err := h.sendCerts(conn); err != nil {
@@ -323,73 +339,53 @@ func (h *LinkProtocolHandler) receiveNetinfo(ctx context.Context, conn net.Conn)
 	return nil
 }
 
-// readCellWithContext reads a cell from the connection with context cancellation
-func (h *LinkProtocolHandler) readCellWithContext(ctx context.Context, conn net.Conn) (*cell.Cell, error) {
-	// Read header (CircID + Command)
-	header := make([]byte, 5) // 4 bytes CircID + 1 byte Command
+func (h *LinkProtocolHandler) circIDWidth() int {
+	if h.circIDLen == 4 {
+		return 4
+	}
+	return 2
+}
 
-	// Create a channel for the read result
+func (h *LinkProtocolHandler) setCircIDLen(n int) {
+	if n == 2 || n == 4 {
+		h.circIDLen = n
+	}
+}
+
+func (s *ServerORConnection) circIDWidth() int {
+	if s.circIDLen == 2 {
+		return 2
+	}
+	return 4
+}
+
+// readCellWithContext 按当前 CircID 宽度读一个 cell，并支持 context 取消。
+// 协商前必须传 2：权威 VERSIONS 为 00 00 07 …，按 4 字节会读成 CREATED_FAST。
+func (h *LinkProtocolHandler) readCellWithContext(ctx context.Context, conn net.Conn) (*cell.Cell, error) {
 	type readResult struct {
-		n   int
+		c   *cell.Cell
 		err error
 	}
 	resultCh := make(chan readResult, 1)
+	circIDLen := h.circIDWidth()
 
 	go func() {
-		n, err := conn.Read(header)
-		resultCh <- readResult{n, err}
+		c, err := cell.DecodeCellLink(conn, circIDLen)
+		resultCh <- readResult{c, err}
 	}()
 
 	select {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("read cancelled: %w", ctx.Err())
 	case result := <-resultCh:
-		if result.err != nil {
-			return nil, result.err
-		}
-		if result.n != 5 {
-			return nil, fmt.Errorf("incomplete header read: %d bytes", result.n)
-		}
+		return result.c, result.err
 	}
-
-	// Parse header
-	circID := binary.BigEndian.Uint32(header[0:4])
-	command := cell.Command(header[4])
-
-	// Determine payload size
-	var payloadLen int
-	if command.IsVariableLength() {
-		// Read 2-byte length field
-		lenBytes := make([]byte, 2)
-		if _, err := conn.Read(lenBytes); err != nil {
-			return nil, fmt.Errorf("failed to read payload length: %w", err)
-		}
-		payloadLen = int(binary.BigEndian.Uint16(lenBytes))
-	} else {
-		// Fixed-size cell
-		payloadLen = cell.PayloadLen
-	}
-
-	// Read payload
-	payload := make([]byte, payloadLen)
-	if payloadLen > 0 {
-		if _, err := conn.Read(payload); err != nil {
-			return nil, fmt.Errorf("failed to read payload: %w", err)
-		}
-	}
-
-	return &cell.Cell{
-		CircID:  circID,
-		Command: command,
-		Payload: payload,
-	}, nil
 }
 
-// writeCell writes a cell to the connection
+// writeCell 按当前 CircID 宽度写出。VERSIONS 必须 EncodeLink(..., 2)。
 func (h *LinkProtocolHandler) writeCell(conn net.Conn, c *cell.Cell) error {
-	// Use a buffer to encode the cell
 	var buf bytes.Buffer
-	if err := c.Encode(&buf); err != nil {
+	if err := c.EncodeLink(&buf, h.circIDWidth()); err != nil {
 		return fmt.Errorf("failed to encode cell: %w", err)
 	}
 
@@ -397,66 +393,24 @@ func (h *LinkProtocolHandler) writeCell(conn net.Conn, c *cell.Cell) error {
 	return err
 }
 
-// ReceiveCell receives a cell from the server OR connection with context
+// ReceiveCell 按握手后的 CircID 宽度读 cell。
 func (s *ServerORConnection) ReceiveCell(ctx context.Context) (*cell.Cell, error) {
-	// Read header (CircID + Command)
-	header := make([]byte, 5) // 4 bytes CircID + 1 byte Command
-
-	// Create a channel for the read result
 	type readResult struct {
-		n   int
+		c   *cell.Cell
 		err error
 	}
 	resultCh := make(chan readResult, 1)
+	circIDLen := s.circIDWidth()
 
 	go func() {
-		n, err := s.conn.Read(header)
-		resultCh <- readResult{n, err}
+		c, err := cell.DecodeCellLink(s.conn, circIDLen)
+		resultCh <- readResult{c, err}
 	}()
 
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case result := <-resultCh:
-		if result.err != nil {
-			return nil, result.err
-		}
-		if result.n != 5 {
-			return nil, fmt.Errorf("incomplete header read: %d bytes", result.n)
-		}
+		return result.c, result.err
 	}
-
-	// Parse header
-	circID := binary.BigEndian.Uint32(header[0:4])
-	command := cell.Command(header[4])
-
-	// Determine payload size
-	var payloadLen int
-	if command.IsVariableLength() {
-		// Read 2-byte length field
-		lenBytes := make([]byte, 2)
-		if _, err := s.conn.Read(lenBytes); err != nil {
-			return nil, fmt.Errorf("failed to read payload length: %w", err)
-		}
-		payloadLen = int(binary.BigEndian.Uint16(lenBytes))
-	} else {
-		// Fixed-size cell
-		payloadLen = cell.PayloadLen
-	}
-
-	// Read payload
-	var payload []byte
-	if payloadLen > 0 {
-		payload = make([]byte, payloadLen)
-		if _, err := s.conn.Read(payload); err != nil {
-			return nil, fmt.Errorf("failed to read payload: %w", err)
-		}
-	}
-
-	// Create cell with payload
-	return &cell.Cell{
-		CircID:  circID,
-		Command: command,
-		Payload: payload,
-	}, nil
 }
