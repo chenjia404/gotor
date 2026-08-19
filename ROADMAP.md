@@ -1,8 +1,9 @@
 # Go-Tor Roadmap
 
-> **⚠️ 过期警告（2026-08-19）**：下文中的「~98% 完成」「Onion/Bridge 已完成」等表述**不可信**。  
+> **⚠️ 过期警告（2026-08-19）**：下文中的「~98% 完成」「Onion/Bridge 托管已完成」等表述**不可信**。  
 > 现行进度与互操作缺口以 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) 为准。  
-> Onion Service v3 仍缺 hs-ntor；Bridge/Relay 服务端路径未按最新协议验收。
+> **客户端**主链路（含 v3 `.onion` HTTP、Padding=2、官方向量）已在 `IMPLEMENTATION_STATUS` 标 WORKING；  
+> Bridge/Relay **服务端**与洋葱**托管**仍非本仓库验收范围。
 
 ## Current Status (January 2026)
 

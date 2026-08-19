@@ -1,0 +1,10 @@
+onion-key
+-----BEGIN RSA PUBLIC KEY-----
+MIIB
+-----END RSA PUBLIC KEY-----
+ntor-onion-key QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=
+id ed25519 JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ=
+family $DEADBEEF
+p accept 80,443
+p6 accept 80,443
+a [2001:db8::1]:9001

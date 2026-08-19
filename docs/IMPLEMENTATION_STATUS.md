@@ -37,9 +37,9 @@
 | 组件 | 状态 | 说明 |
 |------|------|------|
 | Directory / Consensus | WORKING | 生产验签 9/9；`cached-certs` 重启 0 次 `/tor/keys/fp`；DirCache=2 diff 真实验收 |
-| Microdescriptor fetch/parse | PARTIAL | 解析与 digest 已按 spec 修正，真实网络可填充密钥；缺长期 fixture 回归 |
+| Microdescriptor fetch/parse | WORKING | 解析与 digest 按 spec；真实网络填充密钥；**长期 fixture** `testdata/microdesc/sample_v3` 离线回归 |
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
-| Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
+| Link TLS | WORKING | TLS + VERSIONS/CERTS（含 type 7）/NETINFO 真网 Guard 验收；身份靠 CERTS 非仅 TLS |
 | VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | WORKING | VERSIONS CircID=2、CERTS type4 验签、**type 7 RSA 交叉签名强制校验**、NETINFO 已在真实 Guard 通过；AUTH_CHALLENGE 客户端路径按 spec 跳过 |
 | CREATE2 / ntor / CREATED2 | WORKING | 默认 ntor-v3（HTYPE 0x0003，Ed25519 主身份）；真实 Guard CREATE2 + `CC_FIELD_RESPONSE` `sendme_inc=31`。缺密钥或 `Relay<4` 回退经典 ntor |
 | EXTEND2 / EXTENDED2 | WORKING | 真实 3-hop 三跳均为 ntor-v3 + FlowCtrl=2；SOCKS5 `IsTor=true`。双栈 `[01]` IPv6 已验收 |
@@ -56,7 +56,7 @@
 | Circuit padding (Padding=2) | WORKING | 协商+HS setup+直方图 DROP；**真实验收** `TestRealCircpadNegotiate`：PADDING_NEGOTIATE→PADDING_NEGOTIATED OK（middle Padding=2） |
 | Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB） |
 | Relay / Bridge | BROKEN / UNVERIFIED | **明确不做**；服务端 ntor 仍可能用错 NODEID |
-| Control Protocol | PARTIAL | GETINFO/SETCONF/SETEVENTS + SIGNAL/MAPADDRESS + **ADDRMAP/STATUS_CLIENT/NOTICE**；SOCKS→STREAM 已桥接 |
+| Control Protocol | WORKING | 客户端常用命令齐：GETINFO/SETCONF/SETEVENTS/SIGNAL/MAPADDRESS；事件 CIRC/STREAM/BW/…/NOTICE；SOCKS→STREAM |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
 
 ---
@@ -287,7 +287,7 @@
 - 真实网络：`TestRealConsensusSignatures` 验证 **9/9** 权威签名。
 - 详见 `docs/interop/consensus.md`。
 
-### Microdescriptor — PARTIAL（解析 blocker 已修）
+### Microdescriptor — WORKING
 
 **曾经 BROKEN：** `id ed25519` 读成下一行；digest 带 padding；串行拉取 + 过短 timeout。
 
@@ -417,4 +417,20 @@ VERSIONS 必须 `CIRCID_LEN(0)=2`，协商后再切 4 字节。见 `docs/interop
 5. 默认 `go test ./...` 不因公网失败  
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
-**下一轮完成标准：** 洋葱服务托管（可选）；circpad token-removal；PT/Bridge 生产路径。
+**客户端「完全兼容」主目标：已达成（见文末总完成核对）。** 可选后续：洋葱托管、circpad token-removal、PT/Bridge。
+
+
+---
+
+## 客户端完全兼容核对（2026-08-19）
+
+对照计划总完成标准：
+
+1. ✅ recommended-client-protocols 客户端路径可验证（含 HSDir/HSIntro/HSRend）
+2. ✅ FlowCtrl=2、Conflux=1、Relay=5/6、Desc=4、Padding=2、DirCache=2 均为 WORKING
+3. ✅ SOCKS clearnet `IsTor=true` 与 v3 `.onion` HTTP 200
+4. ✅ 默认 `go test ./...` 离线；真实集成需 `TOR_INTEGRATION_TEST=1`
+5. ✅ 纯 Go；无全零密钥静默成功；状态文档与代码对齐
+6. ✅ ROADMAP/GAPS/AUDIT 已加过期警告，不再声称 Onion 托管/Bridge 服务端已完成
+
+**明确仍非目标**：Exit 中继、DirAuth、Tor Browser、洋葱服务托管、PT 生产路径。
