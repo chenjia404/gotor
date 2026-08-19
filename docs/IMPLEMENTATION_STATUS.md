@@ -57,7 +57,7 @@
 | Circuit padding (Padding=2) | WORKING | 协商+HS setup+直方图 DROP；**真实验收** `TestRealCircpadNegotiate`：PADDING_NEGOTIATE→PADDING_NEGOTIATED OK（middle Padding=2） |
 | Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB） |
 | Onion Service v3（托管） | PARTIAL | ESTABLISH_INTRO；ntor rend_circ_nonce；BEGIN_DIR 上传；**type-8 致盲证书 + 双层加密密封**；torrc HiddenService*。剩余：真网发布/INTRODUCE2 回路验收 |
-| Relay / Bridge | PARTIAL | ORPort；入站 VERSIONS 已按 CIRCID_LEN(v_in=0)=2 解析；DirCache 可提供 consensus-microdesc / micro/all / `/tor/keys/fp`（未宣告 DirCache=2，仍缺 consdiff）；**ExitRelay 1 出口流**；CREATE2 ntor/ntor-v3；EXTEND2 剥层转发；描述符交叉证书与 Ed25519 摘要签名。真网 Running 待镜像更新后观察。未做：进共识、网桥、真网多跳中继/出口收录验收 |
+| Relay / Bridge | PARTIAL | ORPort；入站握手 VERSIONS(2)→CERTS 1/2/4/5/7→AUTH_CHALLENGE→NETINFO（协商后 CircID=4）；DirCache 可提供 consensus-microdesc / micro/all / `/tor/keys/fp`（未宣告 DirCache=2，仍缺 consdiff）；**ExitRelay 1 出口流**；CREATE2 ntor/ntor-v3；EXTEND2 剥层转发；描述符交叉证书与 Ed25519 摘要签名。未做：进共识 Running、AUTHENTICATE 校验、网桥、真网多跳中继/出口收录验收 |
 | Control Protocol | WORKING | GETINFO/SETCONF/SETEVENTS/SIGNAL/MAPADDRESS；**AUTHCHALLENGE SAFECOOKIE**；COOKIE/HASHEDPASSWORD；事件 CIRC/STREAM/BW/…/NOTICE |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
 
@@ -324,11 +324,12 @@
 VERSIONS 必须 `CIRCID_LEN(v_in=0)=2`，协商后再切 4 字节。见 `docs/interop/link-versions.md`。
 
 - **出站**：`pkg/connection` / `pkg/protocol` 发 VERSIONS 用 2 字节 CircID。
-- **入站**：`pkg/relay/or_handler.go` 协商前按 2 字节收发 VERSIONS；若按 4 字节读会把权威帧误读成 CREATED_FAST，link handshake 失败。真网 Running 待镜像更新后观察。
+- **入站**：`pkg/relay/or_handler.go` 协商前按 2 字节收发 VERSIONS；若按 4 字节读会把权威帧误读成 CREATED_FAST。VERSIONS 之后发 CERTS/AUTH_CHALLENGE/NETINFO 并用 4 字节 CircID。
 
-### Link protocol / CERTS — WORKING（含 type 7）
+### Link protocol / CERTS — WORKING（含 type 7）；入站应答已对齐现行集合
 
-- 顺序：VERSIONS → CERTS →（跳过 AUTH_CHALLENGE/PADDING）→ NETINFO。
+- 出站顺序：VERSIONS → CERTS →（跳过 AUTH_CHALLENGE/PADDING）→ NETINFO。
+- 入站应答：VERSIONS → CERTS（type 1/2/4/5/7，type 4 含 signed-with-ed25519-key，type 5 绑 SHA-256(TLS 证)）→ AUTH_CHALLENGE（方法 1+3）→ NETINFO；读发起方时跳过 CERTS/AUTHENTICATE/PADDING。不校验 AUTHENTICATE（清单第 5 项）。
 - **不能**把 TLS 成功当成 identity 验证成功。
 - 主身份是 Ed25519。type 7 用遗留 RSA-1024（type 2）做 PKCS#1 交叉签名，绑到共识指纹。
 - 哈希：`SHA256("Tor TLS RSA/Ed25519 cross-certificate" || KEY || EXP)`（**36 字节，不含 SIGLEN**）。cert-spec 字面含 SIGLEN，以 C Tor / 真实 CERTS 为准。

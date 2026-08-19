@@ -5,10 +5,8 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1" // #nosec G505 - SHA-1 required by Tor spec for RSA fingerprints
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/binary"
 	"fmt"
 	"math/big"
 	"testing"
@@ -107,28 +105,10 @@ func generateTestLinkCertChain(t *testing.T) *testLinkCertChain {
 
 func signRSAEd25519CrossCert(t *testing.T, rsaPriv *rsa.PrivateKey, edPub ed25519.PublicKey, expHours uint32) []byte {
 	t.Helper()
-	fields := make([]byte, 0, 36)
-	fields = append(fields, edPub...)
-	exp := make([]byte, 4)
-	binary.BigEndian.PutUint32(exp, expHours)
-	fields = append(fields, exp...)
-	if rsaPriv.Size() > 255 {
-		t.Fatalf("RSA signature length %d exceeds SIGLEN (1 byte)", rsaPriv.Size())
-	}
-
-	// 与 C Tor 一致：只签 PREFIX || KEY || EXP，SIGLEN 写在签名之外
-	msg := append([]byte(rsaEd25519CrossCertPrefix), fields...)
-	digest := sha256.Sum256(msg)
-	sig, err := rsa.SignPKCS1v15(rand.Reader, rsaPriv, 0, digest[:])
+	expires := time.Unix(int64(expHours)*3600, 0).UTC()
+	out, err := EncodeRSAEd25519CrossCert(edPub, rsaPriv, expires)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sig) != rsaPriv.Size() {
-		t.Fatalf("RSA sig len %d != key size %d", len(sig), rsaPriv.Size())
-	}
-	out := make([]byte, 0, len(fields)+1+len(sig))
-	out = append(out, fields...)
-	out = append(out, byte(len(sig)))
-	out = append(out, sig...)
 	return out
 }

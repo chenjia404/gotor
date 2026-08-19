@@ -109,8 +109,8 @@ proto Link=3-5 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ### 1. 中继进共识（Running / self-test）
 
-- [ ] **状态**：PARTIAL（描述符可上传；入站 CircID 已修，真网 Running 待镜像更新后观察；实验中继有 Valid/V2Dir、无 Running）
-- **现有代码**：`pkg/relay/or_handler.go`、`pkg/relay/descriptor.go`、`pkg/relay/publisher.go`、`pkg/relay/server.go`（`startPublisher`）、`pkg/relay/descriptor_verify.go`
+- [ ] **状态**：PARTIAL（描述符可上传；入站 VERSIONS 后已发 CERTS type 1/2/4/5/7 + AUTH_CHALLENGE + NETINFO，CircID 协商后切 4 字节；权威作为发起方时跳过其 CERTS/AUTHENTICATE。实验中继有 Valid/V2Dir、无 Running，self-test 未做）
+- **现有代码**：`pkg/relay/or_handler.go`、`pkg/relay/or_certs.go`、`pkg/relay/descriptor.go`、`pkg/relay/publisher.go`、`pkg/relay/server.go`（`startPublisher`）、`pkg/relay/descriptor_verify.go`
 - **要做**：对照 C Tor `router.c` / `routerkeys.c` 的 reachability self-test（经电路连回自己的 ORPort）；修复 `proto` 只宣告已实现能力；确认权威投票出现 `Running` 且进入共识 `r` 行。
 - **禁止**：把权威 200 或 Valid 写成「已进共识」；伪造 Running；全零 identity / ntor key。
 
@@ -138,8 +138,8 @@ proto Link=3-5 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 ### 5. LinkAuth=3 服务端
 
 - [ ] **状态**：官方有我们没有
-- **现有代码**：客户端跳过 AUTH_CHALLENGE（符合普通客户端）。服务端 `pkg/relay/or_handler.go` 写明「AUTH_CHALLENGE optional, not implemented yet」。CERTS 发送在 `sendCerts`。
-- **要做**：AUTH_CHALLENGE + AUTHENTICATE（Ed25519 LinkAuth=3）；CERTS 含 type 4/5/7 等现行集合。中继互连与权威探测需要这条。
+- **现有代码**：客户端跳过 AUTH_CHALLENGE（符合普通客户端）。服务端已发 AUTH_CHALLENGE（方法 1+3）与 CERTS type 1/2/4/5/7；**尚未校验**发起方 AUTHENTICATE。
+- **要做**：验 AUTHENTICATE（Ed25519 LinkAuth=3：SLOG/CLOG/TLSSECRETS/SIG）。中继互连需要这条才能宣告 `LinkAuth=3`。
 - **禁止**：宣告 `LinkAuth=3` 却不验对端 AUTHENTICATE；把 TLS 客户端证书当成 LinkAuth。
 
 ### 6. relay 侧 CGO
