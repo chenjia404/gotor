@@ -113,6 +113,10 @@ func withTestAuthorities(t *testing.T, auths []*testAuthority) {
 }
 
 func buildSignedConsensus(t *testing.T, auths []*testAuthority) string {
+	return buildSignedConsensusExtra(t, auths, "")
+}
+
+func buildSignedConsensusExtra(t *testing.T, auths []*testAuthority, extra string) string {
 	t.Helper()
 	now := time.Now().UTC()
 	core := fmt.Sprintf(`network-status-version 3 microdesc
@@ -131,6 +135,12 @@ w Bandwidth=1000
 		now.Add(3*time.Hour).Format("2006-01-02 15:04:05"),
 		now.Add(-2*time.Hour).Format("2006-01-02 15:04:05"),
 	)
+	if extra != "" {
+		if !strings.HasSuffix(extra, "\n") {
+			extra += "\n"
+		}
+		core += extra
+	}
 	signedBody := core + "directory-signature "
 	var out strings.Builder
 	out.WriteString(core)

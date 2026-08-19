@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/exit-policy-p6-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
+**分支**：`cursor/consensus-diff-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + **现行** Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -36,7 +36,7 @@
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| Directory / Consensus | PARTIAL | 生产验签已在真实网络通过（9/9 权威）。证书未落盘；缺官方长期 fixture；无 consensus diff（DirCache=2） |
+| Directory / Consensus | PARTIAL | 生产验签已在真实网络通过（9/9 权威）。证书未落盘；缺官方长期 fixture；consensus diff（DirCache=2）已实现，待真实验收 |
 | Microdescriptor fetch/parse | PARTIAL | 解析与 digest 已按 spec 修正，真实网络可填充密钥；缺长期 fixture 回归 |
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
@@ -176,9 +176,17 @@
 
 #### 9. Consensus diff（DirCache=2）
 
-- **状态**：MISSING。每次拉整份 `consensus-microdesc`。
-- **Spec**：dir-spec consensus diffs
-- **验收**：有缓存时拉 diff 并能验签；失败回退整份文档。默认测试不访问公网。
+- **状态**：PARTIAL（limited ed apply + FetchConsensus 接线；未跑真实网络）。
+- **已做**：
+  - `network-status-diff-version 1` + `hash FromDigest ToDigest`（SHA3-256）
+  - FromDigest = 旧文档 signed part；ToDigest = 应用后整份新共识
+  - 只接受 `d`/`c`/`a`；有签名时第一条必须是首个 `directory-signature` 行的 `n,$d`
+  - 有缓存时发 `X-Or-Diff-From-Consensus`；apply / 验签失败则同一权威去掉 header 重拉整份
+  - 未验签结果不入缓存；单测 + httptest（不访问公网）
+- **Spec**：https://spec.torproject.org/dir-spec/directory-cache-operation.html ；limited-ed-diff-format
+- **现有代码**：`pkg/directory/consdiff.go`；`pkg/directory/directory.go`；文档 `docs/interop/consensus-diff.md`
+- **验收**：有缓存时拉 diff 并能验签；失败回退整份。真实 DirCache=2 通过后标 WORKING。
+- **禁止**：为过测试放宽 ToDigest / 验签；C 库 / CGO。
 
 #### 10. 权威证书落盘 + 官方长期 fixture
 
@@ -229,6 +237,7 @@
 - `valid-after` / `fresh-until` / `valid-until`、flags、bandwidth、`m` digest 有解析。
 - Authority 列表已更新到当前公开 IP。
 - 生产 `FetchConsensus` 在 metadata 之外强制 `VerifyConsensusSignatures`：`/tor/keys/fp/<id>`、`dir-signing-key`、`dir-key-certification`、`dir-key-crosscert`、majority（5/9）。
+- DirCache=2：有缓存时请求 limited ed consensus diff；apply / 验签失败回退整份。见 `docs/interop/consensus-diff.md`。
 - `r` / `valid-*` / `params` 只解析 signed body；未签名前缀/后缀不得注入 relay 或改写有效期。
 - 真实网络：`TestRealConsensusSignatures` 验证 **9/9** 权威签名，共识含约 10143 个 relay。
 - 详见 `docs/interop/consensus.md`。
