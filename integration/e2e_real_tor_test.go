@@ -254,31 +254,28 @@ func TestRealFlowControlSoak(t *testing.T) {
 	}
 	httpClient.Timeout = 2 * time.Minute
 
-	urls := []string{
-		"https://spec.torproject.org/tor-spec.html",
-		"https://spec.torproject.org/dir-spec.html",
-		"https://www.torproject.org/",
-		"https://spec.torproject.org/padding-spec.html",
-	}
+	// spec.torproject.org 经部分 exit 只回极短页面；重复拉 torproject.org 直到超过 100 DATA cell。
 	const wantBytes = 256 * 1024
 	var total int64
-	for _, u := range urls {
-		if total >= wantBytes {
-			break
-		}
+	for i := 0; total < wantBytes && i < 40; i++ {
+		u := fmt.Sprintf("https://www.torproject.org/?soak=%d", i)
 		resp, err := httpClient.Get(u)
 		if err != nil {
 			t.Logf("GET %s: %v", u, err)
 			continue
 		}
 		n, err := io.Copy(io.Discard, resp.Body)
+		status := resp.StatusCode
 		resp.Body.Close()
 		if err != nil {
-			t.Logf("read %s: %v", u, err)
+			t.Fatalf("read after %d bytes (likely SENDME/DESTROY): %v", total, err)
+		}
+		if status != 200 {
+			t.Logf("HTTP %d from %s (%d bytes)", status, u, n)
 			continue
 		}
 		total += n
-		t.Logf("downloaded %d bytes from %s (total=%d)", n, u, total)
+		t.Logf("downloaded %d bytes status=%d total=%d", n, status, total)
 	}
 	if total < wantBytes {
 		t.Fatalf("only downloaded %d bytes, want >= %d (need enough DATA to exercise SENDME)", total, wantBytes)
