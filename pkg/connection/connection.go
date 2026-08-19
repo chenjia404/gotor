@@ -458,6 +458,17 @@ func (c *Connection) Address() string {
 	return c.address
 }
 
+// NetConn 返回底层网络连接（用于中继 EXTEND 转发注册）。
+func (c *Connection) NetConn() net.Conn {
+	if c == nil {
+		return nil
+	}
+	if c.tlsConn != nil {
+		return c.tlsConn
+	}
+	return c.conn
+}
+
 func (c *Connection) circIDWidth() int {
 	c.stateMu.RLock()
 	defer c.stateMu.RUnlock()

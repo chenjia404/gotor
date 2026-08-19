@@ -83,11 +83,64 @@ func (h *ForwardingHandler) ForwardRelayCell(ctx context.Context, fromClient boo
 		return h.handleLocalRelayCell(ctx, circuitID, c, clientConn)
 	}
 
-	// Forward to next hop
+	// 已扩展：先剥本跳洋葱层，再转发剩余密文（或本跳处理）
 	if fromClient {
-		return h.forwardToNextHop(ext, c)
+		return h.forwardExtendedFromClient(ctx, ext, circuitID, c, clientConn)
 	}
 	return h.forwardToClient(ext, c)
+}
+
+// forwardExtendedFromClient 解密本跳后转发或本跳处理。
+func (h *ForwardingHandler) forwardExtendedFromClient(ctx context.Context, ext *ExtendedCircuit, circuitID uint32, c *cell.Cell, clientConn net.Conn) error {
+	circ, ok := h.circuits.GetCircuit(circuitID)
+	if !ok || circ == nil || circ.crypto == nil {
+		return h.forwardToNextHop(ext, c)
+	}
+	peeled, forUs, digest, err := circ.crypto.peelInbound(c.Payload)
+	if err != nil {
+		return err
+	}
+	if forUs {
+		if h.circuits.exits != nil {
+			h.circuits.exits.NoteFwdDigest(circuitID, digest)
+		}
+		relayCell, err := cell.DecodeRelayCell(peeled)
+		if err != nil {
+			return fmt.Errorf("invalid local relay cell: %w", err)
+		}
+		switch relayCell.Command {
+		case cell.RelaySendme:
+			if h.circuits.exits != nil {
+				h.circuits.exits.HandleSendme(circuitID, relayCell.StreamID)
+			}
+			return nil
+		case cell.RelayTruncate:
+			return h.handleTruncate(circuitID)
+		case cell.RelayExtend2:
+			return fmt.Errorf("circuit already extended")
+		default:
+			h.logger.Debug("local command on extended circuit", "cmd", cell.RelayCmdString(relayCell.Command))
+			return nil
+		}
+	}
+	fwd := &cell.Cell{
+		CircID:  ext.NextHopCircuitID,
+		Command: c.Command,
+		Payload: peeled,
+	}
+	if c.Command == cell.CmdRelayEarly {
+		ext.mu.Lock()
+		if ext.RelayEarlyCount >= 8 {
+			fwd.Command = cell.CmdRelay
+		} else {
+			ext.RelayEarlyCount++
+		}
+		ext.mu.Unlock()
+	}
+	if err := fwd.Encode(ext.NextHopConn); err != nil {
+		return fmt.Errorf("forward peeled cell: %w", err)
+	}
+	return nil
 }
 
 // forwardToNextHop forwards a cell from client to next hop
@@ -205,8 +258,10 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 		return nil
 
 	case cell.RelayExtend2:
-		h.logger.Debug("RELAY_EXTEND2 on local circuit - extension path separate")
-		return nil
+		if h.circuits.extender == nil {
+			return fmt.Errorf("extension handler unavailable")
+		}
+		return h.circuits.extender.HandleExtend2(ctx, circuitID, relayCell, clientConn)
 
 	case cell.RelayTruncate:
 		return h.handleTruncate(circuitID)

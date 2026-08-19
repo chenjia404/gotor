@@ -268,7 +268,7 @@ func TestHandleExtend2_ParseErrors(t *testing.T) {
 				Data:     tt.data,
 			}
 
-			err := handler.HandleExtend2(ctx, circuitID, relayCell)
+			err := handler.HandleExtend2(ctx, circuitID, relayCell, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("HandleExtend2() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -310,7 +310,7 @@ func TestHandleExtend2_UnsupportedHandshake(t *testing.T) {
 		Data:     data,
 	}
 
-	err = handler.HandleExtend2(ctx, circuitID, relayCell)
+	err = handler.HandleExtend2(ctx, circuitID, relayCell, nil)
 	if err == nil {
 		t.Error("HandleExtend2() expected error for unsupported handshake type")
 	}

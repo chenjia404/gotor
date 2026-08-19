@@ -1055,11 +1055,11 @@ func VerifyDescriptorSignature(descriptor *Descriptor, address *Address) error {
 	// Step 2: 证书由致盲身份公钥（type 8）或主身份（type 4）签名
 	var signer ed25519.PublicKey
 	if cert.CertType == 8 {
-		blinded := descriptor.BlindedPubkey
-		if len(blinded) != 32 {
-			blinded = ComputeBlindedPubkey(ed25519.PublicKey(address.Pubkey), GetTimePeriod(time.Now()))
+		expectedBlinded := ComputeBlindedPubkey(ed25519.PublicKey(address.Pubkey), GetTimePeriod(time.Now()))
+		if len(descriptor.BlindedPubkey) == 32 && !bytes.Equal(descriptor.BlindedPubkey, expectedBlinded) {
+			return fmt.Errorf("descriptor BlindedPubkey does not match address")
 		}
-		signer = ed25519.PublicKey(blinded)
+		signer = ed25519.PublicKey(expectedBlinded)
 	} else {
 		signer = ed25519.PublicKey(address.Pubkey)
 	}

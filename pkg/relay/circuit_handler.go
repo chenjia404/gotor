@@ -35,6 +35,7 @@ type CircuitHandler struct {
 	logger    *logger.Logger
 	ctx       context.Context
 	forwarder *ForwardingHandler
+	extender  *ExtensionHandler
 	policy    *ExitPolicy
 	exits     *ExitStreamManager
 }
@@ -61,6 +62,8 @@ func NewCircuitHandlerWithPolicy(keys *RelayKeys, policy *ExitPolicy, log *logge
 		exits:    NewExitStreamManager(policy, log),
 	}
 	h.forwarder = NewForwardingHandler(h, log)
+	h.extender = NewExtensionHandler(keys, h, log)
+	h.extender.SetForwarder(h.forwarder)
 	return h
 }
 
@@ -323,6 +326,9 @@ func (h *CircuitHandler) CloseAll() {
 	}
 	if h.forwarder != nil {
 		h.forwarder.CloseAll()
+	}
+	if h.extender != nil {
+		_ = h.extender.Close()
 	}
 	if h.exits != nil {
 		h.exits.CloseAll()
