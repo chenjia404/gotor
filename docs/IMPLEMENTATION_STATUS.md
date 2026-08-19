@@ -55,9 +55,9 @@
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
 | Circuit padding (Padding=2) | WORKING | 协商+HS setup+直方图 DROP；**真实验收** `TestRealCircpadNegotiate`：PADDING_NEGOTIATE→PADDING_NEGOTIATED OK（middle Padding=2） |
 | Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB） |
-| Onion Service v3（托管） | PARTIAL | ESTABLISH_INTRO 按 rend-spec（AUTH_KEY_TYPE=1B、HANDSHAKE_AUTH、SIG）；ntor rend_circ_nonce；BEGIN_DIR 上传；torrc HiddenService* 接线。剩余：描述符 type8 致盲签/双层封装生产验收、INTRODUCE2 监听回路真网 |
-| Relay / Bridge | PARTIAL | 非出口+**出口**：ORPort；ExitRelay/ExitPolicy/ReduceExitPolicy/IPv6Exit；CREATE2 ntor/ntor-v3；末端 RELAY_BEGIN→拨号→CONNECTED/DATA。**未做**：DirAuth 发布、完整 EXTEND 转发真网、网桥 |
-| Control Protocol | WORKING | 客户端常用命令齐：GETINFO/SETCONF/SETEVENTS/SIGNAL/MAPADDRESS；事件 CIRC/STREAM/BW/…/NOTICE；SOCKS→STREAM |
+| Onion Service v3（托管） | PARTIAL | ESTABLISH_INTRO；ntor rend_circ_nonce；BEGIN_DIR 上传；**type-8 致盲证书 + 双层加密密封**；torrc HiddenService*。剩余：真网发布/INTRODUCE2 回路验收 |
+| Relay / Bridge | PARTIAL | ORPort；Exit；CREATE2 ntor/ntor-v3；**EXTEND2→CREATE2→EXTENDED2 加密回传 + 剥层转发**。未做：DirAuth 发布、网桥、真网多跳中继验收 |
+| Control Protocol | WORKING | GETINFO/SETCONF/SETEVENTS/SIGNAL/MAPADDRESS；**AUTHCHALLENGE SAFECOOKIE**；COOKIE/HASHEDPASSWORD；事件 CIRC/STREAM/BW/…/NOTICE |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
 
 ---

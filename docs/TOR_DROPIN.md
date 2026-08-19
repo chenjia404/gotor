@@ -28,6 +28,7 @@ gotor --version
 | DataDirectory | 数据目录 |
 | CookieAuthentication / CookieAuthFile | 写 `control_auth_cookie`，PROTOCOLINFO 宣告 COOKIE |
 | HashedControlPassword | RFC2440 S2K（`16:`），AUTHENTICATE 明文校验 |
+| CookieAuthentication / CookieAuthFile | COOKIE + **SAFECOOKIE**（AUTHCHALLENGE） |
 | Log / LogLevel | 级别与可选 file |
 | UseBridges / Bridge / ClientTransportPlugin | 桥梁与 PT |
 | ExitNodes / EntryNodes / Exclude* / StrictNodes | 解析入库（选路接线持续完善） |
