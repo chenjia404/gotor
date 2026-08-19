@@ -169,3 +169,13 @@ func TestExitPolicyIPv6RequiresFlagAndRejectStar6(t *testing.T) {
 		t.Fatal("::1 must reject")
 	}
 }
+
+func TestExitPolicyRejectsMulticastAndReserved(t *testing.T) {
+	p := NewExitPolicyFromConfig(true, []string{"accept *:80", "reject *:*"}, false, true, logger.NewDefault())
+	for _, addr := range []string{"224.0.0.1", "240.0.0.1", "255.255.255.255", "ff02::1"} {
+		ok, _ := p.CheckExitAllowed(addr, 80)
+		if ok {
+			t.Fatalf("%s:80 must be rejected", addr)
+		}
+	}
+}

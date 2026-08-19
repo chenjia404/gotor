@@ -264,7 +264,6 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 		cfg.ExitPolicyLines = append(cfg.ExitPolicyLines, value)
 
 	case "ExitPolicyRejectPrivate":
-		// 与出口路径 privateRejectLines 对齐的显式前置（即便 ExitRelay 也会再加一层）
 		if parseBool(value) {
 			cfg.ExitPolicyLines = append([]string{
 				"reject 0.0.0.0/8:*",
@@ -274,10 +273,14 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 				"reject 192.168.0.0/16:*",
 				"reject 169.254.0.0/16:*",
 				"reject 100.64.0.0/10:*",
+				"reject 224.0.0.0/4:*",
+				"reject 240.0.0.0/4:*",
+				"reject 255.255.255.255/32:*",
 				"reject [::]/128:*",
 				"reject [::1]/128:*",
 				"reject [fe80::]/10:*",
 				"reject [fc00::]/7:*",
+				"reject [ff00::]/8:*",
 				"reject *:25",
 			}, cfg.ExitPolicyLines...)
 		}
