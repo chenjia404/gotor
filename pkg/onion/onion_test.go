@@ -2002,7 +2002,6 @@ func TestEstablishRendezvousPoint(t *testing.T) {
 }
 
 // TestCompleteRendezvous tests completing the rendezvous protocol
-// AUDIT-003: Without cell sender, completion should fail with proper error
 func TestCompleteRendezvous(t *testing.T) {
 	log := logger.NewDefault()
 	client := NewClient(log)
@@ -2010,16 +2009,14 @@ func TestCompleteRendezvous(t *testing.T) {
 
 	rendezvousCircuitID := uint32(2000)
 
-	// Test without cell sender - should fail per AUDIT-003
+	// 无 hs-ntor 状态时必须失败
 	err := client.CompleteRendezvous(ctx, rendezvousCircuitID)
 	if err == nil {
-		t.Error("Expected error without cell sender")
+		t.Error("Expected error without rendezvous state")
 		return
 	}
-
-	// Verify error message indicates cell sender is required
-	if !strings.Contains(err.Error(), "cell sender is required") {
-		t.Errorf("Expected 'cell sender is required' error, got: %v", err)
+	if !strings.Contains(err.Error(), "no rendezvous hs-ntor state") {
+		t.Errorf("Expected hs-ntor state error, got: %v", err)
 	}
 }
 

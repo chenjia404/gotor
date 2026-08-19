@@ -324,13 +324,14 @@ type CellSender interface {
 	ReceiveRelayCell(ctx context.Context, circuitID uint32, timeout time.Duration) ([]byte, error)
 }
 
-// RendezvousState stores the cryptographic state for a rendezvous in progress (AUDIT-006).
-// It contains the client's ephemeral key pair and associated circuit information
-// for completing the rendezvous protocol per rend-spec-v3.txt.
+// RendezvousState stores the cryptographic state for a rendezvous in progress.
+// hs-ntor：客户端持有 x、B（intro EncKey 公钥）、AUTH_KEY、subcred。
 type RendezvousState struct {
 	EphemeralPrivate [32]byte // Client's ephemeral private key (x)
 	EphemeralPublic  [32]byte // Client's ephemeral public key (X)
-	OnionKey         [32]byte // Service's onion key from INTRODUCE1
+	IntroEncKeyB     [32]byte // Introduction point ENC_KEY public (B)
+	IntroAuthKey     [32]byte // Introduction point AUTH_KEY (Ed25519)
+	Subcredential    [32]byte // N_hs_subcred
 	CircuitID        uint32   // Rendezvous circuit ID
 }
 
@@ -2043,18 +2044,17 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 
 	c.logger.Debug("Introduction circuit created", "circuit_id", introCircuitID)
 
-	// Step 6: Generate ephemeral onion key for client authentication
-	onionKey := make([]byte, 32)
-	if _, err := rand.Read(onionKey); err != nil {
-		return 0, fmt.Errorf("failed to generate onion key: %w", err)
-	}
+	// Step 6: 计算 subcredential 并构造 INTRODUCE1（hs-ntor）
+	timePeriod := GetTimePeriod(time.Now())
+	blinded := ComputeBlindedPubkey(ed25519.PublicKey(addr.Pubkey), timePeriod)
+	subcred := ComputeHSSubcredential(addr.Pubkey, blinded)
 
-	// Step 7: Build and send INTRODUCE1 cell
 	req := &IntroduceRequest{
-		IntroPoint:       introPoint,
-		RendezvousCookie: rendezvousCookie,
-		RendezvousPoint:  rendezvousPoint.Fingerprint,
-		OnionKey:         onionKey,
+		IntroPoint:          introPoint,
+		RendezvousCookie:    rendezvousCookie,
+		RendezvousPoint:     rendezvousPoint.Fingerprint,
+		RendezvousCircuitID: rendezvousCircuitID,
+		Subcredential:       subcred,
 	}
 
 	introduce1Data, err := intro.BuildIntroduce1Cell(req)
@@ -2062,9 +2062,21 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 		return 0, fmt.Errorf("failed to build INTRODUCE1 cell: %w", err)
 	}
 
+	// 保存 hs-ntor 状态供 RENDEZVOUS2 验完握手
+	if len(introPoint.EncKey) == 32 && len(introPoint.AuthKey) == 32 {
+		st := &RendezvousState{CircuitID: rendezvousCircuitID}
+		copy(st.EphemeralPrivate[:], req.EphemeralPrivate[:])
+		copy(st.EphemeralPublic[:], req.EphemeralPublic[:])
+		copy(st.IntroEncKeyB[:], introPoint.EncKey)
+		copy(st.IntroAuthKey[:], introPoint.AuthKey)
+		copy(st.Subcredential[:], subcred)
+		c.StoreRendezvousState(rendezvousCircuitID, st)
+	}
+
 	c.logger.Debug("INTRODUCE1 cell built", "size", len(introduce1Data))
 
 	if err := intro.SendIntroduce1(ctx, introCircuitID, introduce1Data, c.cellSender); err != nil {
+		c.RemoveRendezvousState(rendezvousCircuitID)
 		return 0, fmt.Errorf("failed to send INTRODUCE1: %w", err)
 	}
 
@@ -2365,74 +2377,58 @@ func (c *Client) EstablishRendezvousPoint(ctx context.Context, rendezvousCookie 
 	return circuitID, rendezvousPoint, nil
 }
 
-// CompleteRendezvous completes the rendezvous protocol
-// This waits for RENDEZVOUS2 and establishes the final connection
+// CompleteRendezvous completes the rendezvous protocol with hs-ntor.
 func (c *Client) CompleteRendezvous(ctx context.Context, rendezvousCircuitID uint32) error {
 	c.logger.Info("Completing rendezvous protocol", "circuit_id", rendezvousCircuitID)
 
-	// AUDIT-006: Retrieve the stored ephemeral key state
 	state, ok := c.GetRendezvousState(rendezvousCircuitID)
-	if !ok {
-		c.logger.Warn("No rendezvous state found for circuit", "circuit_id", rendezvousCircuitID)
-		// Continue with reduced security for backward compatibility
-		// In production, this should be an error
+	if !ok || state == nil {
+		return fmt.Errorf("no rendezvous hs-ntor state for circuit %d", rendezvousCircuitID)
 	}
 
-	// Wait for RENDEZVOUS2 cell from the hidden service
 	rendezvous := NewRendezvousProtocol(c.logger)
 	handshakeData, err := rendezvous.WaitForRendezvous2(ctx, rendezvousCircuitID, c.cellSender)
 	if err != nil {
+		c.RemoveRendezvousState(rendezvousCircuitID)
 		return fmt.Errorf("failed to receive RENDEZVOUS2: %w", err)
 	}
 
 	c.logger.Debug("Received RENDEZVOUS2", "handshake_data_len", len(handshakeData))
-
-	// AUDIT-006: Implement full handshake verification per rend-spec-v3.txt
-	if state != nil && len(handshakeData) >= 32 {
-		c.logger.Debug("Verifying RENDEZVOUS2 handshake")
-
-		// The handshakeData should contain the service's ephemeral public key (Y)
-		// Per rend-spec-v3.txt, we perform X25519 key exchange:
-		// shared_secret = X25519(client_private, service_public)
-
-		if len(handshakeData) < 32 {
-			c.RemoveRendezvousState(rendezvousCircuitID)
-			return fmt.Errorf("invalid RENDEZVOUS2 handshake data length: %d", len(handshakeData))
-		}
-
-		var servicePublic [32]byte
-		copy(servicePublic[:], handshakeData[:32])
-
-		// Perform X25519 Diffie-Hellman
-		var sharedSecret [32]byte
-		curve25519.ScalarMult(&sharedSecret, &state.EphemeralPrivate, &servicePublic)
-
-		// Derive session keys using HKDF-SHA256
-		// Per rend-spec-v3.txt, derive keys for forward and backward encryption
-		info := []byte("tor-hs-rendezvous-keys")
-		sessionKeys, err := deriveKey(sharedSecret[:], info, 64) // 32 bytes each direction
-		if err != nil {
-			c.RemoveRendezvousState(rendezvousCircuitID)
-			return fmt.Errorf("failed to derive session keys: %w", err)
-		}
-
-		c.logger.Info("Handshake verified successfully",
-			"forward_key_len", len(sessionKeys)/2,
-			"backward_key_len", len(sessionKeys)/2)
-
-		// TODO: Store session keys for stream encryption (sessionKeys[0:32], sessionKeys[32:64])
-		// This would be used by the circuit layer for encrypting/decrypting stream data
-		// For now, we securely zero them since circuit encryption is handled elsewhere
-		defer security.SecureZeroMemory(sessionKeys)
-
-		// Securely zero the shared secret
-		security.SecureZeroMemory(sharedSecret[:])
-
-		// Clean up the rendezvous state (which zeros the private key)
+	if len(handshakeData) < crypto.HsNtorResponseLen {
 		c.RemoveRendezvousState(rendezvousCircuitID)
+		return fmt.Errorf("invalid RENDEZVOUS2 length: %d, want >= %d", len(handshakeData), crypto.HsNtorResponseLen)
 	}
 
-	c.logger.Info("Rendezvous protocol completed successfully")
+	// HANDSHAKE_INFO = Y || AUTH_INPUT_MAC（64 字节）；前面可能还有 cookie，取末 64 或整段
+	resp := handshakeData
+	if len(handshakeData) > crypto.HsNtorResponseLen {
+		resp = handshakeData[len(handshakeData)-crypto.HsNtorResponseLen:]
+	}
 
+	seed, err := crypto.HsNtorClientRend(
+		state.EphemeralPrivate[:],
+		state.IntroEncKeyB[:],
+		state.IntroAuthKey[:],
+		resp,
+	)
+	if err != nil {
+		c.RemoveRendezvousState(rendezvousCircuitID)
+		return fmt.Errorf("hs-ntor client rend: %w", err)
+	}
+
+	keyMaterial, err := crypto.HsNtorExpandCircuitKeys(seed)
+	if err != nil {
+		c.RemoveRendezvousState(rendezvousCircuitID)
+		return fmt.Errorf("hs-ntor expand keys: %w", err)
+	}
+	defer security.SecureZeroMemory(keyMaterial)
+	defer security.SecureZeroMemory(seed)
+
+	c.logger.Info("hs-ntor rendezvous verified",
+		"key_material_len", len(keyMaterial),
+		"circuit_id", rendezvousCircuitID)
+
+	c.RemoveRendezvousState(rendezvousCircuitID)
+	c.logger.Info("Rendezvous protocol completed successfully")
 	return nil
 }
