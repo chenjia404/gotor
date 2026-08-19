@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/audit-fixes-0ece`  
+**分支**：`cursor/ntor-v3-0ece`  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -27,11 +27,11 @@
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
 | VERSIONS / CERTS / AUTH_CHALLENGE / NETINFO | WORKING | VERSIONS CircID=2、CERTS type4 验签、NETINFO 已在真实 Guard 握手通过；AUTH_CHALLENGE 客户端路径按 spec 跳过 |
-| CREATE2 / ntor / CREATED2 | WORKING | 真实 Guard CREATE2/CREATED2 已成功（72 字节密钥） |
-| EXTEND2 / EXTENDED2 | WORKING | 真实 Guard→Middle / Middle→Exit EXTEND2 已成功 |
+| CREATE2 / ntor / CREATED2 | PARTIAL | 默认已切 ntor-v3（HTYPE 0x0003，Ed25519 主身份）；经典 ntor 仍可回退。待真实网络验收 |
+| EXTEND2 / EXTENDED2 | PARTIAL | builder 对 Middle/Exit 同样优先 ntor-v3；待真实 3-hop 验收 |
 | Circuit crypto / digest | WORKING | 真实 RELAY_DROP / EXTEND2 / BEGIN / DATA 已证明 AES-CTR + SHA-1 digest 与 Guard 一致；仍缺官方 cell 向量 |
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
-| SENDME / flow control | WORKING | 电路级 SENDME v1 已在真实网络 256KB+ soak 通过；流级仍为空（spec）；FlowCtrl=2 未做 |
+| SENDME / flow control | PARTIAL | 电路级 SENDME v1（间隔 100）已在真实网络通过；FlowCtrl=2 已能经 ntor-v3 协商 sendme_inc，完整 Vegas 未做 |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE `www.torproject.org` 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
 | Guard / Path selection | PARTIAL | 选路存在，不在缺 key 时静默成功 |
@@ -88,7 +88,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 - `InsecureSkipVerify` 仍可能出现在 TLS 配置（Tor 用自签名 + CERTS）。须靠 CERTS/fingerprint，而不是关闭校验后宣称已验证。
 - 真实握手测试：`integration/link_test.go`（`TOR_INTEGRATION_TEST=1`）。
 
-### ntor / CREATE2 / EXTEND2 — WORKING（经典 ntor `0x0002`）
+### ntor / CREATE2 / EXTEND2 — PARTIAL（默认 ntor-v3 `0x0003`）
 
 **曾经 BROKEN（无法与 C Tor / Arti 互操作）：**
 
@@ -108,9 +108,12 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 - C Tor：`src/core/crypto/onion_ntor.c`
 - Arti：`crates/tor-proto/src/crypto/handshake/ntor.rs`
 
-实现见 `pkg/crypto/ntor.go`、`docs/interop/ntor.md`。
+实现见 `pkg/crypto/ntor.go`、`pkg/crypto/ntorv3.go`、`docs/interop/ntor.md`、`docs/interop/ntor-v3.md`。
 
-**本轮已用真实网络验证：** Guard CREATE2、Middle/Exit EXTEND2、3-hop READY、SOCKS5 `IsTor=true`。ntor-v3 未实现（经典 ntor `0x0002` 仍被 relay 接受）。
+**现行默认：** 有 Ed25519 主身份且 `Relay=4`（或缺 pr）时用 ntor-v3。`FlowCtrl=2` 时发送 `CC_FIELD_REQUEST`。
+经典 ntor `0x0002` 仅作回退。官方向量（proposal 332）已对齐。
+
+**此前已用真实网络验证（经典 ntor）：** Guard CREATE2、Middle/Exit EXTEND2、3-hop READY、SOCKS5 `IsTor=true`。
 
 ### Circuit crypto / Relay cell — WORKING（主路径）
 
@@ -183,6 +186,7 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 | 18 | 验签未绑定解析结果 | 整份 HTTP 文档都解析，签名只覆盖 prefix；可注入未签名 r 行 | 只解析 signed body；签名行另取 |
 | 19 | SENDME 竞态 / 重复发出 / window=0 漏 tag | 减窗与记 tag 分锁；inbound 突发重复 SENDME；`packageWindow > 0` | 原子减窗；凑满 100 立即占位；含 window=0 |
 | 20 | CREATE2 waiter 竞态与 mux 泄漏 | 先发 CREATE2 再登记 waiter；失败不关 mux | ExpectCreated2 在发送前；Close 停 mux |
+| 21 | 仍默认经典 ntor | 最新 spec：有扩展必须用 ntor-v3；现代客户端总是发 CC_FIELD_REQUEST | create-created-cells ntor-v3；C Tor onion_ntor_v3.c |
 
 ---
 
@@ -190,11 +194,11 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 
 | 测试 | 作用 | 默认 `go test ./...` |
 |------|------|----------------------|
-| `pkg/crypto` ntor 单测 / 正确性 | HMAC + 20-byte NODEID | 运行 |
+| `pkg/crypto` ntor / ntor-v3 单测 | 经典 HMAC NODEID；ntor-v3 proposal 332 官方向量 | 运行 |
 | `pkg/directory` microdesc 单测 | 同行 identity、raw digest | 运行 |
 | `pkg/directory` 共识验签单测 | 自生成 RSA 证书 + 迷你共识；篡改必失败 | 运行 |
 | `integration/link_test.go` | 真实 TLS+handshake | 需 `-tags=integration` + `TOR_INTEGRATION_TEST=1` |
-| `integration/e2e_real_tor_test.go` | 共识验签 / CREATE2 / 3-hop / IsTor / SENDME soak / RELAY_RESOLVE | 同上 |
+| `integration/e2e_real_tor_test.go` | 共识验签 / CREATE2 / ntor-v3 / 3-hop / IsTor / SENDME soak / RELAY_RESOLVE | 同上 |
 | `scripts/test-real-tor.sh` | 启动 client + socks5h curl | 手动 |
 
 `testdata/ctor-vectors/crypto/ntor_handshake.json` 与 `testdata/arti-vectors/...` 已按**正确算法重生**，目前不是从 C Tor/Arti 仓库原样导出。不得据此宣称已有官方 cross-impl 向量。
@@ -222,4 +226,4 @@ TLS 能连上但 `timeout waiting for VERSIONS`：VERSIONS 被编成 4 字节 Ci
 6. `TOR_INTEGRATION_TEST=1 go test ./integration/... -tags=integration` 通过  
 
 当前：`TOR_INTEGRATION_TEST=1 go test ./integration/ -tags=integration` 已通过 CREATE2、EXTEND2、3-hop、`IsTor=true`、SENDME v1 soak（≥256KB）、RELAY_RESOLVE（本机 DNS 不可达）。  
-**Tor Client basic interoperability 可标 WORKING（经典 ntor / AES-CTR-SHA1 / SENDME v1 / RELAY_RESOLVE）**。ntor-v3、FlowCtrl=2、更大流量 soak 仍未做。
+默认路径已改为 **ntor-v3**（官方向量已对齐）；完整 Vegas 与更大流量 soak 仍未做。

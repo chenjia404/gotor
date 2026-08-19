@@ -128,14 +128,15 @@ type Relay struct {
 	DirPort         int
 	Flags           []string
 	Published       time.Time
-	RSAIdentity     []byte   // 20-byte SHA-1 of RSA identity (ntor NODEID)
-	FingerprintHex  string   // 40-char uppercase hex of RSAIdentity (CERTS / logs)
-	IdentityKey     []byte   // Ed25519 identity key (32 bytes)
-	NtorOnionKey    []byte   // Curve25519 ntor onion key (32 bytes)
-	MicrodescDigest string   // SHA256 digest of microdescriptor (base64, no padding)
+	RSAIdentity     []byte             // 20-byte SHA-1 of RSA identity (ntor NODEID)
+	FingerprintHex  string             // 40-char uppercase hex of RSAIdentity (CERTS / logs)
+	IdentityKey     []byte             // Ed25519 identity key (32 bytes)
+	NtorOnionKey    []byte             // Curve25519 ntor onion key (32 bytes)
+	MicrodescDigest string             // SHA256 digest of microdescriptor (base64, no padding)
 	Family          []string           // Relay family members (fingerprints) - Path Selection Enhancement
 	Bandwidth       uint64             // Advertised bandwidth in bytes/sec (from "w" line) - path-spec.txt §2.2
 	ExitPolicy      *ExitPolicySummary // 共识或 microdescriptor 的 p 行摘要
+	Protocols       ProtoVersions      // 共识 pr 行（Relay=4 / FlowCtrl=2）
 }
 
 // Client provides directory protocol operations
@@ -534,6 +535,11 @@ func (c *Client) parseConsensusWithMetadata(r io.Reader) ([]*Relay, *ConsensusMe
 					break
 				}
 			}
+		}
+
+		// Parse "pr" lines (subprotocol versions) — Relay=4 表示 ntor-v3，FlowCtrl=2 表示拥塞控制。
+		if strings.HasPrefix(line, "pr ") && currentRelay != nil {
+			currentRelay.Protocols = ParseProtoLine(line)
 		}
 
 		// Parse "p" lines (IPv4 exit policy summary) — ns consensus; microdesc 共识通常把 p 放在 microdescriptor。

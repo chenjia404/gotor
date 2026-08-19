@@ -87,7 +87,56 @@ func TestRealGuardCreate2(t *testing.T) {
 	if circ.Length() < 1 {
 		t.Fatalf("CREATE2 did not add guard hop")
 	}
-	t.Logf("CREATE2 OK guard=%s fp=%s circuit=%d hops=%d", guard.Nickname, guard.GetFingerprintHex(), circ.ID, circ.Length())
+	t.Logf("CREATE2 OK guard=%s fp=%s circuit=%d hops=%d handshake=%v ntorv3=%v flowctrl2=%v",
+		guard.Nickname, guard.GetFingerprintHex(), circ.ID, circ.Length(),
+		circuit.HandshakeTypeFor(guard), guard.UseNtorV3(), guard.RequestCongestionControl())
+}
+
+// TestRealNtorV3 验收现行默认握手：HTYPE 0x0003、Ed25519 主身份、可选 FlowCtrl=2。
+func TestRealNtorV3(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	log := logger.NewDefault()
+	dirClient := directory.NewClient(log)
+	relays, err := dirClient.FetchConsensus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var guard *directory.Relay
+	for _, r := range relays {
+		if r.IsGuard() && r.IsRunning() && r.ORPort > 0 {
+			guard = r
+			break
+		}
+	}
+	if guard == nil {
+		t.Fatal("no guard in consensus")
+	}
+	if err := dirClient.FetchMicrodescriptorsFor(ctx, []*directory.Relay{guard}); err != nil {
+		t.Fatal(err)
+	}
+	if !guard.UseNtorV3() {
+		t.Fatalf("guard %s missing ntor-v3 keys or Relay=4", guard.Nickname)
+	}
+	if circuit.HandshakeTypeFor(guard) != circuit.HandshakeTypeNtorV3 {
+		t.Fatalf("expected HandshakeTypeNtorV3, got %v", circuit.HandshakeTypeFor(guard))
+	}
+
+	builder := circuit.NewBuilder(circuit.NewManager(), log)
+	circ, err := builder.BuildFirstHop(ctx, guard, 90*time.Second)
+	if err != nil {
+		t.Fatalf("ntor-v3 CREATE2: %v", err)
+	}
+	defer circ.Close()
+	if circ.Length() < 1 {
+		t.Fatal("ntor-v3 CREATE2 did not add guard hop")
+	}
+	t.Logf("ntor-v3 OK guard=%s fp=%s pr_relay4=%v flowctrl2=%v sendme_inc=%d",
+		guard.Nickname, guard.GetFingerprintHex(),
+		guard.Protocols.Supports("Relay", 4), guard.RequestCongestionControl(),
+		circ.SendmeIncrement())
 }
 
 // TestExtend2Probe 区分 DESTROY reason=1 是 digest/crypto 失败还是 EXTEND2 语义被拒。

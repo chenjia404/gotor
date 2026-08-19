@@ -23,10 +23,16 @@ import (
 type HandshakeType uint16
 
 const (
-	// HandshakeTypeNTor is the ntor handshake (recommended)
+	// HandshakeTypeNtorV3 是现行默认握手（Relay=4，Ed25519 主身份 + 扩展）。
+	HandshakeTypeNtorV3 HandshakeType = 0x0003
+	// HandshakeTypeNTor 是经典 ntor（无扩展时才使用）。
 	HandshakeTypeNTor HandshakeType = 0x0002
 	// HandshakeTypeTAP is the legacy TAP handshake
 	HandshakeTypeTAP HandshakeType = 0x0000
+)
+
+const (
+	defaultCCCwndInit = 186 // 与当前共识 cc_cwnd_init 默认一致
 )
 
 // Extension handles circuit extension operations
@@ -37,6 +43,9 @@ type Extension struct {
 	ephemeralPrivate []byte      // Client ephemeral private key for ntor handshake
 	serverIdentity   []byte      // Server identity key for ntor verification
 	serverNtorKey    []byte      // Server ntor onion key for ntor verification
+	handshakeType    HandshakeType
+	ntorv3State      *crypto.NtorV3ClientState
+	requestCC        bool
 }
 
 // NewExtension creates a new circuit extension handler
@@ -180,10 +189,45 @@ func (e *Extension) ExtendCircuit(ctx context.Context, target string, handshakeT
 	return nil
 }
 
-// generateHandshakeData generates handshake data for circuit creation
-// SPEC-001: Integrated relay key retrieval from directory descriptors
+// HandshakeTypeFor 按最新 spec 选择握手：有 ntor-v3 密钥则用 0x0003。
+func HandshakeTypeFor(relay interface{}) HandshakeType {
+	type picker interface{ UseNtorV3() bool }
+	if r, ok := relay.(picker); ok && r.UseNtorV3() {
+		return HandshakeTypeNtorV3
+	}
+	return HandshakeTypeNTor
+}
+
+func requestCCFor(relay interface{}) bool {
+	type picker interface{ RequestCongestionControl() bool }
+	if r, ok := relay.(picker); ok {
+		return r.RequestCongestionControl()
+	}
+	return false
+}
+
 func (e *Extension) generateHandshakeData(handshakeType HandshakeType) ([]byte, error) {
+	e.handshakeType = handshakeType
 	switch handshakeType {
+	case HandshakeTypeNtorV3:
+		edID, ntorKey, err := e.getNtorV3Keys()
+		if err != nil {
+			return nil, fmt.Errorf("refusing ntor-v3 without Ed25519 identity: %w", err)
+		}
+		e.serverIdentity = append([]byte(nil), edID...)
+		e.serverNtorKey = append([]byte(nil), ntorKey...)
+		e.requestCC = requestCCFor(e.targetRelay)
+		cm := crypto.EncodeNtorV3Extensions(nil)
+		if e.requestCC {
+			cm = crypto.EncodeCCRequest()
+		}
+		skin, st, err := crypto.NtorV3ClientHandshake(edID, ntorKey, nil, cm)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate ntor-v3 handshake: %w", err)
+		}
+		e.ntorv3State = st
+		return skin, nil
+
 	case HandshakeTypeNTor:
 		// Use full ntor handshake implementation per tor-spec.txt section 5.1.4
 		//
@@ -333,6 +377,28 @@ type relayRSAIdentity interface {
 
 type relayEdIdentity interface {
 	GetIdentityKey() []byte
+}
+
+func (e *Extension) getNtorV3Keys() (edID, ntorKey []byte, err error) {
+	if e.targetRelay == nil {
+		return nil, nil, fmt.Errorf("no target relay set")
+	}
+	if relay, ok := e.targetRelay.(relayNtorKeys); ok {
+		if !relay.HasNtorKeys() {
+			return nil, nil, fmt.Errorf("target relay missing ntor keys")
+		}
+		ntorKey = relay.GetNtorOnionKey()
+	}
+	if relay, ok := e.targetRelay.(relayEdIdentity); ok {
+		edID = relay.GetIdentityKey()
+	}
+	if len(edID) != 32 || len(ntorKey) != 32 {
+		return nil, nil, fmt.Errorf("target relay does not provide Ed25519(32) and ntor key(32): ed=%d ntor=%d", len(edID), len(ntorKey))
+	}
+	if allZeroBytes(edID) || allZeroBytes(ntorKey) {
+		return nil, nil, fmt.Errorf("target relay ntor-v3 keys are all zeros")
+	}
+	return edID, ntorKey, nil
 }
 
 // getRelayKeys 返回 ntor NODEID（20 字节 RSA digest）和 ntor onion key。
@@ -491,52 +557,12 @@ func (e *Extension) ProcessCreated2(created2Cell *cell.Cell) error {
 	}
 
 	handshakeResponse := payload[2 : 2+hlen]
-
-	// AUDIT-001 FIX: Verify handshake response and derive proper keys
-	// Per tor-spec.txt section 5.1.4, process server's Y and AUTH
-	if e.ephemeralPrivate == nil {
-		return fmt.Errorf("no ephemeral private key stored - handshake not initiated properly")
+	if err := e.finishHandshake(handshakeResponse); err != nil {
+		return err
 	}
-
-	keyMaterial, err := crypto.NtorProcessResponse(
-		handshakeResponse,
-		e.ephemeralPrivate,
-		e.serverNtorKey,
-		e.serverIdentity,
-	)
-	if err != nil {
-		return fmt.Errorf("ntor handshake verification failed: %w", err)
-	}
-
-	// Derive circuit keys from key material per tor-spec.txt section 5.2
-	// The 72 bytes of key material are split as:
-	// Df (20 bytes) - forward digest key
-	// Db (20 bytes) - backward digest key
-	// Kf (16 bytes) - forward cipher key
-	// Kb (16 bytes) - backward cipher key
-	if len(keyMaterial) < 72 {
-		return fmt.Errorf("insufficient key material: got %d bytes, need 72", len(keyMaterial))
-	}
-
-	// Derive cryptographic state from key material
-	hop, err := e.deriveHopFromKeyMaterial(keyMaterial)
-	if err != nil {
-		return fmt.Errorf("failed to derive hop crypto state: %w", err)
-	}
-
-	// Add the first hop to circuit with cryptographic state
-	if err := e.circuit.AddHop(hop); err != nil {
-		return fmt.Errorf("failed to add first hop to circuit: %w", err)
-	}
-
 	e.logger.Info("CREATED2 processed successfully with verified keys",
 		"circuit_id", e.circuit.ID,
-		"key_material_size", len(keyMaterial))
-
-	// Zero out ephemeral private key after use (AUDIT-MED-4 related)
-	security.SecureZeroMemory(e.ephemeralPrivate)
-	e.ephemeralPrivate = nil
-
+		"handshake", e.handshakeType)
 	return nil
 }
 
@@ -573,48 +599,65 @@ func (e *Extension) ProcessExtended2(extended2Cell *cell.RelayCell) error {
 	}
 
 	handshakeResponse := payload[2 : 2+hlen]
-
-	// AUDIT-001 FIX: Verify handshake response and derive proper keys
-	// Per tor-spec.txt section 5.1.4, process server's Y and AUTH
-	if e.ephemeralPrivate == nil {
-		return fmt.Errorf("no ephemeral private key stored - handshake not initiated properly")
+	if err := e.finishHandshake(handshakeResponse); err != nil {
+		return err
 	}
+	e.logger.Info("EXTENDED2 processed successfully with verified keys",
+		"circuit_id", e.circuit.ID,
+		"handshake", e.handshakeType)
+	return nil
+}
 
-	keyMaterial, err := crypto.NtorProcessResponse(
-		handshakeResponse,
-		e.ephemeralPrivate,
-		e.serverNtorKey,
-		e.serverIdentity,
-	)
-	if err != nil {
-		return fmt.Errorf("ntor handshake verification failed: %w", err)
+func (e *Extension) finishHandshake(handshakeResponse []byte) error {
+	var keyMaterial, serverMsg []byte
+	var err error
+	switch e.handshakeType {
+	case HandshakeTypeNtorV3:
+		if e.ntorv3State == nil {
+			return fmt.Errorf("no ntor-v3 state stored")
+		}
+		keyMaterial, serverMsg, err = crypto.NtorV3ProcessResponse(handshakeResponse, e.ntorv3State, nil)
+		e.ntorv3State.Wipe()
+		e.ntorv3State = nil
+		if err != nil {
+			return fmt.Errorf("ntor-v3 handshake verification failed: %w", err)
+		}
+	default:
+		if e.ephemeralPrivate == nil {
+			return fmt.Errorf("no ephemeral private key stored - handshake not initiated properly")
+		}
+		keyMaterial, err = crypto.NtorProcessResponse(
+			handshakeResponse,
+			e.ephemeralPrivate,
+			e.serverNtorKey,
+			e.serverIdentity,
+		)
+		security.SecureZeroMemory(e.ephemeralPrivate)
+		e.ephemeralPrivate = nil
+		if err != nil {
+			return fmt.Errorf("ntor handshake verification failed: %w", err)
+		}
 	}
-
-	// Derive circuit keys from key material per tor-spec.txt section 5.2
-	// The 72 bytes of key material are split as:
-	// Df (20 bytes) - forward digest key
-	// Db (20 bytes) - backward digest key
-	// Kf (16 bytes) - forward cipher key
-	// Kb (16 bytes) - backward cipher key
 	if len(keyMaterial) < 72 {
 		return fmt.Errorf("insufficient key material: got %d bytes, need 72", len(keyMaterial))
 	}
-
-	// Derive cryptographic state from key material
 	hop, err := e.deriveHopFromKeyMaterial(keyMaterial)
 	if err != nil {
 		return fmt.Errorf("failed to derive hop crypto state: %w", err)
 	}
-
-	// Add the new hop to circuit with cryptographic state
 	if err := e.circuit.AddHop(hop); err != nil {
 		return fmt.Errorf("failed to add hop to circuit: %w", err)
 	}
-
-	e.logger.Info("EXTENDED2 processed successfully with verified keys",
-		"circuit_id", e.circuit.ID,
-		"key_material_size", len(keyMaterial))
-
+	if len(serverMsg) > 0 {
+		inc, ok, err := crypto.ParseCCSendmeInc(serverMsg)
+		if err != nil {
+			return fmt.Errorf("ntor-v3 server extra data: %w", err)
+		}
+		if ok {
+			e.circuit.EnableCongestionControl(inc)
+			e.logger.Info("Negotiated FlowCtrl=2", "sendme_inc", inc)
+		}
+	}
 	return nil
 }
 
