@@ -25,7 +25,7 @@ This go-tor project is primarily an **educational exercise** for learning about 
 
 ### Prerequisites
 
-- Go 1.24 or later
+- Go 1.25 or later（toolchain 1.26.6）
 - Git
 - (Optional) Docker for testing
 

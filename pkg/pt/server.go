@@ -149,44 +149,70 @@ func (ms *ManagedServer) buildEnvironment() []string {
 
 // performHandshake reads the PT server's stdout and parses SMETHOD lines.
 func (ms *ManagedServer) performHandshake(ctx context.Context) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	scanner := bufio.NewScanner(ms.stdout)
-	deadline := time.Now().Add(30 * time.Second)
-
-	for time.Now().Before(deadline) {
+	type scanResult struct {
+		line string
+		err  error
+		eof  bool
+	}
+	ch := make(chan scanResult, 1)
+	go func() {
+		for scanner.Scan() {
+			select {
+			case ch <- scanResult{line: scanner.Text()}:
+			case <-timeoutCtx.Done():
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			select {
+			case ch <- scanResult{err: err}:
+			case <-timeoutCtx.Done():
+			}
+			return
+		}
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		case ch <- scanResult{eof: true}:
+		case <-timeoutCtx.Done():
 		}
+	}()
 
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return err
+	for {
+		select {
+		case <-timeoutCtx.Done():
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-
-		line := scanner.Text()
-		ms.log.Debug("PT server stdout", "line", line)
-
-		if strings.HasPrefix(line, "SMETHOD-ERROR") {
-			return fmt.Errorf("PT server reported error: %s", line)
-		}
-
-		if strings.HasPrefix(line, "SMETHOD") {
-			if err := ms.parseSMethod(line); err != nil {
-				ms.log.Warn("Failed to parse SMETHOD", "line", line, "error", err)
+			return fmt.Errorf("PT server handshake timeout")
+		case r := <-ch:
+			if r.err != nil {
+				return r.err
 			}
-		}
+			if r.eof {
+				return fmt.Errorf("PT server handshake timeout")
+			}
+			line := r.line
+			ms.log.Debug("PT server stdout", "line", line)
 
-		if strings.HasPrefix(line, "SMETHODS DONE") {
-			ms.log.Info("PT server handshake complete", "methods", len(ms.methods))
-			return nil
+			if strings.HasPrefix(line, "SMETHOD-ERROR") {
+				return fmt.Errorf("PT server reported error: %s", line)
+			}
+
+			if strings.HasPrefix(line, "SMETHOD") {
+				if err := ms.parseSMethod(line); err != nil {
+					ms.log.Warn("Failed to parse SMETHOD", "line", line, "error", err)
+				}
+			}
+
+			if strings.HasPrefix(line, "SMETHODS DONE") {
+				ms.log.Info("PT server handshake complete", "methods", len(ms.methods))
+				return nil
+			}
 		}
 	}
-
-	return fmt.Errorf("PT server handshake timeout")
 }
 
 // parseSMethod parses a SMETHOD line: SMETHOD <methodname> <address> [options]

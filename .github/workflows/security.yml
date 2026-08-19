@@ -31,7 +31,7 @@ jobs:
         # Pin to immutable SHA for supply chain security
         uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe  # v5.4.0
         with:
-          go-version: '1.24.x'
+          go-version: '1.26.x'
 
       - name: Run gosec
         # Pin to immutable SHA for supply chain security
@@ -58,7 +58,7 @@ jobs:
         # Pin to immutable SHA for supply chain security
         uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe  # v5.4.0
         with:
-          go-version: '1.24.x'
+          go-version: '1.26.x'
 
       - name: Run govulncheck
         # Pin to immutable SHA for supply chain security
