@@ -117,14 +117,10 @@ android {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")
         }
     }
-    sourceSets {
-        getByName("main") {
-            jniLibs.srcDirs("libs")
-        }
-    }
 }
 
 dependencies {
+    // AAR 内已含 jni/armeabi-v7a 与 jni/arm64-v8a，不必再把 libs/ 设为 jniLibs
     implementation(files("libs/gotor.aar"))
 }
 ```
@@ -206,8 +202,8 @@ public final class TorClient implements StatusListener {
         tor.setListener(this);
     }
 
-    /** 必须在后台线程调用 */
-    public void start(int socksPort) throws Exception {
+    /** 必须在后台线程调用。gomobile 将 Go int 映射为 Java long。 */
+    public void start(long socksPort) throws Exception {
         tor.start(dataDir, socksPort);
     }
 
