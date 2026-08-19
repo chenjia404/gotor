@@ -182,6 +182,7 @@ func (b *Builder) BuildFirstHop(ctx context.Context, guard *directory.Relay, tim
 		circuit.Close()
 		return nil, err
 	}
+	circuit.SetState(StateOpen)
 	return circuit, nil
 }
 

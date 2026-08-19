@@ -6,43 +6,50 @@ import (
 	"github.com/opd-ai/go-tor/pkg/directory"
 )
 
-// HSDirectoriesFromRelays 构造可用于 HTTP 拉取的目录节点列表。
+// HSDirectoriesFromRelays 构造 HS 目录节点列表。
 //
-// 优先：HSDir ∧ DirPort>0（负责存储的节点若开放 DirPort）。
-// 补充：任意 DirPort>0 且 Running/Valid 的 V2Dir/DirCache（可缓存提供描述符）。
-// 无 DirPort 的 HSDir 需 BEGIN_DIR（尚未实现），此处跳过。
+// - 所有 Running/Valid 的 HSDir（含 DirPort=0，供 BEGIN_DIR）
+// - 另加入 DirPort>0 的 V2Dir/DirCache（HTTP 回退）
+// Relay 字段指向共识条目，便于 BEGIN_DIR 取 ntor 密钥。
 func HSDirectoriesFromRelays(relays []*directory.Relay) []*HSDirectory {
 	out := make([]*HSDirectory, 0)
 	seen := make(map[string]struct{})
-	add := func(r *directory.Relay) {
-		if r == nil || r.DirPort <= 0 || !r.IsRunning() || !r.IsValid() {
+	add := func(r *directory.Relay, requireDirPort bool) {
+		if r == nil || !r.IsRunning() || !r.IsValid() {
 			return
 		}
-		key := fmt.Sprintf("%s:%d", r.Address, r.DirPort)
-		if _, ok := seen[key]; ok {
+		if requireDirPort && r.DirPort <= 0 {
 			return
 		}
-		seen[key] = struct{}{}
 		fp := r.GetFingerprintHex()
 		if fp == "" {
 			fp = r.Fingerprint
 		}
+		key := fp
+		if key == "" {
+			key = fmt.Sprintf("%s:%d:%d", r.Address, r.ORPort, r.DirPort)
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
 		out = append(out, &HSDirectory{
 			Fingerprint: fp,
 			Address:     r.Address,
 			ORPort:      r.ORPort,
 			DirPort:     r.DirPort,
 			HSDir:       r.HasFlag("HSDir"),
+			Relay:       r,
 		})
 	}
 	for _, r := range relays {
 		if r != nil && r.HasFlag("HSDir") {
-			add(r)
+			add(r, false)
 		}
 	}
 	for _, r := range relays {
-		if r != nil && (r.HasFlag("V2Dir") || r.HasFlag("DirCache") || r.DirPort > 0) {
-			add(r)
+		if r != nil && r.DirPort > 0 {
+			add(r, true)
 		}
 	}
 	return out

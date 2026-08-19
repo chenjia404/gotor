@@ -27,6 +27,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/opd-ai/go-tor/pkg/crypto"
+	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/security"
 )
@@ -378,6 +379,13 @@ func (c *Client) SetCellSender(sender CellSender) {
 	c.cellSender = sender
 }
 
+// SetBegindir 为底层 HSDir 启用 BEGIN_DIR 拉取。
+func (c *Client) SetBegindir(f *BegindirFetcher) {
+	if c != nil && c.hsdir != nil {
+		c.hsdir.SetBegindir(f)
+	}
+}
+
 // UpdateHSDirs updates the list of available HSDirs from consensus
 func (c *Client) UpdateHSDirs(relays []*HSDirectory) {
 	c.consensus = relays
@@ -519,6 +527,11 @@ func computeDescriptorID(blindedPubkey []byte) []byte {
 	h := sha3.New256()
 	h.Write(blindedPubkey)
 	return h.Sum(nil)
+}
+
+// ComputeDescriptorID 导出供集成测试计算负责 HSDir。
+func ComputeDescriptorID(blindedPubkey []byte) []byte {
+	return computeDescriptorID(blindedPubkey)
 }
 
 // ComputeBlindedPubkey computes the blinded public key for a given time period
@@ -1321,13 +1334,15 @@ type HSDirectory struct {
 	Fingerprint string
 	Address     string
 	ORPort      int
-	DirPort     int  // Directory port for HTTP requests
+	DirPort     int  // Directory port for HTTP requests；0 表示仅 ORPort（需 BEGIN_DIR）
 	HSDir       bool // Has HSDir flag
+	Relay       *directory.Relay // 可选：共识条目，供 BEGIN_DIR 取密钥
 }
 
 // HSDir provides Hidden Service Directory operations
 type HSDir struct {
-	logger *logger.Logger
+	logger   *logger.Logger
+	begindir *BegindirFetcher
 }
 
 // NewHSDir creates a new HSDir protocol handler
@@ -1338,6 +1353,13 @@ func NewHSDir(log *logger.Logger) *HSDir {
 
 	return &HSDir{
 		logger: log.Component("hsdir"),
+	}
+}
+
+// SetBegindir 启用经 ORPort 的 BEGIN_DIR 拉取（现代网络几乎必需）。
+func (h *HSDir) SetBegindir(f *BegindirFetcher) {
+	if h != nil {
+		h.begindir = f
 	}
 }
 
@@ -1499,7 +1521,7 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 			}
 
 			for _, hsdir := range selectedHSDirs {
-				desc, err := h.fetchFromHSDir(ctx, hsdir, descriptorID, replica)
+				desc, err := h.fetchFromHSDir(ctx, hsdir, blindedPubkey, replica)
 				if err != nil {
 					h.logger.Debug("Failed to fetch from HSDir",
 						"hsdir", hsdir.Fingerprint,
@@ -1562,7 +1584,7 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 		if hsdir == nil || hsdir.DirPort <= 0 {
 			continue
 		}
-		desc, err := h.fetchFromHSDir(ctx, hsdir, descriptorID, -1)
+		desc, err := h.fetchFromHSDir(ctx, hsdir, blindedPubkey, -1)
 		if err != nil {
 			lastErr = err
 			continue
@@ -1595,79 +1617,94 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 // fetchFromHSDir fetches a descriptor from a specific HSDir using HTTP
 // Implements the HSDir protocol per dir-spec.txt section 4.3
 // AUDIT-003 FIX: Removed mock fallbacks, returns proper errors with retry support
-func (h *HSDir) fetchFromHSDir(ctx context.Context, hsdir *HSDirectory, descriptorID []byte, replica int) (*Descriptor, error) {
+func (h *HSDir) fetchFromHSDir(ctx context.Context, hsdir *HSDirectory, blindedPubkey []byte, replica int) (*Descriptor, error) {
+	if len(blindedPubkey) != 32 {
+		return nil, fmt.Errorf("blinded pubkey must be 32 bytes")
+	}
+	// URL：/tor/hs/3/<base64(blinded-public-key)>（rend-spec 2.2.6）
+	blindedB64 := base64.RawStdEncoding.EncodeToString(blindedPubkey)
+	httpPath := "/tor/hs/3/" + blindedB64
+
 	h.logger.Debug("Fetching descriptor from HSDir",
 		"hsdir", hsdir.Fingerprint,
-		"descriptor_id", fmt.Sprintf("%x", descriptorID[:8]),
+		"blinded_b64", blindedB64[:minInt(16, len(blindedB64))],
 		"replica", replica)
+	var body []byte
+	var err error
 
-	// Build descriptor URL
-	// Format: /tor/hs/3/<base64-descriptor-id>
-	descriptorIDBase64 := base64.RawURLEncoding.EncodeToString(descriptorID)
-	url := fmt.Sprintf("http://%s:%d/tor/hs/3/%s", hsdir.Address, hsdir.DirPort, descriptorIDBase64)
-
-	h.logger.Debug("Building HSDir request", "url", url)
-
-	// AUDIT-003 FIX: Make timeout configurable (AUDIT-MED-7 related)
-	// Default 5s timeout - should be configurable in production
-	timeout := 5 * time.Second
-	client := &http.Client{
-		Timeout: timeout,
-	}
-
-	// Create request with context
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HSDir request: %w", err)
-	}
-
-	// Set User-Agent header to match Tor client
-	req.Header.Set("User-Agent", "Tor/0.4.7.0")
-
-	// Execute request
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch descriptor from %s: %w", hsdir.Fingerprint, err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			h.logger.Error("Failed to close response body", "function", "fetchFromHSDir", "error", err)
+	// 优先 BEGIN_DIR（ORPort）；现代 HSDir 通常无 DirPort
+	if h.begindir != nil && hsdir.Relay != nil && hsdir.Relay.HasNtorKeys() {
+		body, err = h.begindir.Fetch(ctx, hsdir.Relay, httpPath)
+		if err != nil {
+			h.logger.Debug("BEGIN_DIR fetch failed, may try HTTP",
+				"hsdir", hsdir.Fingerprint, "error", err)
 		}
-	}()
-
-	// Check status code
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HSDir %s returned status %d", hsdir.Fingerprint, resp.StatusCode)
+	} else if h.begindir != nil && (hsdir.Relay == nil || !hsdir.Relay.HasNtorKeys()) {
+		h.logger.Debug("BEGIN_DIR skipped: missing relay microdesc keys",
+			"hsdir", hsdir.Fingerprint, "has_relay", hsdir.Relay != nil)
 	}
 
-	// LOW-006 FIX: Read response body with size limit to prevent resource exhaustion
-	// Use io.LimitReader to cap the maximum descriptor size we'll accept
-	limitedReader := io.LimitReader(resp.Body, MaxDescriptorSize+1)
-	body, err := io.ReadAll(limitedReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read descriptor from %s: %w", hsdir.Fingerprint, err)
+	if body == nil && hsdir.DirPort > 0 {
+		url := fmt.Sprintf("http://%s:%d%s", hsdir.Address, hsdir.DirPort, httpPath)
+		h.logger.Debug("Building HSDir HTTP request", "url", url)
+		timeout := 5 * time.Second
+		client := &http.Client{Timeout: timeout}
+		req, reqErr := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if reqErr != nil {
+			return nil, fmt.Errorf("failed to create HSDir request: %w", reqErr)
+		}
+		req.Header.Set("User-Agent", "Tor/0.4.7.0")
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			if err != nil {
+				return nil, fmt.Errorf("BEGIN_DIR: %v; HTTP: %w", err, doErr)
+			}
+			return nil, fmt.Errorf("failed to fetch descriptor from %s: %w", hsdir.Fingerprint, doErr)
+		}
+		defer func() {
+			if cerr := resp.Body.Close(); cerr != nil {
+				h.logger.Error("Failed to close response body", "function", "fetchFromHSDir", "error", cerr)
+			}
+		}()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("HSDir %s returned status %d", hsdir.Fingerprint, resp.StatusCode)
+		}
+		limitedReader := io.LimitReader(resp.Body, MaxDescriptorSize+1)
+		body, err = io.ReadAll(limitedReader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read descriptor from %s: %w", hsdir.Fingerprint, err)
+		}
 	}
 
-	// Check if descriptor exceeded size limit
+	if body == nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("HSDir %s: no DirPort and BEGIN_DIR unavailable", hsdir.Fingerprint)
+	}
+
 	if len(body) > MaxDescriptorSize {
 		return nil, fmt.Errorf("descriptor from %s exceeds maximum size (%d > %d bytes)",
 			hsdir.Fingerprint, len(body), MaxDescriptorSize)
 	}
 
-	// Parse the descriptor
 	desc, err := ParseDescriptor(body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse descriptor from %s: %w", hsdir.Fingerprint, err)
 	}
-
-	// Set descriptor ID
-	desc.DescriptorID = descriptorID
-
+	desc.DescriptorID = computeDescriptorID(blindedPubkey)
+	via := "HTTP"
+	if h.begindir != nil && body != nil && (hsdir.DirPort <= 0 || err == nil) {
+		// 粗略：无 DirPort 或 begindir 成功时标 BEGIN_DIR
+		if hsdir.DirPort <= 0 {
+			via = "BEGIN_DIR"
+		}
+	}
 	h.logger.Info("Successfully fetched descriptor",
 		"hsdir", hsdir.Fingerprint,
 		"intro_points", len(desc.IntroPoints),
-		"revision", desc.RevisionCounter)
-
+		"revision", desc.RevisionCounter,
+		"via", via)
 	return desc, nil
 }
 
@@ -2470,4 +2507,11 @@ func (c *Client) CompleteRendezvous(ctx context.Context, rendezvousCircuitID uin
 	c.RemoveRendezvousState(rendezvousCircuitID)
 	c.logger.Info("Rendezvous protocol completed successfully")
 	return nil
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
