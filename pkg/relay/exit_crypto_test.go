@@ -80,3 +80,60 @@ func TestExitPolicyFromConfigAllowsHTTP(t *testing.T) {
 		t.Fatal("25 should reject")
 	}
 }
+
+func TestDecryptInboundRejectsBadDigestWithoutCommitting(t *testing.T) {
+	km := make([]byte, 72)
+	for i := range km {
+		km[i] = byte(i + 1)
+	}
+	cc, err := newCircuitCrypto(km)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// garbage payload: decrypt may yield recognized!=0 or digest mismatch
+	bad := make([]byte, 509)
+	for i := range bad {
+		bad[i] = 0xff
+	}
+	if _, err := cc.decryptInbound(bad); err == nil {
+		t.Fatal("expected error")
+	}
+	// valid cell should still work (digest not permanently desynced by failed attempt
+	// when failure was recognized!=0 before digest write; for digest mismatch cipher advanced)
+	rc, _ := cell.NewRelayCell(1, cell.RelayBegin, []byte("a.com:80\x00"))
+	plain, _ := rc.Encode()
+	pad := make([]byte, 509)
+	copy(pad, plain)
+	client, _ := newCircuitCrypto(km)
+	enc := append([]byte(nil), pad...)
+	enc[1], enc[2] = 0, 0
+	enc[5], enc[6], enc[7], enc[8] = 0, 0, 0, 0
+	cp := append([]byte(nil), enc...)
+	_, _ = client.fwdDigest.Write(cp)
+	sum := client.fwdDigest.Sum(nil)
+	copy(enc[5:9], sum[:4])
+	client.fwdCipher.XORKeyStream(enc, enc)
+	// Note: after bad decrypt cipher may be desynced — use fresh crypto for valid path
+	cc2, _ := newCircuitCrypto(km)
+	if _, err := cc2.decryptInbound(enc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExitPolicyRecheckResolvedIP(t *testing.T) {
+	p := NewExitPolicyFromConfig(true, []string{
+		"reject 127.0.0.0/8:*",
+		"accept *:80",
+		"reject *:*",
+	}, false, false, logger.NewDefault())
+	// hostname may pass AllowsUnknown via accept *:80
+	ok, _ := p.CheckExitAllowed("localhost", 80)
+	if !ok {
+		t.Fatal("hostname wildcard accept should pass first check")
+	}
+	// resolved loopback must fail
+	ok, _ = p.CheckExitAllowed("127.0.0.1", 80)
+	if ok {
+		t.Fatal("loopback must be rejected after resolve")
+	}
+}

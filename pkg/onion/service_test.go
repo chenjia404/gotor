@@ -44,7 +44,7 @@ func TestNewService(t *testing.T) {
 			config: &ServiceConfig{
 				NumIntroPoints:         5,
 				AllowPlaceholderIntros: true,
-		Ports: map[int]string{
+				Ports: map[int]string{
 					80: "localhost:8080",
 				},
 			},
@@ -166,7 +166,7 @@ func TestAddressFromPublicKey(t *testing.T) {
 
 func TestServiceStartStop(t *testing.T) {
 	config := &ServiceConfig{
-		NumIntroPoints: 2,
+		NumIntroPoints:         2,
 		AllowPlaceholderIntros: true,
 		Ports: map[int]string{
 			80: "localhost:8080",
@@ -314,7 +314,7 @@ func TestEstablishIntroductionPointsInsufficientRelays(t *testing.T) {
 
 func TestCreateDescriptor(t *testing.T) {
 	config := &ServiceConfig{
-		NumIntroPoints: 2,
+		NumIntroPoints:         2,
 		AllowPlaceholderIntros: true,
 		Ports: map[int]string{
 			80: "localhost:8080",
@@ -424,7 +424,7 @@ func TestSignDescriptor(t *testing.T) {
 
 func TestPublishDescriptor(t *testing.T) {
 	config := &ServiceConfig{
-		NumIntroPoints: 2,
+		NumIntroPoints:         2,
 		AllowPlaceholderIntros: true,
 		Ports: map[int]string{
 			80: "localhost:8080",
@@ -533,7 +533,7 @@ func TestHandleIntroduce2InvalidData(t *testing.T) {
 
 func TestServiceGetStats(t *testing.T) {
 	config := &ServiceConfig{
-		NumIntroPoints: 2,
+		NumIntroPoints:         2,
 		AllowPlaceholderIntros: true,
 		Ports: map[int]string{
 			80: "localhost:8080",

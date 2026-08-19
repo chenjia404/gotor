@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
@@ -151,7 +152,13 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 	}
 	plain, err := circ.crypto.decryptInbound(c.Payload)
 	if err != nil {
-		// 未识别的 RELAY 载荷：丢弃（对照 C Tor drop unrecognized）
+		// digest mismatch：拆路；not recognized：丢弃
+		if strings.Contains(err.Error(), "digest mismatch") {
+			h.logger.Warn("relay digest mismatch, destroying circuit", "circuit_id", circuitID)
+			_ = h.circuits.sendDestroyCell(clientConn, circuitID, cell.DestroyReasonProtocol)
+			h.circuits.CloseCircuit(circuitID)
+			return err
+		}
 		h.logger.Debug("drop unrecognized relay cell", "circuit_id", circuitID, "error", err)
 		return nil
 	}
@@ -177,7 +184,13 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 
 	case cell.RelayData:
 		if h.circuits.exits != nil {
-			return h.circuits.exits.HandleData(circuitID, relayCell.StreamID, relayCell.Data)
+			return h.circuits.exits.HandleData(circ, clientConn, relayCell.StreamID, relayCell.Data)
+		}
+		return nil
+
+	case cell.RelaySendme:
+		if h.circuits.exits != nil {
+			h.circuits.exits.HandleSendme(circuitID, relayCell.StreamID)
 		}
 		return nil
 
@@ -220,6 +233,8 @@ func (h *ForwardingHandler) rejectExitAttempt(circ *ServerCircuit, clientConn ne
 		copy(pad, plain)
 		plain = pad
 	}
+	circ.mu.Lock()
+	defer circ.mu.Unlock()
 	enc, err := circ.crypto.encryptOutbound(plain[:509])
 	if err != nil {
 		return err

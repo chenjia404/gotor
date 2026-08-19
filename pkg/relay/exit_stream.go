@@ -15,12 +15,21 @@ import (
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
+const (
+	exitCircWindowInit   = 1000
+	exitStreamWindowInit = 500
+	exitSendmeInc        = 100
+)
+
 // ExitStreamManager 管理出口 TCP 流。
 type ExitStreamManager struct {
 	policy  *ExitPolicy
 	logger  *logger.Logger
 	mu      sync.Mutex
 	streams map[streamKey]*exitStream
+	// 每电路发送窗（向客户端发 DATA）
+	circOutWindow map[uint32]int
+	circInCount   map[uint32]int // 收到客户端 DATA 计数，满 100 发 SENDME
 }
 
 type streamKey struct {
@@ -29,8 +38,10 @@ type streamKey struct {
 }
 
 type exitStream struct {
-	conn   net.Conn
-	cancel context.CancelFunc
+	conn          net.Conn
+	cancel        context.CancelFunc
+	packageWindow int // 向客户端发送 DATA 的流窗
+	deliverCount  int // 从客户端收到的 DATA，满 100 回 SENDME
 }
 
 func NewExitStreamManager(policy *ExitPolicy, log *logger.Logger) *ExitStreamManager {
@@ -38,9 +49,55 @@ func NewExitStreamManager(policy *ExitPolicy, log *logger.Logger) *ExitStreamMan
 		log = logger.NewDefault()
 	}
 	return &ExitStreamManager{
-		policy:  policy,
-		logger:  log.Component("exit-stream"),
-		streams: make(map[streamKey]*exitStream),
+		policy:        policy,
+		logger:        log.Component("exit-stream"),
+		streams:       make(map[streamKey]*exitStream),
+		circOutWindow: make(map[uint32]int),
+		circInCount:   make(map[uint32]int),
+	}
+}
+
+// CloseCircuit 关闭该电路全部出口流。
+func (m *ExitStreamManager) CloseCircuit(circID uint32) {
+	m.mu.Lock()
+	var toClose []*exitStream
+	for k, es := range m.streams {
+		if k.circID == circID {
+			toClose = append(toClose, es)
+			delete(m.streams, k)
+		}
+	}
+	delete(m.circOutWindow, circID)
+	delete(m.circInCount, circID)
+	m.mu.Unlock()
+	for _, es := range toClose {
+		if es.cancel != nil {
+			es.cancel()
+		}
+		if es.conn != nil {
+			_ = es.conn.Close()
+		}
+	}
+}
+
+// CloseAll 关闭全部出口流。
+func (m *ExitStreamManager) CloseAll() {
+	m.mu.Lock()
+	all := make([]*exitStream, 0, len(m.streams))
+	for _, es := range m.streams {
+		all = append(all, es)
+	}
+	m.streams = make(map[streamKey]*exitStream)
+	m.circOutWindow = make(map[uint32]int)
+	m.circInCount = make(map[uint32]int)
+	m.mu.Unlock()
+	for _, es := range all {
+		if es.cancel != nil {
+			es.cancel()
+		}
+		if es.conn != nil {
+			_ = es.conn.Close()
+		}
 	}
 }
 
@@ -66,10 +123,23 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonConnRefused)
 	}
 
-	remoteIP := net.ParseIP(addr)
-	if host, _, e := net.SplitHostPort(c.RemoteAddr().String()); e == nil {
-		remoteIP = net.ParseIP(host)
+	// 拨号后按实际对端 IP 再检策略（防 hostname AllowsUnknown 绕过私网/IPv6）
+	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
+	if err != nil {
+		_ = c.Close()
+		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonInternal)
 	}
+	remoteIP := net.ParseIP(host)
+	if remoteIP == nil {
+		_ = c.Close()
+		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonInternal)
+	}
+	ok, reason := m.policy.CheckExitAllowed(remoteIP.String(), port)
+	if !ok {
+		_ = c.Close()
+		return m.sendEnd(circ, clientConn, streamID, reason)
+	}
+
 	payload, err := cell.FormatConnectedPayload(remoteIP, 3600)
 	if err != nil {
 		_ = c.Close()
@@ -83,23 +153,67 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 	sctx, cancel := context.WithCancel(ctx)
 	key := streamKey{circ.CircuitID, streamID}
 	m.mu.Lock()
-	m.streams[key] = &exitStream{conn: c, cancel: cancel}
+	m.streams[key] = &exitStream{
+		conn:          c,
+		cancel:        cancel,
+		packageWindow: exitStreamWindowInit,
+	}
+	if _, ok := m.circOutWindow[circ.CircuitID]; !ok {
+		m.circOutWindow[circ.CircuitID] = exitCircWindowInit
+	}
 	m.mu.Unlock()
 
 	go m.pumpRemoteToClient(sctx, circ, clientConn, streamID, c)
 	return nil
 }
 
-// HandleData 将客户端 DATA 写入远端。
-func (m *ExitStreamManager) HandleData(circID uint32, streamID uint16, data []byte) error {
+// HandleData 将客户端 DATA 写入远端，并维护入向 SENDME。
+func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn, streamID uint16, data []byte) error {
 	m.mu.Lock()
-	es := m.streams[streamKey{circID, streamID}]
+	es := m.streams[streamKey{circ.CircuitID, streamID}]
 	m.mu.Unlock()
 	if es == nil || es.conn == nil {
-		return fmt.Errorf("unknown exit stream %d/%d", circID, streamID)
+		return fmt.Errorf("unknown exit stream %d/%d", circ.CircuitID, streamID)
 	}
-	_, err := es.conn.Write(data)
-	return err
+	if _, err := es.conn.Write(data); err != nil {
+		return err
+	}
+
+	// 入向：每 100 个 DATA 回电路级 + 流级 SENDME
+	sendCirc, sendStream := false, false
+	m.mu.Lock()
+	m.circInCount[circ.CircuitID]++
+	if m.circInCount[circ.CircuitID] >= exitSendmeInc {
+		m.circInCount[circ.CircuitID] = 0
+		sendCirc = true
+	}
+	es.deliverCount++
+	if es.deliverCount >= exitSendmeInc {
+		es.deliverCount = 0
+		sendStream = true
+	}
+	m.mu.Unlock()
+
+	if sendCirc {
+		_ = m.sendRelay(circ, clientConn, 0, cell.RelaySendme, nil)
+	}
+	if sendStream {
+		_ = m.sendRelay(circ, clientConn, streamID, cell.RelaySendme, nil)
+	}
+	return nil
+}
+
+// HandleSendme 客户端 SENDME：恢复出向窗口。
+func (m *ExitStreamManager) HandleSendme(circID uint32, streamID uint16) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if streamID == 0 {
+		m.circOutWindow[circID] += exitSendmeInc
+		return
+	}
+	if es := m.streams[streamKey{circID, streamID}]; es != nil {
+		es.packageWindow += exitSendmeInc
+	}
 }
 
 // HandleEnd 关闭出口流。
@@ -127,12 +241,17 @@ func (m *ExitStreamManager) pumpRemoteToClient(ctx context.Context, circ *Server
 			return
 		default:
 		}
+		// 等待出向窗口
+		if !m.waitOutWindow(ctx, circ.CircuitID, streamID) {
+			return
+		}
 		_ = remote.SetReadDeadline(time.Now().Add(60 * time.Second))
 		n, err := remote.Read(buf)
 		if n > 0 {
 			if err := m.sendRelay(circ, clientConn, streamID, cell.RelayData, buf[:n]); err != nil {
 				return
 			}
+			m.consumeOutWindow(circ.CircuitID, streamID)
 		}
 		if err != nil {
 			if err != io.EOF {
@@ -141,6 +260,41 @@ func (m *ExitStreamManager) pumpRemoteToClient(ctx context.Context, circ *Server
 			_ = m.sendEnd(circ, clientConn, streamID, cell.EndReasonDone)
 			return
 		}
+	}
+}
+
+func (m *ExitStreamManager) waitOutWindow(ctx context.Context, circID uint32, streamID uint16) bool {
+	for {
+		m.mu.Lock()
+		cw := m.circOutWindow[circID]
+		sw := 0
+		es := m.streams[streamKey{circID, streamID}]
+		if es != nil {
+			sw = es.packageWindow
+		}
+		m.mu.Unlock()
+		if es == nil {
+			return false
+		}
+		if cw > 0 && sw > 0 {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func (m *ExitStreamManager) consumeOutWindow(circID uint32, streamID uint16) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.circOutWindow[circID] > 0 {
+		m.circOutWindow[circID]--
+	}
+	if es := m.streams[streamKey{circID, streamID}]; es != nil && es.packageWindow > 0 {
+		es.packageWindow--
 	}
 }
 
@@ -158,10 +312,15 @@ func (m *ExitStreamManager) sendRelay(circ *ServerCircuit, clientConn net.Conn, 
 		return err
 	}
 	if len(plain) != 509 {
-		// pad / truncate to 509
 		out := make([]byte, 509)
 		copy(out, plain)
 		plain = out
+	}
+	// 电路级：加密与 OR 写串行化
+	circ.mu.Lock()
+	defer circ.mu.Unlock()
+	if circ.crypto == nil {
+		return fmt.Errorf("circuit crypto gone")
 	}
 	enc, err := circ.crypto.encryptOutbound(plain)
 	if err != nil {
@@ -180,13 +339,11 @@ func parseBeginAddr(data []byte) (host string, port uint16, err error) {
 	if s == "" {
 		return "", 0, fmt.Errorf("empty BEGIN")
 	}
-	// flags after space ignored
 	if i := strings.IndexByte(s, ' '); i >= 0 {
 		s = s[:i]
 	}
 	h, pstr, err := net.SplitHostPort(s)
 	if err != nil {
-		// maybe host only with default? require port
 		return "", 0, err
 	}
 	p, err := strconv.Atoi(pstr)

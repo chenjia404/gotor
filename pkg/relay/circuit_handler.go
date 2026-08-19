@@ -249,12 +249,13 @@ func (h *CircuitHandler) handleRelay(conn net.Conn, c *cell.Cell) error {
 func (h *CircuitHandler) handleDestroy(c *cell.Cell) error {
 	h.logger.Info("Received DESTROY", "circuit_id", c.CircID)
 
-	// Clean up forwarding state if this is an extended circuit
 	if h.forwarder != nil {
 		h.forwarder.HandleDestroy(c.CircID)
 	}
+	if h.exits != nil {
+		h.exits.CloseCircuit(c.CircID)
+	}
 
-	// Remove circuit state
 	h.mu.Lock()
 	delete(h.circuits, c.CircID)
 	h.mu.Unlock()
@@ -295,6 +296,12 @@ func (h *CircuitHandler) GetCircuitCount() int {
 
 // CloseCircuit destroys a circuit
 func (h *CircuitHandler) CloseCircuit(circuitID uint32) {
+	if h.exits != nil {
+		h.exits.CloseCircuit(circuitID)
+	}
+	if h.forwarder != nil {
+		h.forwarder.HandleDestroy(circuitID)
+	}
 	h.mu.Lock()
 	delete(h.circuits, circuitID)
 	h.mu.Unlock()
@@ -304,9 +311,11 @@ func (h *CircuitHandler) CloseCircuit(circuitID uint32) {
 
 // CloseAll destroys all circuits
 func (h *CircuitHandler) CloseAll() {
-	// Close forwarding handler first
 	if h.forwarder != nil {
 		h.forwarder.CloseAll()
+	}
+	if h.exits != nil {
+		h.exits.CloseAll()
 	}
 
 	h.mu.Lock()

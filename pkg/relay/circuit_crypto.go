@@ -6,6 +6,7 @@ import (
 	"crypto/sha1" // #nosec G505 — Tor1 摘要
 	"fmt"
 	"hash"
+	"sync"
 
 	"github.com/opd-ai/go-tor/pkg/crypto"
 )
@@ -13,6 +14,7 @@ import (
 // circuitCrypto 持有单跳服务端加解密状态。
 // 客户端→中继用 Kf/Df；中继→客户端用 Kb/Db。
 type circuitCrypto struct {
+	mu        sync.Mutex
 	fwdCipher cipher.Stream // 解密入站（Kf）
 	bwdCipher cipher.Stream // 加密出站（Kb）
 	fwdDigest hash.Hash     // Df
@@ -48,26 +50,37 @@ func newCircuitCrypto(keyMaterial []byte) (*circuitCrypto, error) {
 	}, nil
 }
 
-// decryptInbound 解密客户端发来的 509 字节 RELAY payload，校验 recognized。
+// decryptInbound 解密客户端发来的 509 字节 RELAY payload。
+// 先在 digest 副本上校验，通过后再提交到 live digest，避免 mismatch 永久失步。
 func (cc *circuitCrypto) decryptInbound(payload []byte) ([]byte, error) {
 	if cc == nil || len(payload) != 509 {
 		return nil, fmt.Errorf("invalid inbound payload")
 	}
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+
 	out := append([]byte(nil), payload...)
 	cc.fwdCipher.XORKeyStream(out, out)
-	// recognized: bytes 1-2 of digest field (offset 5-6 in relay header) — tor1
-	// 布局: cmd(1) recognized(2) streamID(2) digest(4) length(2) data...
 	if out[1] != 0 || out[2] != 0 {
 		return nil, fmt.Errorf("relay cell not recognized")
 	}
 	cellCopy := append([]byte(nil), out...)
 	cellCopy[5], cellCopy[6], cellCopy[7], cellCopy[8] = 0, 0, 0, 0
-	if _, err := cc.fwdDigest.Write(cellCopy); err != nil {
+
+	probe, err := crypto.CloneHash(cc.fwdDigest)
+	if err != nil {
+		return nil, fmt.Errorf("clone digest: %w", err)
+	}
+	if _, err := probe.Write(cellCopy); err != nil {
 		return nil, err
 	}
-	sum := cc.fwdDigest.Sum(nil)
+	sum := probe.Sum(nil)
 	if sum[0] != out[5] || sum[1] != out[6] || sum[2] != out[7] || sum[3] != out[8] {
 		return nil, fmt.Errorf("relay digest mismatch")
+	}
+	// 校验通过后再提交 live digest
+	if _, err := cc.fwdDigest.Write(cellCopy); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -77,6 +90,9 @@ func (cc *circuitCrypto) encryptOutbound(payload []byte) ([]byte, error) {
 	if cc == nil || len(payload) != 509 {
 		return nil, fmt.Errorf("invalid outbound payload")
 	}
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+
 	out := append([]byte(nil), payload...)
 	out[1], out[2] = 0, 0
 	out[5], out[6], out[7], out[8] = 0, 0, 0, 0
