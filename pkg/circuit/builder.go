@@ -27,6 +27,7 @@ type Builder struct {
 	manager         *Manager
 	rateLimiter     *ratelimit.RateLimiter // Rate limiter for circuit creation
 	metricsRecorder MetricsRecorder        // Metrics recorder for rate limiting stats
+	ccParams        CCParams               // 已验签共识的 FlowCtrl=2 参数
 	mu              sync.Mutex
 }
 
@@ -41,7 +42,15 @@ func NewBuilder(manager *Manager, log *logger.Logger) *Builder {
 		manager:         manager,
 		rateLimiter:     nil, // Disabled by default, enabled via SetRateLimiter
 		metricsRecorder: nil, // Disabled by default, enabled via SetMetricsRecorder
+		ccParams:        DefaultCCParams(),
 	}
+}
+
+// SetCCParams 写入从已验签共识解析的 FlowCtrl=2 参数。
+func (b *Builder) SetCCParams(p CCParams) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.ccParams = p
 }
 
 // SetRateLimiter sets the rate limiter for circuit creation.
@@ -98,6 +107,7 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 	if err != nil {
 		return nil, fmt.Errorf("failed to create circuit: %w", err)
 	}
+	circuit.SetCCParams(b.ccParams)
 
 	// Build with timeout
 	buildCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -163,6 +173,7 @@ func (b *Builder) BuildFirstHop(ctx context.Context, guard *directory.Relay, tim
 	if err != nil {
 		return nil, fmt.Errorf("failed to create circuit: %w", err)
 	}
+	circuit.SetCCParams(b.ccParams)
 	buildCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

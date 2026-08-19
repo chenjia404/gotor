@@ -3,6 +3,7 @@ package circuit
 import (
 	"crypto/subtle"
 	"fmt"
+	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 )
@@ -12,6 +13,11 @@ const (
 	sendmeAcceptMin     = cell.SendmeVersion1
 )
 
+type sendmePending struct {
+	digest []byte
+	sentAt time.Time
+}
+
 func cloneDigest(tag []byte) []byte {
 	if len(tag) == 0 {
 		return nil
@@ -19,7 +25,7 @@ func cloneDigest(tag []byte) []byte {
 	return append([]byte(nil), tag...)
 }
 
-// maybeRecordSendmeTag 在发出 DATA 后，若 package window 落到 100 的倍数，
+// maybeRecordSendmeTag 在发出 DATA 后，若 package window 落到 increment 的倍数，
 // 记下该 cell 的 20 字节滚动摘要，供对端电路级 SENDME v1 校验。
 // 对照 spec flow-control 与 C Tor sendme_record_cell_digest_on_circ。
 func (c *Circuit) maybeRecordSendmeTag(tag []byte) {
@@ -28,11 +34,24 @@ func (c *Circuit) maybeRecordSendmeTag(tag []byte) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.vegas != nil {
+		if c.vegas.inflight > 0 && c.vegas.inflight%c.vegas.sendmeInc == 0 {
+			c.enqueueSendmeLocked(tag)
+		}
+		return
+	}
 	// window==0 也是 increment 的倍数（第 N 个 DATA），必须入队。
 	inc := c.sendmeIncrementLocked()
 	if c.packageWindow%inc == 0 {
-		c.sendmeExpected = append(c.sendmeExpected, cloneDigest(tag))
+		c.enqueueSendmeLocked(tag)
 	}
+}
+
+func (c *Circuit) enqueueSendmeLocked(tag []byte) {
+	c.sendmeExpected = append(c.sendmeExpected, sendmePending{
+		digest: cloneDigest(tag),
+		sentAt: time.Now(),
+	})
 }
 
 func (c *Circuit) sendmeIncrementLocked() int {
@@ -42,7 +61,18 @@ func (c *Circuit) sendmeIncrementLocked() int {
 	return circWindowIncrement
 }
 
-// EnableCongestionControl 在 ntor-v3 协商到 CC_FIELD_RESPONSE 后启用 FlowCtrl=2 窗口。
+// SetCCParams 在建路前写入已验签共识的 CC 参数。未调用则用 C Tor 默认。
+func (c *Circuit) SetCCParams(p CCParams) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ccParams = p
+}
+
+// EnableCongestionControl 在 ntor-v3 协商到 CC_FIELD_RESPONSE 后启用 FlowCtrl=2 Vegas。
+// sendme_inc 必须用握手结果，不能用共识默认值覆盖对端给出的值。
 func (c *Circuit) EnableCongestionControl(sendmeInc int) {
 	if c == nil || sendmeInc < 1 || sendmeInc > 250 {
 		return
@@ -50,15 +80,29 @@ func (c *Circuit) EnableCongestionControl(sendmeInc int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.sendmeInc = sendmeInc
-	c.packageWindow = defaultCCCwndInit
-	c.deliverWindow = defaultCCCwndInit
+	p := c.ccParams
+	if p.CwndInit < 1 {
+		p = DefaultCCParams()
+		c.ccParams = p
+	}
+	c.vegas = newVegasState(p, sendmeInc)
+	c.packageWindow = c.vegas.cwnd
+	c.deliverWindow = c.vegas.cwnd
 }
 
 // decrementPackageWindowForSendme 原子减窗，并标明本 cell 是否落在 SENDME 边界。
-// 与记 tag 分两步但边界判定必须与减窗同一把锁，避免并发漏记。
+// Vegas：用 inflight；经典：用 packageWindow。边界判定必须与记账同一把锁。
 func (c *Circuit) decrementPackageWindowForSendme() (record bool, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.vegas != nil {
+		if c.vegas.inflight >= c.vegas.cwnd {
+			return false, fmt.Errorf("package window exhausted: cannot send more cells until SENDME received")
+		}
+		c.vegas.inflight++
+		c.packageWindow = c.vegas.packageWindow()
+		return c.vegas.inflight%c.vegas.sendmeInc == 0, nil
+	}
 	if c.packageWindow <= 0 {
 		return false, fmt.Errorf("package window exhausted: cannot send more cells until SENDME received")
 	}
@@ -72,11 +116,11 @@ func (c *Circuit) recordSendmeTag(tag []byte) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.sendmeExpected = append(c.sendmeExpected, cloneDigest(tag))
+	c.enqueueSendmeLocked(tag)
 }
 
 // decrementDeliverWindowAndTakeSendme 原子减 deliver 窗。
-// 若凑满 100 个 DATA，立即清零计数并返回 true，避免突发 DATA 重复发 SENDME。
+// 若凑满 increment 个 DATA，立即清零计数并返回 true，避免突发 DATA 重复发 SENDME。
 func (c *Circuit) decrementDeliverWindowAndTakeSendme() (send bool, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -106,8 +150,8 @@ func (c *Circuit) snapshotBackwardDigest(hopIdx int) []byte {
 	return hop.BackwardDigest.Sum(nil)
 }
 
-// processCircuitSendme 校验电路级 SENDME v1 后增加 package window。
-// digest 不匹配或 version < 1 必须拆路（spec：tear down）。
+// processCircuitSendme 校验电路级 SENDME v1 后更新发送窗口。
+// 已协商 CC 时跑 Vegas；否则按经典 +increment。digest 不匹配必须拆路。
 func (c *Circuit) processCircuitSendme(payload []byte) error {
 	version, digest, err := cell.DecodeSendme(payload)
 	if err != nil {
@@ -122,10 +166,19 @@ func (c *Circuit) processCircuitSendme(payload []byte) error {
 		return fmt.Errorf("unexpected circuit SENDME")
 	}
 	expected := c.sendmeExpected[0]
-	if subtle.ConstantTimeCompare(expected, digest) != 1 {
+	if subtle.ConstantTimeCompare(expected.digest, digest) != 1 {
 		return fmt.Errorf("SENDME digest mismatch")
 	}
 	c.sendmeExpected = c.sendmeExpected[1:]
+	if c.vegas != nil {
+		rtt := int64(0)
+		if !expected.sentAt.IsZero() {
+			rtt = time.Since(expected.sentAt).Microseconds()
+		}
+		c.vegas.processSendme(rtt)
+		c.packageWindow = c.vegas.packageWindow()
+		return nil
+	}
 	c.packageWindow += c.sendmeIncrementLocked()
 	return nil
 }
@@ -163,4 +216,18 @@ func (c *Circuit) SendmeIncrement() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.sendmeIncrementLocked()
+}
+
+// CongestionControlEnabled 表示本电路已协商 FlowCtrl=2 并启用 Vegas。
+func (c *Circuit) CongestionControlEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.vegas != nil
+}
+
+// VegasStats 返回当前 Vegas 快照；未启用时 Enabled=false。
+func (c *Circuit) VegasStats() VegasSnapshot {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.vegas.snapshot()
 }

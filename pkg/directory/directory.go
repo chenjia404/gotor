@@ -145,6 +145,8 @@ type Client struct {
 	logger      *logger.Logger
 	authorities []string
 	certCache   *AuthorityCertCache // Certificate cache for signature verification
+	mu          sync.RWMutex
+	lastParams  map[string]int // 最近一次验签成功的共识 params（给 FlowCtrl=2）
 }
 
 // AuthorityCertCache caches authority signing certificates for consensus verification
@@ -316,7 +318,33 @@ func (c *Client) fetchFromAuthority(ctx context.Context, authorityURL string) ([
 		"valid_after", metadata.ValidAfter,
 		"valid_until", metadata.ValidUntil)
 
+	c.storeLastParams(metadata.Params)
 	return relays, nil
+}
+
+func (c *Client) storeLastParams(params map[string]int) {
+	copied := make(map[string]int, len(params))
+	for k, v := range params {
+		copied[k] = v
+	}
+	c.mu.Lock()
+	c.lastParams = copied
+	c.mu.Unlock()
+}
+
+// LastConsensusParams 返回最近一次验签成功的共识 params 副本。
+// 尚未成功拉共识时返回 nil，调用方应使用编译默认值。
+func (c *Client) LastConsensusParams() map[string]int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.lastParams == nil {
+		return nil
+	}
+	out := make(map[string]int, len(c.lastParams))
+	for k, v := range c.lastParams {
+		out[k] = v
+	}
+	return out
 }
 
 // parseConsensus parses a consensus document and extracts relay information

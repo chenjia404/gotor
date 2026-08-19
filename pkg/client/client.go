@@ -413,6 +413,7 @@ func (c *Client) buildCircuitForPool(ctx context.Context) (*circuit.Circuit, err
 
 	// Create circuit builder
 	builder := circuit.NewBuilder(c.circuitMgr, c.logger)
+	builder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
 
 	// Configure rate limiter if enabled
 	if c.circuitRateLimiter != nil {

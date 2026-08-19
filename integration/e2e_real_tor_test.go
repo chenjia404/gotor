@@ -322,10 +322,11 @@ func TestRealFlowControlSoak(t *testing.T) {
 	}
 	httpClient.Timeout = 2 * time.Minute
 
-	// spec.torproject.org 经部分 exit 只回极短页面；重复拉 torproject.org 直到超过 100 DATA cell。
-	const wantBytes = 256 * 1024
+	// spec.torproject.org 经部分 exit 只回极短页面；重复拉 torproject.org 直到超过 1MB，
+	// 以覆盖 FlowCtrl=2 Vegas + 多次电路级 SENDME v1。
+	const wantBytes = 1024 * 1024
 	var total int64
-	for i := 0; total < wantBytes && i < 40; i++ {
+	for i := 0; total < wantBytes && i < 80; i++ {
 		u := fmt.Sprintf("https://www.torproject.org/?soak=%d", i)
 		resp, err := httpClient.Get(u)
 		if err != nil {
@@ -348,7 +349,7 @@ func TestRealFlowControlSoak(t *testing.T) {
 	if total < wantBytes {
 		t.Fatalf("only downloaded %d bytes, want >= %d (need enough DATA to exercise SENDME)", total, wantBytes)
 	}
-	t.Logf("soak OK bytes=%d (circuit survived authenticated SENDME)", total)
+	t.Logf("soak OK bytes=%d (circuit survived authenticated SENDME + FlowCtrl=2 Vegas)", total)
 }
 
 // TestRealRelayResolve 在 3-hop 上发 RELAY_RESOLVE，并把本机 resolver 指到不可达地址，
