@@ -232,6 +232,60 @@ func TestRealCheckTorProject(t *testing.T) {
 	t.Fatalf("check.torproject.org failed after %d attempts: %v", maxAttempts, lastErr)
 }
 
+// TestRealFlowControlSoak 下载足够 DATA 以触发电路级 SENDME。
+// 约 100 个 DATA cell（~50KB）就会发第一个 v1 SENDME；若仍发空 v0，现代 exit 会 DESTROY。
+func TestRealFlowControlSoak(t *testing.T) {
+	requireRealTor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+
+	tor, err := client.ConnectWithContext(ctx)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer tor.Close()
+	if err := tor.WaitUntilReady(3 * time.Minute); err != nil {
+		t.Fatalf("WaitUntilReady: %v", err)
+	}
+
+	httpClient, err := helpers.NewHTTPClient(tor, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpClient.Timeout = 2 * time.Minute
+
+	urls := []string{
+		"https://spec.torproject.org/tor-spec.html",
+		"https://spec.torproject.org/dir-spec.html",
+		"https://www.torproject.org/",
+		"https://spec.torproject.org/padding-spec.html",
+	}
+	const wantBytes = 256 * 1024
+	var total int64
+	for _, u := range urls {
+		if total >= wantBytes {
+			break
+		}
+		resp, err := httpClient.Get(u)
+		if err != nil {
+			t.Logf("GET %s: %v", u, err)
+			continue
+		}
+		n, err := io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Logf("read %s: %v", u, err)
+			continue
+		}
+		total += n
+		t.Logf("downloaded %d bytes from %s (total=%d)", n, u, total)
+	}
+	if total < wantBytes {
+		t.Fatalf("only downloaded %d bytes, want >= %d (need enough DATA to exercise SENDME)", total, wantBytes)
+	}
+	t.Logf("soak OK bytes=%d (circuit survived authenticated SENDME)", total)
+}
+
 func buildLiveCircuit(t *testing.T) (*circuit.Circuit, *path.Path) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
