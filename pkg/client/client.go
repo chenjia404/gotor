@@ -91,6 +91,10 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 
 	// Initialize directory client
 	dirClient := directory.NewClient(log)
+	if err := dirClient.EnableCertDiskCache(cfg.DataDirectory); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to enable authority cert disk cache: %w", err)
+	}
 
 	// Initialize circuit manager
 	circuitMgr := circuit.NewManager()

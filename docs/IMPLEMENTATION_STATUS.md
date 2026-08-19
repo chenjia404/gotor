@@ -1,7 +1,7 @@
 # gotor 实现状态（按当前代码重审）
 
 **日期**：2026-08-19  
-**分支**：`cursor/consensus-diff-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
+**分支**：`cursor/authcert-disk-8e65`（基于 `origin/main`，纯 Go，禁止 CGO）  
 **原则**：UNVERIFIED 不能算完成。文档（ROADMAP.md ~98%、AUDIT.md、GAPS.md）不可盲信，必须以仓库代码 + **现行** Tor Spec / C Tor / Arti 为准。
 
 状态定义：
@@ -36,7 +36,7 @@
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| Directory / Consensus | PARTIAL | 生产验签已在真实网络通过（9/9 权威）。证书未落盘；缺官方长期 fixture；consensus diff（DirCache=2）已实现，待真实验收 |
+| Directory / Consensus | PARTIAL | 生产验签已在真实网络通过（9/9 权威）。证书已落盘 `cached-certs`，缺官方长期 fixture；consensus diff（DirCache=2）已实现，待真实验收 |
 | Microdescriptor fetch/parse | PARTIAL | 解析与 digest 已按 spec 修正，真实网络可填充密钥；缺长期 fixture 回归 |
 | Relay.IdentityKey / NtorOnionKey | PARTIAL | 现来自 microdescriptor，禁止全零 fallback；须由 fetch 成功才可用 |
 | Link TLS | PARTIAL | TLS 能连上；身份不以 TLS 成功为准 |
@@ -190,10 +190,18 @@
 
 #### 10. 权威证书落盘 + 官方长期 fixture
 
-- **状态**：PARTIAL。生产会拉 `/tor/keys/fp/<id>` 并验签，进程内缓存。
-- **未做**：磁盘缓存、过期刷新、从 C Tor/Arti 导出的不可变 fixture。
-- **现有代码**：`pkg/directory` certcache
-- **验收**：离线 fixture 验签；证书过期必须失败。
+- **状态**：PARTIAL（`cached-certs` 落盘 + 加载重验签；官方长期 fixture 仍缺）。
+- **已做**：
+  - 启动时读 `DataDirectory/cached-certs`（C Tor 拼接文本格式）
+  - 加载时强制 KnownAuthorities + certification/crosscert + 未过期
+  - 验签成功的证书原子写入（临时文件 + rename，`0600`）
+  - 损坏/超大文件不阻断启动；过期与未知权威跳过
+  - 可用性以 `dir-key-expires` 为准
+  - 离线单测：落盘重载不访问 HTTP；过期必须失败
+- **未做**：从 C Tor/Arti 导出的不可变实网证书（实网证书会过期，不得当长期 fixture）
+- **现有代码**：`pkg/directory/certcache_disk.go`；文档 `docs/interop/authcert-cache.md`
+- **验收**：离线 fixture 验签；证书过期必须失败。真实重启后少拉 `/tor/keys/fp` 再标 WORKING。
+- **禁止**：为过测试放宽过期检查；把过期/未知权威证书当成功缓存；C 库 / CGO。
 
 ### P3 — 向量、选路、文档债务（不阻塞主链路，但不得宣称「已有官方向量」）
 
@@ -237,6 +245,7 @@
 - `valid-after` / `fresh-until` / `valid-until`、flags、bandwidth、`m` digest 有解析。
 - Authority 列表已更新到当前公开 IP。
 - 生产 `FetchConsensus` 在 metadata 之外强制 `VerifyConsensusSignatures`：`/tor/keys/fp/<id>`、`dir-signing-key`、`dir-key-certification`、`dir-key-crosscert`、majority（5/9）。
+- 权威证书落盘 `DataDirectory/cached-certs`；加载时重验签，过期拒绝。见 `docs/interop/authcert-cache.md`。
 - DirCache=2：有缓存时请求 limited ed consensus diff；apply / 验签失败回退整份。见 `docs/interop/consensus-diff.md`。
 - `r` / `valid-*` / `params` 只解析 signed body；未签名前缀/后缀不得注入 relay 或改写有效期。
 - 真实网络：`TestRealConsensusSignatures` 验证 **9/9** 权威签名，共识含约 10143 个 relay。

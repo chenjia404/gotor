@@ -22,6 +22,7 @@ microdesc 共识的 `directory-signature` 算法为 `sha256`。
 
 ## 证书
 
+- 磁盘缓存见 `docs/interop/authcert-cache.md`（`DataDirectory/cached-certs`）。
 - 拉取 `/tor/keys/fp/<IDENTITY>`，不要只用 `/tor/keys/authority` 的第一把 RSA（那是 identity，不是 signing）。
 - `dir-signing-key` 才是验共识的公钥。
 - `SHA1(PKCS1(identity))` 必须等于硬编码 `KnownAuthorities.V3Ident`。

@@ -36,9 +36,6 @@ const (
 	minSignatureThreshold   = 5                // Minimum valid signatures required (proper quorum)
 	maxClockSkew            = 30 * time.Minute // Maximum allowed clock skew for consensus timestamps
 
-	// Certificate caching
-	certCacheTTL = 24 * time.Hour // Authority certificates are valid for ~30 days, cache for 24h
-
 	// 共识正文上限（整份或 apply 后）。真实 microdesc 共识约 1–3MB。
 	maxConsensusDownloadBytes = 16 << 20
 )
@@ -160,9 +157,10 @@ type Client struct {
 
 // AuthorityCertCache caches authority signing certificates for consensus verification
 type AuthorityCertCache struct {
-	mu     sync.RWMutex
-	certs  map[string]*AuthorityCert // Key: identity fingerprint (v3ident)
-	logger *logger.Logger
+	mu       sync.RWMutex
+	certs    map[string]*AuthorityCert // Key: identity fingerprint (v3ident)
+	diskPath string                    // DataDirectory/cached-certs；空则不落盘
+	logger   *logger.Logger
 }
 
 // AuthorityCert 是一份权威密钥证书（dir-key-certificate-version 3）。
@@ -1072,6 +1070,7 @@ func (c *AuthorityCertCache) getMatching(ctx context.Context, identity, signingD
 	}
 	c.certs[identity] = newCert
 	c.mu.Unlock()
+	c.persistToDisk()
 	c.logger.Info("Cached authority certificate", "identity", identity, "expires", newCert.ExpiresAt)
 	return newCert, nil
 }
@@ -1080,7 +1079,9 @@ func cacheFresh(cert *AuthorityCert) bool {
 	if cert == nil {
 		return false
 	}
-	return time.Since(cert.FetchedAt) < certCacheTTL && time.Now().Before(cert.ExpiresAt)
+	// 可用性以 dir-key-expires 为准（C Tor cached-certs）。加载时仍强制
+	// certification / crosscert；过期证书不得使用。
+	return time.Now().Before(cert.ExpiresAt)
 }
 
 // fetchAuthorityCert 从 /tor/keys/fp/<IDENTITY> 拉取证书，并校验 certification / crosscert。
@@ -1108,11 +1109,15 @@ func (c *AuthorityCertCache) fetchAuthorityCert(ctx context.Context, identity, s
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxCachedCertsBytes+1))
+		_ = resp.Body.Close()
 
 		if err != nil {
 			lastErr = err
+			continue
+		}
+		if len(body) > maxCachedCertsBytes {
+			lastErr = fmt.Errorf("authority certificate exceeds %d bytes", maxCachedCertsBytes)
 			continue
 		}
 
