@@ -30,6 +30,8 @@ type ServerCircuit struct {
 	introAuth    []byte // 已建立引言点的 AUTH_KEY（32 字节）
 	rendCookie   []byte // ESTABLISH_RENDEZVOUS cookie（20 字节）
 	didExtend    bool   // 本电路处理过 EXTEND2（单跳拒绝用）
+	joinedCirc   *ServerCircuit
+	joinedConn   net.Conn
 	mu           sync.RWMutex
 }
 
@@ -335,6 +337,9 @@ func (h *CircuitHandler) CloseCircuit(circuitID uint32) {
 		h.exits.CloseCircuit(circuitID)
 	}
 	if h.forwarder != nil {
+		if circ != nil {
+			h.forwarder.forgetHS(circ)
+		}
 		_ = h.forwarder.HandleDestroy(circuitID)
 	}
 	h.logger.Info("Circuit closed", "circuit_id", circuitID)

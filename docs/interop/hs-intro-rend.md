@@ -1,32 +1,39 @@
-# 中继受理 ESTABLISH_INTRO / ESTABLISH_RENDEZVOUS
+# 中继受理 ESTABLISH / INTRODUCE1 / RENDEZVOUS1 与 HSDir 收/服
 
 **日期**：2026-08-20  
 **状态**：PARTIAL（离线单测；**未**宣告 `HSIntro=` / `HSRend=` / `HSDir=`）
 
-对照：[rend-spec-v3](https://spec.torproject.org/rend-spec/introduction-handshake.html)（引言点 ESTABLISH_INTRO / INTRO_ESTABLISHED；会合点 ESTABLISH_RENDEZVOUS / RENDEZVOUS_ESTABLISHED）。
+对照：
 
-本切片只讲中继 **作为最后一跳** 受理建立单元格。客户端侧 ESTABLISH 构造仍见 `pkg/onion/establish_intro.go`。
+- [rend-spec-v3 introduction](https://spec.torproject.org/rend-spec/introduction-protocol.html)
+- [rend-spec-v3 rendezvous](https://spec.torproject.org/rend-spec/rendezvous-protocol.html)
+- [rend-spec-v3 HSDir](https://spec.torproject.org/rend-spec/hsdesc-encrypt.html)
+
+本文件只讲中继 **作为最后一跳 / 目录缓存** 的行为。客户端构造仍见 `pkg/onion/`。
 
 ## 本切片已做
 
-| 单元格 | 行为 |
-|--------|------|
-| ESTABLISH_INTRO（RELAY 32，StreamID=0） | 用本跳 `rend_circ_nonce`（ntor 展开 92 字节的后 20，或 ntor-v3 KDF 末 20）校验 MAC/签名；通过则回 INTRO_ESTABLISHED（38） |
-| ESTABLISH_RENDEZVOUS（RELAY 33，StreamID=0） | 接受 20 字节 cookie；回 RENDEZVOUS_ESTABLISHED（39） |
-| CREATE2 ntor / ntor-v3 | 把 `circ_nonce` 存进 `ServerCircuit`，供引言点 MAC |
+| 单元格 / 路径 | 行为 |
+|----------------|------|
+| ESTABLISH_INTRO（32） | 用 `rend_circ_nonce` 校验；按 AUTH_KEY 登记；回 INTRO_ESTABLISHED（38） |
+| INTRODUCE1（34） | 解析 v3 AUTH_KEY；命中则原样转发 INTRODUCE2（35）给服务电路，并向客户端回 INTRODUCE_ACK（40）。未知=NOT_RECOGNIZED，坏格式=BAD_MESSAGE_FORMAT |
+| ESTABLISH_RENDEZVOUS（33） | 接受 20 字节 cookie 并登记；回 RENDEZVOUS_ESTABLISHED（39） |
+| RENDEZVOUS1（36） | cookie 命中则向客户端电路发 RENDEZVOUS2（handshake，无 cookie），并把两条电路拼起来转发后续 RELAY |
+| `POST /tor/hs/3/publish` | 接受 `hs-descriptor` 外层（≤100KiB，最多 64 份，3h TTL） |
+| `GET /tor/hs/3/<base64>` | 用 type-8 证书验盲化公钥后回文档 |
+| CREATE2 ntor / ntor-v3 | 保存 `circ_nonce` |
 
-重复 ESTABLISH、StreamID≠0、MAC 失败：DESTROY（protocol）。
+AUTH_KEY / cookie 冲突、电路已是另一角色、StreamID≠0、坏 MAC：DESTROY（protocol）。
 
 ## 明确未做（因此禁止 HS* proto）
 
-- HSDir 收/服务 v3 描述符
-- INTRODUCE1 转发 / INTRODUCE2 投递给托管服务
-- RENDEZVOUS1 / RENDEZVOUS2
-- 引言点/会合点生命周期、限速、官方 intro/rend 统计
+- 引言点 DoS 扩展 / INTRODUCE2 令牌桶
+- 会合点完整生命周期与官方统计
+- HSDir 哈希环责任、副本、修订号覆盖策略、真网被选为 HSDir
 - 真网官方客户端把本中继选为 intro/rend/HSDir 的证据
 
 ## 禁止
 
 - 在 `proto` 写 `HSDir=` / `HSIntro=` / `HSRend=`
 - 用电路 ntor 冒充 hs-ntor
-- 把本切片单测写成「已具备 HS 中继角色」
+- 把本切片单测写成「已具备完整 HS 中继角色」

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"compress/gzip"
 	"compress/zlib"
+	"crypto/ed25519"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/directory"
+	"github.com/opd-ai/go-tor/pkg/onion"
 )
 
 func TestDirCacheServesCachedConsensus(t *testing.T) {
@@ -386,6 +389,48 @@ func TestDirCacheDotZIsDeflate(t *testing.T) {
 	if err != nil || string(got) != string(body) {
 		t.Fatalf("deflate body %q %v", got, err)
 	}
+}
+
+func TestDirCacheHSDirPublishAndFetch(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, blinded, err := onion.BuildSignedHSDescriptor(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(t.TempDir(), nil)
+	pub := httptest.NewRequest(http.MethodPost, "/tor/hs/3/publish", strings.NewReader(string(raw)))
+	pubRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(pubRec, pub)
+	if pubRec.Code != http.StatusOK {
+		t.Fatalf("publish %d", pubRec.Code)
+	}
+	path := "/tor/hs/3/" + base64.RawStdEncoding.EncodeToString(blinded)
+	req := httptest.NewRequest(http.MethodGet, path, http.NoBody)
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetch %d", rec.Code)
+	}
+	if rec.Body.String() != string(raw) {
+		t.Fatal("GET 必须回同一份外层描述符")
+	}
+	miss := httptest.NewRequest(http.MethodGet, "/tor/hs/3/"+base64.RawStdEncoding.EncodeToString(bytesRepeatDir(0x09, 32)), http.NoBody)
+	missRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(missRec, miss)
+	if missRec.Code != http.StatusNotFound {
+		t.Fatalf("unknown blinded id should 404, got %d", missRec.Code)
+	}
+}
+
+func bytesRepeatDir(b byte, n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = b
+	}
+	return out
 }
 
 func TestDirCacheDotZWithAcceptEncodingGzip(t *testing.T) {

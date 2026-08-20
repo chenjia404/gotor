@@ -38,6 +38,14 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 		return fmt.Errorf("invalid relay cell: %w", err)
 	}
 
+	circ.mu.RLock()
+	joined := circ.joinedCirc
+	joinedConn := circ.joinedConn
+	circ.mu.RUnlock()
+	if joined != nil && joinedConn != nil {
+		return sendRelayToClient(joined, joinedConn, relayCell.StreamID, relayCell.Command, relayCell.Data)
+	}
+
 	h.logger.Debug("Handling local relay cell",
 		"circuit_id", circuitID,
 		"command", cell.RelayCmdString(relayCell.Command),
@@ -109,6 +117,18 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 			return h.rejectHSControlStream(circ, clientConn, "ESTABLISH_RENDEZVOUS")
 		}
 		return h.handleEstablishRendezvous(circ, clientConn, relayCell.Data)
+
+	case cell.RelayIntroduce1:
+		if relayCell.StreamID != 0 {
+			return h.rejectHSControlStream(circ, clientConn, "INTRODUCE1")
+		}
+		return h.handleIntroduce1(circ, clientConn, relayCell.Data)
+
+	case cell.RelayRendezvous1:
+		if relayCell.StreamID != 0 {
+			return h.rejectHSControlStream(circ, clientConn, "RENDEZVOUS1")
+		}
+		return h.handleRendezvous1(circ, clientConn, relayCell.Data)
 
 	default:
 		return nil
@@ -235,5 +255,9 @@ func (h *ForwardingHandler) CloseAll() {
 		h.logger.Debug("Closed extended circuit", "circuit_id", circID)
 	}
 	h.extended = make(map[uint32]*ExtendedCircuit)
+	h.hsMu.Lock()
+	h.introByAuth = make(map[string]*hsRoleSlot)
+	h.rendByCookie = make(map[string]*hsRoleSlot)
+	h.hsMu.Unlock()
 	h.logger.Info("Closed all extended circuits")
 }

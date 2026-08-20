@@ -210,8 +210,9 @@ func (d *ServerDescriptor) build() error {
 	// proto 只写已实现能力。
 	// DirCache 已能对外提供上一份→当前的 limited-ed、gzip/deflate 与 304，
 	// 但仍缺多小时历史 diff / 真网被当缓存的证据，禁止写 DirCache=2。
-	// HS 中继角色本切片仅受理 ESTABLISH_INTRO / ESTABLISH_RENDEZVOUS，
-	// 尚未对外服务 HSDir / INTRODUCE1 / RENDEZVOUS1，禁止写 HSDir= / HSIntro= / HSRend=。
+	// HS 中继可转发 INTRODUCE1→INTRODUCE2、RENDEZVOUS1→RENDEZVOUS2，
+	// 以及 BEGIN_DIR /tor/hs/3 收/服外层描述符；仍缺限速/生命周期/真网被选，
+	// 禁止写 HSDir= / HSIntro= / HSRend=。
 	// LinkAuth=3：入站已校验 AUTHENTICATE type 3（SLOG/CLOG/SCERT/TLSSECRETS/SIG）。
 	fmt.Fprintf(&buf, "proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1\n")
 	fmt.Fprintf(&buf, "published %s\n",

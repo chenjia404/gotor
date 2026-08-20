@@ -41,13 +41,15 @@ type DirCacheServer struct {
 	diffFrom   string
 	diffTo     string
 	diffCached string
+
+	hs *hsDirStore
 }
 
 func NewDirCacheServer(cacheDir string, log *logger.Logger) *DirCacheServer {
 	if log == nil {
 		log = logger.NewDefault()
 	}
-	return &DirCacheServer{cacheDir: cacheDir, logger: log.Component("dircache")}
+	return &DirCacheServer{cacheDir: cacheDir, logger: log.Component("dircache"), hs: &hsDirStore{}}
 }
 
 func (d *DirCacheServer) handler() http.Handler {
@@ -59,6 +61,8 @@ func (d *DirCacheServer) handler() http.Handler {
 	mux.HandleFunc("/tor/micro/all", d.serveFile("cached-microdescs"))
 	mux.HandleFunc("/tor/keys/all", d.serveFile("cached-certs"))
 	mux.HandleFunc("/tor/keys/fp/", d.serveKeysFP)
+	mux.HandleFunc("/tor/hs/3/publish", d.serveHSPublish)
+	mux.HandleFunc("/tor/hs/3/", d.serveHSFetch)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".z") {
 			clone := r.Clone(context.WithValue(r.Context(), dirZKey{}, true))

@@ -130,6 +130,111 @@ func TestCreate2StoresCircNonceForIntro(t *testing.T) {
 	}
 }
 
+func TestHandleIntroduce1ForwardsAndAcks(t *testing.T) {
+	keys, err := onion.GenerateEstablishIntroKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := bytesRepeatHS(0x11, 20)
+	est, err := onion.BuildEstablishIntroPayload(keys.AuthPublic, keys.AuthPrivate, nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kmSvc := bytesRepeatHS(0x22, 72)
+	kmCli := bytesRepeatHS(0x23, 72)
+	svcCC, err := newCircuitCrypto(kmSvc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cliCC, err := newCircuitCrypto(kmCli)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &ServerCircuit{CircuitID: 21, crypto: svcCC, circNonce: nonce}
+	cli := &ServerCircuit{CircuitID: 22, crypto: cliCC}
+	h := NewCircuitHandler(&RelayKeys{NtorOnionKey: bytesRepeatHS(0x33, 32)}, nil)
+	svcConn := newMockConn()
+	cliConn := newMockConn()
+	if err := h.forwarder.handleEstablishIntro(svc, svcConn, est); err != nil {
+		t.Fatal(err)
+	}
+	intro1 := testIntroduce1Payload(keys.AuthPublic)
+	if err := h.forwarder.handleIntroduce1(cli, cliConn, intro1); err != nil {
+		t.Fatalf("INTRODUCE1: %v", err)
+	}
+	fwd := lastDecodedRelay(t, svcConn, kmSvc)
+	if fwd.Command != cell.RelayIntroduce2 || !bytes.Equal(fwd.Data, intro1) {
+		t.Fatalf("INTRODUCE2 cmd=%d data=%x", fwd.Command, fwd.Data)
+	}
+	ack := lastDecodedRelay(t, cliConn, kmCli)
+	if ack.Command != cell.RelayIntroduceAck {
+		t.Fatalf("ack cmd %d", ack.Command)
+	}
+	if !bytes.Equal(ack.Data, introAckPayload(introAckSuccess)) {
+		t.Fatalf("ack %x", ack.Data)
+	}
+}
+
+func TestHandleIntroduce1UnknownAuth(t *testing.T) {
+	km := bytesRepeatHS(0x24, 72)
+	cc, err := newCircuitCrypto(km)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := &ServerCircuit{CircuitID: 23, crypto: cc}
+	h := NewCircuitHandler(&RelayKeys{NtorOnionKey: bytesRepeatHS(0x33, 32)}, nil)
+	conn := newMockConn()
+	if err := h.forwarder.handleIntroduce1(cli, conn, testIntroduce1Payload(bytesRepeatHS(0xab, 32))); err != nil {
+		t.Fatal(err)
+	}
+	ack := decodeLastRelay(t, conn, km)
+	if ack.Command != cell.RelayIntroduceAck || !bytes.Equal(ack.Data, introAckPayload(introAckNotRecognized)) {
+		t.Fatalf("want NOT_RECOGNIZED, cmd=%d data=%x", ack.Command, ack.Data)
+	}
+}
+
+func TestHandleRendezvous1JoinsCircuits(t *testing.T) {
+	kmCli := bytesRepeatHS(0x44, 72)
+	kmSvc := bytesRepeatHS(0x45, 72)
+	cliCC, err := newCircuitCrypto(kmCli)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcCC, err := newCircuitCrypto(kmSvc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := &ServerCircuit{CircuitID: 31, crypto: cliCC}
+	svc := &ServerCircuit{CircuitID: 32, crypto: svcCC}
+	h := NewCircuitHandler(&RelayKeys{NtorOnionKey: bytesRepeatHS(0x33, 32)}, nil)
+	cliConn := newMockConn()
+	svcConn := newMockConn()
+	cookie := bytesRepeatHS(0x5a, 20)
+	if err := h.forwarder.handleEstablishRendezvous(cli, cliConn, cookie); err != nil {
+		t.Fatal(err)
+	}
+	hs := []byte{0x11, 0x22, 0x33, 0x44}
+	rend1 := append(append([]byte{}, cookie...), hs...)
+	if err := h.forwarder.handleRendezvous1(svc, svcConn, rend1); err != nil {
+		t.Fatal(err)
+	}
+	got := lastDecodedRelay(t, cliConn, kmCli)
+	if got.Command != cell.RelayRendezvous2 || !bytes.Equal(got.Data, hs) {
+		t.Fatalf("RENDEZVOUS2 cmd=%d data=%x", got.Command, got.Data)
+	}
+	if cli.joinedCirc != svc || svc.joinedCirc != cli {
+		t.Fatal("会合点必须把两条电路拼起来")
+	}
+}
+
+func TestHandleRendezvous1UnknownCookie(t *testing.T) {
+	circ := &ServerCircuit{CircuitID: 33}
+	h := NewCircuitHandler(&RelayKeys{NtorOnionKey: bytesRepeatHS(0x33, 32)}, nil)
+	if err := h.forwarder.handleRendezvous1(circ, newMockConn(), bytesRepeatHS(0x00, 24)); err == nil {
+		t.Fatal("unknown cookie must fail")
+	}
+}
+
 func TestDescriptorDoesNotAdvertiseHSRoles(t *testing.T) {
 	keys, err := GenerateRelayKeys()
 	if err != nil {
@@ -151,39 +256,64 @@ func TestDescriptorDoesNotAdvertiseHSRoles(t *testing.T) {
 	}
 }
 
+func lastDecodedRelay(t *testing.T, conn *mockConn, km []byte) *cell.RelayCell {
+	t.Helper()
+	all := decodeAllRelays(t, conn, km)
+	if len(all) == 0 {
+		t.Fatal("no RELAY cells")
+	}
+	return all[len(all)-1]
+}
+
 func decodeLastRelay(t *testing.T, conn *mockConn, km []byte) *cell.RelayCell {
+	t.Helper()
+	return lastDecodedRelay(t, conn, km)
+}
+
+func decodeAllRelays(t *testing.T, conn *mockConn, km []byte) []*cell.RelayCell {
 	t.Helper()
 	if len(conn.writeData) < cell.CellSize {
 		t.Fatalf("no cell written: %d", len(conn.writeData))
-	}
-	// 可能先有 CREATED2；取最后一格。
-	raw := conn.writeData[len(conn.writeData)-cell.CellSize:]
-	c, err := cell.DecodeCell(bytes.NewReader(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Command != cell.CmdRelay {
-		t.Fatalf("last cell cmd %d", c.Command)
 	}
 	cc, err := newCircuitCrypto(km)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, err := decryptOutboundForTest(cc, c.Payload)
-	if err != nil {
-		t.Fatal(err)
+	r := bytes.NewReader(conn.writeData)
+	var out []*cell.RelayCell
+	for r.Len() >= cell.CellSize {
+		c, err := cell.DecodeCell(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Command != cell.CmdRelay {
+			continue
+		}
+		plain, err := decryptOutboundForTest(cc, c.Payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rc, err := cell.DecodeRelayCell(plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, rc)
 	}
-	rc, err := cell.DecodeRelayCell(plain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return rc
+	return out
 }
 
 func decryptOutboundForTest(cc *circuitCrypto, enc []byte) ([]byte, error) {
 	out := append([]byte(nil), enc...)
 	cc.bwdCipher.XORKeyStream(out, out)
 	return out, nil
+}
+
+func testIntroduce1Payload(auth []byte) []byte {
+	p := make([]byte, introduce1LegacyKeyLen+3+len(auth)+1)
+	p[introduce1LegacyKeyLen] = introduce1AuthKeyTypeV3
+	p[introduce1LegacyKeyLen+2] = byte(len(auth))
+	copy(p[introduce1LegacyKeyLen+3:], auth)
+	return p
 }
 
 func bytesRepeatHS(b byte, n int) []byte {
