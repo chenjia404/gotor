@@ -281,6 +281,36 @@ func TestVanguardSetKeepsL2WhenTargetMatches(t *testing.T) {
 	}
 }
 
+func TestVanguardSetRejectsL1SameFamilyAsTarget(t *testing.T) {
+	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	pool := vgPool()
+	fam := []string{"ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+	pool[0].FamilyIDs = fam
+	pool[6].FamilyIDs = fam
+	p, err := v.SelectHSPath(pool, pool[6], []string{pool[0].Fingerprint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Guard.Fingerprint == pool[0].Fingerprint {
+		t.Fatal("不得用与目标同家族的持久入口")
+	}
+	if p.Guard.InSameFamily(p.Exit) || p.Middle.InSameFamily(p.Exit) || p.Guard.InSameFamily(p.Middle) {
+		t.Fatal("三跳不得同家族")
+	}
+}
+
+func TestVanguardSetFailsWhenAllShareFamilyWithTarget(t *testing.T) {
+	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	pool := vgPool()
+	fam := []string{"ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+	for _, r := range pool {
+		r.FamilyIDs = fam
+	}
+	if _, err := v.SelectHSPath(pool, pool[6], []string{pool[0].Fingerprint}); err == nil {
+		t.Fatal("全体与目标同家族时应失败关闭，不得成路")
+	}
+}
+
 func TestVanguardSetDoesNotPickTargetAsL2(t *testing.T) {
 	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	pool := vgPool()

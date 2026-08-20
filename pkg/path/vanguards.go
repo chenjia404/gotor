@@ -182,7 +182,7 @@ func (v *VanguardSet) SelectHSPath(relays []*directory.Relay, target *directory.
 	}
 	byFP := indexRelays(relays)
 	v.mu.Lock()
-	changed := v.refreshLocked(byFP)
+	changed := v.refreshLocked(byFP, persistL1)
 	if changed {
 		if err := v.persistLocked(); err != nil && v.logger != nil {
 			v.logger.Warn("vanguards-lite persist failed", "error", err)
@@ -199,10 +199,13 @@ func (v *VanguardSet) SelectHSPath(relays []*directory.Relay, target *directory.
 	if l2 == nil {
 		return nil, fmt.Errorf("vanguards-lite: no usable L2 distinct from L1/target")
 	}
+	if familyConflict(l1, l2) || familyConflict(l1, target) || familyConflict(l2, target) {
+		return nil, fmt.Errorf("vanguards-lite: hops share family")
+	}
 	return &Path{Guard: l1, Middle: l2, Exit: target}, nil
 }
 
-func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay) bool {
+func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay, persistL1 []string) bool {
 	now := v.now()
 	old := encodeLayer2(v.layer2)
 	kept := make([]layer2Entry, 0, v.count)
@@ -221,6 +224,12 @@ func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay) bool {
 		}
 		seen[e.FP] = true
 		kept = append(kept, e)
+	}
+	// 新填的 L2 避开已持久入口，避免 L1 与 L2 重叠。
+	for _, raw := range persistL1 {
+		if fp := strings.ToUpper(strings.TrimSpace(raw)); fp != "" {
+			seen[fp] = true
+		}
 	}
 	cands := l2Candidates(byFP, seen)
 	for len(kept) < v.count && len(cands) > 0 {
@@ -294,6 +303,13 @@ func sameRelayFP(a, b *directory.Relay) bool {
 	return fa != "" && fa == fb
 }
 
+func familyConflict(a, b *directory.Relay) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.InSameFamily(b) || b.InSameFamily(a)
+}
+
 func l2Candidates(byFP map[string]*directory.Relay, exclude map[string]bool) []*directory.Relay {
 	out := make([]*directory.Relay, 0, len(byFP))
 	for fp, r := range byFP {
@@ -313,19 +329,19 @@ func pickL1(byFP map[string]*directory.Relay, persistL1 []string, target *direct
 	for _, raw := range persistL1 {
 		fp := strings.ToUpper(strings.TrimSpace(raw))
 		r := byFP[fp]
-		if r != nil && r.UsableAsGuard() && !sameRelayFP(r, target) {
+		if r != nil && r.UsableAsGuard() && !sameRelayFP(r, target) && !familyConflict(r, target) {
 			return r
 		}
 	}
 	var cands []*directory.Relay
 	for _, r := range byFP {
-		if r.UsableAsGuard() && !sameRelayFP(r, target) && !inL2[relayFP(r)] {
+		if r.UsableAsGuard() && !sameRelayFP(r, target) && !inL2[relayFP(r)] && !familyConflict(r, target) {
 			cands = append(cands, r)
 		}
 	}
 	if len(cands) == 0 {
 		for _, r := range byFP {
-			if r.UsableAsGuard() && !sameRelayFP(r, target) {
+			if r.UsableAsGuard() && !sameRelayFP(r, target) && !familyConflict(r, target) {
 				cands = append(cands, r)
 			}
 		}
@@ -342,17 +358,10 @@ func pickL2(live []*directory.Relay, l1, target *directory.Relay) *directory.Rel
 		if sameRelayFP(r, l1) || sameRelayFP(r, target) {
 			continue
 		}
-		if l1 != nil && (l1.InSameFamily(r) || r.InSameFamily(target)) {
+		if familyConflict(l1, r) || familyConflict(r, target) {
 			continue
 		}
 		cands = append(cands, r)
-	}
-	if len(cands) == 0 {
-		for _, r := range live {
-			if !sameRelayFP(r, l1) && !sameRelayFP(r, target) {
-				cands = append(cands, r)
-			}
-		}
 	}
 	if len(cands) == 0 {
 		return nil
