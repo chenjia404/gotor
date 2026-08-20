@@ -132,6 +132,42 @@ func TestCircuitCryptoCGOOriginateRecognized(t *testing.T) {
 	}
 }
 
+func TestExitRelayDataChunkCGOFitsV1(t *testing.T) {
+	keys := bytes.Repeat([]byte{0x46}, crypto.CGOKeyMaterialLen)
+	cc, err := newCircuitCrypto(keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	circ := &ServerCircuit{crypto: cc}
+	if got := exitRelayDataChunk(circ); got != 488 {
+		t.Fatalf("CGO DATA chunk %d, want 488", got)
+	}
+	data := bytes.Repeat([]byte{'x'}, 488)
+	rc, err := cell.NewRelayCell(1, cell.RelayData, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.originateRelay(rc); err != nil {
+		t.Fatalf("488 字节 CGO DATA 必须能发出: %v", err)
+	}
+	rcTooBig, err := cell.NewRelayCell(1, cell.RelayData, bytes.Repeat([]byte{'y'}, 498))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc.originateRelay(rcTooBig); err == nil {
+		t.Fatal("498 字节不得编进 CGO v1")
+	}
+	tor1 := &ServerCircuit{}
+	tor1CC, err := newCircuitCrypto(bytes.Repeat([]byte{0x01}, 72))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tor1.crypto = tor1CC
+	if got := exitRelayDataChunk(tor1); got != 498 {
+		t.Fatalf("tor1 DATA chunk %d, want 498", got)
+	}
+}
+
 func TestCircuitCryptoTor1UnchangedByShortKeys(t *testing.T) {
 	km := bytes.Repeat([]byte{0x01}, 72)
 	cc, err := newCircuitCrypto(km)

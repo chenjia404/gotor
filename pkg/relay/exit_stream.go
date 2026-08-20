@@ -610,7 +610,7 @@ func (m *ExitStreamManager) pumpRemoteToClient(ctx context.Context, circ *Server
 			m.teardown(es)
 		}
 	}()
-	buf := make([]byte, 498)
+	buf := make([]byte, exitRelayDataChunk(circ))
 	for {
 		select {
 		case <-ctx.Done():
@@ -680,6 +680,13 @@ func (m *ExitStreamManager) consumeOutWindow(circID uint32, streamID uint16) {
 	if es := m.streams[streamKey{circID, streamID}]; es != nil && es.packageWindow > 0 {
 		es.packageWindow--
 	}
+}
+
+func exitRelayDataChunk(circ *ServerCircuit) int {
+	if circ != nil && circ.crypto != nil && circ.crypto.usesCGO() {
+		return cell.RelayCellMaxDataV1(cell.RelayData)
+	}
+	return cell.PayloadLen - cell.RelayCellHeaderLen
 }
 
 func (m *ExitStreamManager) sendEnd(circ *ServerCircuit, clientConn net.Conn, streamID uint16, reason byte) error {
