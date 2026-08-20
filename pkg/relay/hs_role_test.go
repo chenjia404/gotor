@@ -225,6 +225,9 @@ func TestHandleRendezvous1JoinsCircuits(t *testing.T) {
 	if cli.joinedCirc != svc || svc.joinedCirc != cli {
 		t.Fatal("会合点必须把两条电路拼起来")
 	}
+	if err := h.forwarder.handleRendezvous1(svc, svcConn, rend1); err == nil {
+		t.Fatal("同一 cookie 不得再次会合")
+	}
 }
 
 func TestHandleRendezvous1UnknownCookie(t *testing.T) {

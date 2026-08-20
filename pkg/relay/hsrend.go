@@ -64,8 +64,9 @@ func (h *ForwardingHandler) handleRendezvous1(circ *ServerCircuit, clientConn ne
 	}
 	cookie := payload[:rendCookieLen]
 	handshake := append([]byte(nil), payload[rendCookieLen:]...)
+	key := hex.EncodeToString(cookie)
 	h.hsMu.Lock()
-	slot := h.rendByCookie[hex.EncodeToString(cookie)]
+	slot := h.rendByCookie[key]
 	h.hsMu.Unlock()
 	if slot == nil || slot.circ == nil || slot.conn == nil {
 		return h.destroyHSCircuit(circ, clientConn, "RENDEZVOUS1 cookie not recognized")
@@ -73,6 +74,9 @@ func (h *ForwardingHandler) handleRendezvous1(circ *ServerCircuit, clientConn ne
 	if err := sendRelayToClient(slot.circ, slot.conn, 0, cell.RelayRendezvous2, handshake); err != nil {
 		return h.destroyHSCircuit(circ, clientConn, "RENDEZVOUS2 send failed")
 	}
+	h.hsMu.Lock()
+	delete(h.rendByCookie, key)
+	h.hsMu.Unlock()
 	joinHSCircuits(circ, clientConn, slot.circ, slot.conn)
 	return nil
 }
