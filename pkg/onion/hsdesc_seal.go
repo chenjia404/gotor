@@ -179,7 +179,16 @@ func buildType8SigningKeyCert(blinded *BlindedSigningMaterial, signingPub ed2551
 	certContent = append(certContent, expiry[:]...)
 	certContent = append(certContent, 1)
 	certContent = append(certContent, signingPub...)
-	certContent = append(certContent, 0)
+	// signed-with-ed25519-key：HSDir 无主身份时也能取出致盲公钥并验 type-8。
+	if len(blinded.PublicKey) != 32 {
+		return nil, fmt.Errorf("blinded public key missing")
+	}
+	certContent = append(certContent, 1)
+	var extLen [2]byte
+	binary.BigEndian.PutUint16(extLen[:], 32)
+	certContent = append(certContent, extLen[:]...)
+	certContent = append(certContent, 0x04, 0x00)
+	certContent = append(certContent, blinded.PublicKey...)
 	sig, err := blinded.Sign(certContent)
 	if err != nil {
 		return nil, err

@@ -2,8 +2,11 @@ package relay
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"crypto/ed25519"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/directory"
+	"github.com/opd-ai/go-tor/pkg/onion"
 )
 
 func TestDirCacheServesCachedConsensus(t *testing.T) {
@@ -386,6 +390,97 @@ func TestDirCacheDotZIsDeflate(t *testing.T) {
 	if err != nil || string(got) != string(body) {
 		t.Fatalf("deflate body %q %v", got, err)
 	}
+}
+
+func TestDirCacheHSDirPublishAndFetch(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, blinded, err := onion.BuildSignedHSDescriptor(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(t.TempDir(), nil)
+	pub := httptest.NewRequest(http.MethodPost, "/tor/hs/3/publish", strings.NewReader(string(raw)))
+	pubRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(pubRec, pub)
+	if pubRec.Code != http.StatusOK {
+		t.Fatalf("publish %d", pubRec.Code)
+	}
+	path := "/tor/hs/3/" + base64.RawStdEncoding.EncodeToString(blinded)
+	req := httptest.NewRequest(http.MethodGet, path, http.NoBody)
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetch %d", rec.Code)
+	}
+	if rec.Body.String() != string(raw) {
+		t.Fatal("GET 必须回同一份外层描述符")
+	}
+	miss := httptest.NewRequest(http.MethodGet, "/tor/hs/3/"+base64.RawStdEncoding.EncodeToString(bytesRepeatDir(0x09, 32)), http.NoBody)
+	missRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(missRec, miss)
+	if missRec.Code != http.StatusNotFound {
+		t.Fatalf("unknown blinded id should 404, got %d", missRec.Code)
+	}
+}
+
+func TestDirCacheHSDirRejectsTamperAndStaleRevision(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw1, blinded, err := onion.BuildSignedHSDescriptorAtRevision(priv, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw3, _, err := onion.BuildSignedHSDescriptorAtRevision(priv, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(t.TempDir(), nil)
+	post := func(body []byte) int {
+		rec := httptest.NewRecorder()
+		s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/tor/hs/3/publish", strings.NewReader(string(body))))
+		return rec.Code
+	}
+	if post(raw1) != http.StatusOK {
+		t.Fatal("rev=1 应接受")
+	}
+	tampered := append([]byte(nil), raw1...)
+	idx := bytes.Index(tampered, []byte("revision-counter"))
+	if idx < 0 {
+		t.Fatal("no revision-counter")
+	}
+	tampered[idx] ^= 0x01
+	if post(tampered) != http.StatusBadRequest {
+		t.Fatal("篡改正文必须拒绝")
+	}
+	if post(raw3) != http.StatusOK {
+		t.Fatal("更高 revision 应覆盖")
+	}
+	if post(raw1) != http.StatusBadRequest {
+		t.Fatal("更低 revision 不得回滚")
+	}
+	path := "/tor/hs/3/" + base64.RawStdEncoding.EncodeToString(blinded)
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, http.NoBody))
+	if rec.Code != http.StatusOK || rec.Body.String() != string(raw3) {
+		t.Fatalf("GET 必须仍是 rev=3, status=%d", rec.Code)
+	}
+	locked := append(append([]byte(nil), raw3...), []byte("\nrevision-counter 999999\n")...)
+	if post(locked) != http.StatusBadRequest {
+		t.Fatal("未签名尾部抬高 revision 不得覆盖")
+	}
+}
+
+func bytesRepeatDir(b byte, n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = b
+	}
+	return out
 }
 
 func TestDirCacheDotZWithAcceptEncodingGzip(t *testing.T) {

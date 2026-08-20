@@ -43,6 +43,15 @@ type ForwardingHandler struct {
 	extended   map[uint32]*ExtendedCircuit // client circuit ID → extension
 	extendedMu sync.RWMutex
 	logger     *logger.Logger
+
+	hsMu         sync.Mutex
+	introByAuth  map[string]*hsRoleSlot // hex(AUTH_KEY) → 服务侧引言电路
+	rendByCookie map[string]*hsRoleSlot // hex(cookie) → 客户端会合电路
+}
+
+type hsRoleSlot struct {
+	circ *ServerCircuit
+	conn net.Conn
 }
 
 // NewForwardingHandler creates a new forwarding handler
@@ -51,9 +60,11 @@ func NewForwardingHandler(circuits *CircuitHandler, log *logger.Logger) *Forward
 		log = logger.NewDefault()
 	}
 	return &ForwardingHandler{
-		circuits: circuits,
-		extended: make(map[uint32]*ExtendedCircuit),
-		logger:   log.Component("forwarding"),
+		circuits:     circuits,
+		extended:     make(map[uint32]*ExtendedCircuit),
+		introByAuth:  make(map[string]*hsRoleSlot),
+		rendByCookie: make(map[string]*hsRoleSlot),
+		logger:       log.Component("forwarding"),
 	}
 }
 

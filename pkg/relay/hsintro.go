@@ -1,11 +1,24 @@
 package relay
 
 import (
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/onion"
+)
+
+const (
+	maxIntroduce1Len        = 490
+	introAckSuccess         = 0
+	introAckNotRecognized   = 1
+	introAckBadFormat       = 2
+	introAckCantRelay       = 3
+	introduce1LegacyKeyLen  = 20
+	introduce1AuthKeyTypeV3 = 0x02
+	ed25519AuthKeyLen       = 32
 )
 
 // handleEstablishIntro 校验 ESTABLISH_INTRO 并回 INTRO_ESTABLISHED。
@@ -33,15 +46,99 @@ func (h *ForwardingHandler) handleEstablishIntro(circ *ServerCircuit, clientConn
 		return h.destroyHSCircuit(circ, clientConn, "ESTABLISH_INTRO too short")
 	}
 	auth := append([]byte(nil), payload[3:35]...)
+	if err := h.registerIntro(circ, clientConn, auth); err != nil {
+		return h.destroyHSCircuit(circ, clientConn, err.Error())
+	}
+	// INTRO_ESTABLISHED 可为空扩展；StreamID=0。
+	return sendRelayToClient(circ, clientConn, 0, cell.RelayIntroEstablished, nil)
+}
+
+func (h *ForwardingHandler) registerIntro(circ *ServerCircuit, conn net.Conn, auth []byte) error {
+	if circ == nil || len(auth) != ed25519AuthKeyLen {
+		return fmt.Errorf("invalid intro auth")
+	}
+	key := hex.EncodeToString(auth)
+	h.hsMu.Lock()
+	defer h.hsMu.Unlock()
+	circ.mu.Lock()
+	alreadyRend := len(circ.rendCookie) > 0
+	circ.mu.Unlock()
+	if alreadyRend {
+		return fmt.Errorf("circuit already rendezvous")
+	}
+	if existing, ok := h.introByAuth[key]; ok && existing.circ != nil && existing.circ.CircuitID != circ.CircuitID {
+		return fmt.Errorf("intro auth already in use")
+	}
 	circ.mu.Lock()
 	if len(circ.introAuth) > 0 {
 		circ.mu.Unlock()
-		return h.destroyHSCircuit(circ, clientConn, "intro already established")
+		return fmt.Errorf("intro already established")
 	}
-	circ.introAuth = auth
+	circ.introAuth = append([]byte(nil), auth...)
 	circ.mu.Unlock()
-	// INTRO_ESTABLISHED 可为空扩展；StreamID=0。
-	return sendRelayToClient(circ, clientConn, 0, cell.RelayIntroEstablished, nil)
+	h.introByAuth[key] = &hsRoleSlot{circ: circ, conn: conn}
+	return nil
+}
+
+func (h *ForwardingHandler) handleIntroduce1(circ *ServerCircuit, clientConn net.Conn, payload []byte) error {
+	if circ == nil {
+		return fmt.Errorf("nil circuit")
+	}
+	auth, ok := parseIntroduce1AuthKey(payload)
+	if !ok {
+		return sendRelayToClient(circ, clientConn, 0, cell.RelayIntroduceAck, introAckPayload(introAckBadFormat))
+	}
+	h.hsMu.Lock()
+	slot := h.introByAuth[hex.EncodeToString(auth)]
+	h.hsMu.Unlock()
+	if slot == nil || slot.circ == nil || slot.conn == nil {
+		return sendRelayToClient(circ, clientConn, 0, cell.RelayIntroduceAck, introAckPayload(introAckNotRecognized))
+	}
+	if err := sendRelayToClient(slot.circ, slot.conn, 0, cell.RelayIntroduce2, payload); err != nil {
+		h.logger.Warn("INTRODUCE2 relay failed", "circuit_id", slot.circ.CircuitID, "error", err)
+		return sendRelayToClient(circ, clientConn, 0, cell.RelayIntroduceAck, introAckPayload(introAckCantRelay))
+	}
+	return sendRelayToClient(circ, clientConn, 0, cell.RelayIntroduceAck, introAckPayload(introAckSuccess))
+}
+
+func parseIntroduce1AuthKey(p []byte) ([]byte, bool) {
+	if len(p) < introduce1LegacyKeyLen+3+ed25519AuthKeyLen+1 || len(p) > maxIntroduce1Len {
+		return nil, false
+	}
+	for i := 0; i < introduce1LegacyKeyLen; i++ {
+		if p[i] != 0 {
+			return nil, false
+		}
+	}
+	if p[introduce1LegacyKeyLen] != introduce1AuthKeyTypeV3 {
+		return nil, false
+	}
+	alen := int(binary.BigEndian.Uint16(p[introduce1LegacyKeyLen+1 : introduce1LegacyKeyLen+3]))
+	off := introduce1LegacyKeyLen + 3
+	if alen != ed25519AuthKeyLen || off+alen >= len(p) {
+		return nil, false
+	}
+	auth := p[off : off+alen]
+	off += alen
+	nExt := int(p[off])
+	off++
+	for i := 0; i < nExt; i++ {
+		if off+2 > len(p) {
+			return nil, false
+		}
+		extLen := int(p[off+1])
+		off += 2 + extLen
+		if off > len(p) {
+			return nil, false
+		}
+	}
+	return auth, true
+}
+
+func introAckPayload(status uint16) []byte {
+	out := make([]byte, 3)
+	binary.BigEndian.PutUint16(out[:2], status)
+	return out
 }
 
 func (h *ForwardingHandler) rejectHSControlStream(circ *ServerCircuit, clientConn net.Conn, cmd string) error {
