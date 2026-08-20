@@ -4,7 +4,6 @@ package onion
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -17,12 +16,14 @@ import (
 
 // CircuitAdapter 实现 CircuitBuilder + CellSender，用 3-hop 电路到达目标 OR。
 type CircuitAdapter struct {
-	builder *circuit.Builder
-	manager *circuit.Manager
-	relays  []*directory.Relay
-	logger  *logger.Logger
-	mu      sync.RWMutex
-	circs   map[uint32]*circuit.Circuit
+	builder   *circuit.Builder
+	manager   *circuit.Manager
+	relays    []*directory.Relay
+	logger    *logger.Logger
+	mu        sync.RWMutex
+	circs     map[uint32]*circuit.Circuit
+	vanguards *path.VanguardSet
+	guards    *path.GuardManager
 }
 
 // NewCircuitAdapter 创建适配器。
@@ -37,6 +38,17 @@ func NewCircuitAdapter(builder *circuit.Builder, manager *circuit.Manager, relay
 		logger:  log.Component("onion-circ"),
 		circs:   make(map[uint32]*circuit.Circuit),
 	}
+}
+
+// SetVanguards 注入 vanguards-lite（nil 则 HS 选路退回随机中间跳）。
+func (a *CircuitAdapter) SetVanguards(v *path.VanguardSet, gm *path.GuardManager) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.vanguards = v
+	a.guards = gm
+	a.mu.Unlock()
 }
 
 // SetRelays 更新共识节点池。
@@ -114,36 +126,10 @@ func (a *CircuitAdapter) resolveTarget(h *HSDirectory) *directory.Relay {
 func (a *CircuitAdapter) pickPath(exit *directory.Relay) (*path.Path, error) {
 	a.mu.RLock()
 	relays := a.relays
+	v := a.vanguards
+	gm := a.guards
 	a.mu.RUnlock()
-	guards := make([]*directory.Relay, 0, 32)
-	middles := make([]*directory.Relay, 0, 64)
-	for _, r := range relays {
-		if r == nil || !r.IsRunning() || !r.IsValid() || !r.HasExtendKeys() {
-			continue
-		}
-		if sameRelay(r, exit) {
-			continue
-		}
-		if r.IsGuard() {
-			guards = append(guards, r)
-		}
-		middles = append(middles, r)
-	}
-	if len(guards) == 0 || len(middles) == 0 {
-		return nil, fmt.Errorf("insufficient path relays")
-	}
-	for try := 0; try < 48; try++ {
-		g := guards[rand.Intn(len(guards))]
-		m := middles[rand.Intn(len(middles))]
-		if sameRelay(g, m) || sameRelay(m, exit) {
-			continue
-		}
-		if g.InSameFamily(m) || g.InSameFamily(exit) || m.InSameFamily(exit) {
-			continue
-		}
-		return &path.Path{Guard: g, Middle: m, Exit: exit}, nil
-	}
-	return &path.Path{Guard: guards[0], Middle: middles[0], Exit: exit}, nil
+	return selectOnionPath(v, gm, relays, exit)
 }
 
 func (a *CircuitAdapter) lookup(circuitID uint32) *circuit.Circuit {

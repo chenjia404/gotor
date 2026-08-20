@@ -4,7 +4,6 @@ package onion
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/circuit"
@@ -16,9 +15,11 @@ import (
 // BegindirFetcher 经 ORPort + RELAY_BEGIN_DIR 拉取目录 HTTP 资源。
 // HS v3 描述符要求匿名电路（非单跳），否则 HSDir 回 503。
 type BegindirFetcher struct {
-	builder *circuit.Builder
-	logger  *logger.Logger
-	relays  []*directory.Relay // 共识 relay（需含 Guard/Middle 密钥）
+	builder   *circuit.Builder
+	logger    *logger.Logger
+	relays    []*directory.Relay // 共识 relay（需含 Guard/Middle 密钥）
+	vanguards *path.VanguardSet
+	guards    *path.GuardManager
 }
 
 // NewBegindirFetcher 创建拉取器；builder 须已配置。
@@ -35,6 +36,15 @@ func (f *BegindirFetcher) SetRelays(relays []*directory.Relay) {
 		return
 	}
 	f.relays = relays
+}
+
+// SetVanguards 注入 vanguards-lite，供 HSDir BEGIN_DIR 电路使用。
+func (f *BegindirFetcher) SetVanguards(v *path.VanguardSet, gm *path.GuardManager) {
+	if f == nil {
+		return
+	}
+	f.vanguards = v
+	f.guards = gm
 }
 
 // Fetch 对 HSDir 建匿名 3-hop 电路（HSDir 为末跳），BEGIN_DIR 后 GET path。
@@ -151,54 +161,7 @@ func (f *BegindirFetcher) selectAnonPath(exit *directory.Relay) (*path.Path, err
 	if len(f.relays) == 0 {
 		return nil, fmt.Errorf("begindir: no consensus relays for anonymous path")
 	}
-	guards := make([]*directory.Relay, 0, 32)
-	middles := make([]*directory.Relay, 0, 64)
-	for _, r := range f.relays {
-		if r == nil || !r.IsRunning() || !r.IsValid() || !r.HasExtendKeys() {
-			continue
-		}
-		if sameRelay(r, exit) {
-			continue
-		}
-		if r.IsGuard() {
-			guards = append(guards, r)
-		}
-		if !r.HasFlag("BadExit") {
-			middles = append(middles, r)
-		}
-	}
-	if len(guards) == 0 || len(middles) == 0 {
-		return nil, fmt.Errorf("begindir: need Guard/Middle with keys (guards=%d middles=%d)",
-			len(guards), len(middles))
-	}
-
-	var guard, middle *directory.Relay
-	for attempt := 0; attempt < 64; attempt++ {
-		g := guards[rand.Intn(len(guards))]
-		m := middles[rand.Intn(len(middles))]
-		if sameRelay(g, m) || sameRelay(g, exit) || sameRelay(m, exit) {
-			continue
-		}
-		if g.InSameFamily(m) || g.InSameFamily(exit) || m.InSameFamily(exit) {
-			continue
-		}
-		guard, middle = g, m
-		break
-	}
-	if guard == nil || middle == nil {
-		// 放宽：仅避开同一节点
-		guard = guards[rand.Intn(len(guards))]
-		for _, m := range middles {
-			if !sameRelay(m, guard) && !sameRelay(m, exit) {
-				middle = m
-				break
-			}
-		}
-	}
-	if guard == nil || middle == nil {
-		return nil, fmt.Errorf("begindir: could not pick distinct Guard/Middle")
-	}
-	return &path.Path{Guard: guard, Middle: middle, Exit: exit}, nil
+	return selectOnionPath(f.vanguards, f.guards, f.relays, exit)
 }
 
 func sameRelay(a, b *directory.Relay) bool {

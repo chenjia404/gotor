@@ -66,6 +66,7 @@ type Client struct {
 	healthMonitor *health.Monitor
 	pathSelector  *path.Selector
 	guardManager  *path.GuardManager
+	vanguards     *path.VanguardSet
 	metrics       *metrics.Metrics
 	dirLock       *datadir.Lock
 	dirLockMu     sync.Mutex
@@ -181,6 +182,14 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 		return nil, fmt.Errorf("failed to create guard manager: %w", err)
 	}
 
+	vset := path.NewVanguardSet(path.VanguardConfig{
+		StatePath: filepath.Join(cfg.DataDirectory, datadir.StateFileName),
+		AvoidDisk: cfg.AvoidDiskWrites,
+	}, log)
+	if err := vset.Load(); err != nil {
+		log.Warn("vanguards-lite load failed", "error", err)
+	}
+
 	client := &Client{
 		config:             cfg,
 		logger:             log.Component("client"),
@@ -189,6 +198,7 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 		circuitRateLimiter: circuitRateLimiter,
 		socksServer:        socksServer,
 		guardManager:       guardMgr,
+		vanguards:          vset,
 		metrics:            metrics.New(),
 		healthMonitor:      health.NewMonitor(),
 		circuits:           make([]*circuit.Circuit, 0),
@@ -294,6 +304,7 @@ func (c *Client) Start(ctx context.Context) error {
 		if relays := c.pathSelector.GetRelays(); len(relays) > 0 {
 			onionBuilder := circuit.NewBuilder(c.circuitMgr, c.logger)
 			onionBuilder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
+			c.socksServer.SetOnionPathDefense(c.vanguards, c.guardManager)
 			c.socksServer.SetOnionNetwork(relays, onionBuilder, c.circuitMgr, c.directory)
 		}
 		if c.config.ClientOnionAuthDir != "" && c.socksServer != nil {
