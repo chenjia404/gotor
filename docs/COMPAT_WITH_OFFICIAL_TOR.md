@@ -15,7 +15,7 @@
 | PARTIAL | 有代码，但缺关键步骤、接线、或真网证明 |
 | 官方有我们没有 | 官方 C Tor / Arti 具备，gotor 无可用实现 |
 
-禁止事项对**每一项后续实现**都适用：禁止全零 key fallback、禁止 mock/本地桩当完成、禁止为过测试放松协议校验、禁止 CGO、禁止把「ORPort 通了」写成「已进共识」。
+禁止事项对**每一项后续实现**都适用：禁止全零 key fallback、禁止 mock/本地桩当完成、禁止为过测试放松协议校验、禁止未协商却宣称 CGO、禁止把「ORPort 通了」写成「已进共识」。
 公开 PR / commit **禁止** 写真实服务器名、公网 IP、中继指纹、联系人、内网仓库地址。真网观察用「实验中继」「权威已收描述符」「缺 Running」等不带识别信息的说法。
 
 ---
@@ -61,7 +61,7 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 | 角色 | 已对齐（含真网证据） | PARTIAL | 官方有我们没有 |
 |------|----------------------|---------|----------------|
 | **客户端** | 共识 9/9 验签、`cached-certs` 重启 0 次 `/tor/keys/fp`、DirCache=2 consdiff、microdesc、Link TLS+CERTS type 7、默认 ntor-v3 CREATE2/EXTEND2、3-hop SOCKS5 `IsTor=true`、RESOLVE、FlowCtrl=2 Vegas soak、Relay=5/6 CGO、Conflux=1、EXTEND2 IPv6、`p`/`p6` 出口策略、Desc=4 family-ids、Padding=2 协商 ACK、v3 `.onion` 客户端 HTTP 200 | Guard 选路与官方指纹仍可能有差异；Fast/MiddleOnly/BadExit 已强制但未单独真网标 WORKING；circpad token-removal | Vanguards-lite；完整 PT/网桥客户端生产路径；与 Tor Browser 同级的隔离/反指纹 |
-| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 consensus-microdesc、micro/all、`/tor/keys`、**上一份→当前 limited-ed**（未宣告 DirCache=2）；末端跳可回 `INTRO_ESTABLISHED` / `RENDEZVOUS_ESTABLISHED`（未宣告 HS*） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（多小时历史 diff / 压缩 / 304 / 真网被当缓存）；HSDir 收/服务、INTRODUCE1、RENDEZVOUS1；relay 侧 CGO；官方级 DoS；完整 extra-info |
+| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；**ntor-v3 type 3 `[02 06]` 则 CGO 剥层/回程**（未宣告 Relay=5-6）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 consensus-microdesc、micro/all、`/tor/keys`、**上一份→当前 limited-ed**（未宣告 DirCache=2）；末端跳可回 `INTRO_ESTABLISHED` / `RENDEZVOUS_ESTABLISHED`（未宣告 HS*） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（多小时历史 diff / 压缩 / 304 / 真网被当缓存）；HSDir 收/服务、INTRODUCE1、RENDEZVOUS1；真网被请求 CGO 的证据；官方级 DoS；完整 extra-info |
 | **洋葱托管** | 无（未上线） | ESTABLISH_INTRO；ntor `rend_circ_nonce`；BEGIN_DIR 上传；type-8 致盲证书 + 双层加密密封；torrc `HiddenService*` | **真网发布后被客户端找到并完成 INTRODUCE2→RENDEZVOUS**；官方 intro/rend 生命周期与限速；vanguards |
 | **网桥 / PT** | 无 | `pkg/pt` 子进程框架、obfs4 配置解析、本地 integration 桩 | 向 BridgeAuth 生产发布；客户端经官方 PT 进网；网桥描述符/统计与 C Tor 对齐 |
 | **控制端口** | AUTHENTICATE；**AUTHCHALLENGE SAFECOOKIE**；COOKIE / HASHEDPASSWORD；GETINFO/GETCONF/SETCONF 子集；SETEVENTS（CIRC/STREAM/BW/NOTICE 等）；SIGNAL；MAPADDRESS | GETINFO 键远少于 control-spec；`version` 仍回 `go-tor 0.1.0`（CLI `--version` 已报 `0.4.9.11 (gotor)`） | ADD_ONION / DEL_ONION；EXTENDCIRCUIT / ATTACHSTREAM；HSFETCH / HSPOST；USEFEATURE；完整 `circuit-status` / `ns/id` / `desc/id` 等 |
@@ -148,10 +148,11 @@ proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ### 6. relay 侧 CGO
 
-- [ ] **状态**：客户端已对齐；中继官方有我们没有
-- **现有代码**：客户端 `pkg/crypto/cgo.go`、`pkg/circuit` CGO 路径；官方向量 `pkg/crypto/cgo_test.go`。`pkg/relay` **无** CGO。中继 CREATE2 只做 ntor `0x0002` / ntor-v3 `0x0003`（`circuit_handler.go`）。
-- **要做**：服务端识别 Relay=5 `subproto_request` type 3 `[02 06]`，用 AES-128 UIV+ 与 v1 relay message；未协商成功不得回退还宣称 CGO。
-- **禁止**：AES-256 当 CGO；未协商偷偷用 tor1；`CGO_AES_BITS` 与 C Tor 不一致。
+- [ ] **状态**：PARTIAL（服务端识别 ntor-v3 type 3 `[02 06]`，KDF 160，AES-128 ENC_UIV + v1 剥层/回程；出口 DATA 按 488 分片。描述符仍 `Relay=1-4`。**无**真网被请求 CGO 的观察；中继侧 SENDME v1 / Vegas 不完整）
+- **现有代码**：客户端 `pkg/crypto/cgo.go`、`pkg/circuit` CGO 路径；中继 `pkg/relay/circuit_crypto.go`、`pkg/crypto/ntorv3_server.go`。互操作 `docs/interop/cgo-relay.md`。
+- **已做（协议切片，2026-08-20）**：畸形 type 3 失败握手；末端 `RelayForward` + `RelayOriginate`；中间跳 peel + `wrapOutbound`（不误 originate）。**禁止** `Relay=5-6`。
+- **要做**：真网被官方客户端请求 CGO 的证据；中继侧 SENDME v1（16 字节 tag）与 Vegas。在此之前 **禁止** 在 `proto` 写 `Relay=5-6`。
+- **禁止**：AES-256 当 CGO；未协商偷偷用 tor1 还宣称 CGO；`CGO_AES_BITS` 与 C Tor 不一致。
 
 ### 7. 洋葱托管真网 INTRODUCE2
 
@@ -196,7 +197,7 @@ proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 | 特性 / proposal | Arti 状态 | C Tor 是否已有 | gotor | 现有代码路径 | 是否该跟 |
 |-----------------|-----------|----------------|-------|--------------|----------|
-| **CGO / Relay=5–6**（[prop 359](https://spec.torproject.org/proposals/359-cgo-redux.html)） | 1.4.6 开始 `tor-proto` 协商（「尚不可用」）；1.5.0 实验协商；**2.5.0 标 stable 并进 `full` 构建**（[博文](https://blog.torproject.org/arti_2_5_0_released/)）。2.5.1 **洋葱电路**上的 CGO 仍实验（`hsc-negotiate-extensions` / `hss-negotiate-extensions`） | 有（0.4.9 mainnet 已与 gotor 客户端互操作） | 客户端 **WORKING**；中继 **MISSING** | `pkg/crypto/cgo.go`、`pkg/circuit`；中继无 | **P1** 客户端已跟；中继等被选为 hop 且对端请求 Relay=6 时再做。HS-CGO 实验开关 **P2** |
+| **CGO / Relay=5–6**（[prop 359](https://spec.torproject.org/proposals/359-cgo-redux.html)） | 1.4.6 开始 `tor-proto` 协商（「尚不可用」）；1.5.0 实验协商；**2.5.0 标 stable 并进 `full` 构建**（[博文](https://blog.torproject.org/arti_2_5_0_released/)）。2.5.1 **洋葱电路**上的 CGO 仍实验（`hsc-negotiate-extensions` / `hss-negotiate-extensions`） | 有（0.4.9 mainnet 已与 gotor 客户端互操作） | 客户端 **WORKING**；中继 **PARTIAL**（可协商剥层，未宣告 Relay=5-6） | `pkg/crypto/cgo.go`、`pkg/circuit`、`pkg/relay/circuit_crypto.go` | **P1** 客户端已跟；中继协议切片已接线，缺真网被请求证据。HS-CGO 实验开关 **P2** |
 | **Conflux**（[prop 329](https://spec.torproject.org/proposals/329-traffic-splitting.html)） | 1.5.0 实验后端（changelog 写「尚未使用」）；1.4.6+ 测试与 reactor 重构；2.0.0 `relay-conflux.md` 设计。**截至 2.5.x 博文未宣布 conflux 已 stable** | 有（0.4.8.4 起，exit 多电路；洋葱当时未支持） | 客户端 **WORKING**（真网 LINK + `IsTor=true`） | `pkg/cell/conflux.go`、`pkg/circuit/conflux.go`、`pkg/path/conflux.go` | **P1**（mainnet 已宣告且 C Tor 在用）。不要为对齐 Arti 未 stable 的 reactor 改 wire |
 | **ntor-v3** | **1.4.3 起始终启用**（去掉 `ntor_v3` feature，[!2907](https://gitlab.torproject.org/tpo/core/arti/-/merge_requests/2907)） | 有（现行默认） | **WORKING**（默认 HTYPE 0x0003） | `pkg/crypto/ntorv3.go`、`pkg/circuit/extension.go` | **P0**（recommended Relay=4 / 现网默认） |
 | **洋葱 PoW / 反 DoS**（[prop 327](https://spec.torproject.org/proposals/327-pow-over-intro.html)、[prop 362](https://spec.torproject.org/proposals/362-update-pow-control-loop.html)） | 1.3.x 设计/铺地；1.4.6 换成 prop 362 控制环；1.5.0 实验支持（[!3106](https://gitlab.torproject.org/tpo/core/arti/-/merge_requests/3106)）。稳定化仍开放：[arti#1751](https://gitlab.torproject.org/tpo/core/arti/-/issues/1751) | 有（0.4.8 `HiddenServicePoW*`，默认关） | **MISSING** | 无 | **P1** 客户端：目标服务开启 PoW 时才能连上；**P2** 托管：gotor 托管未上线前不要做。未 required |

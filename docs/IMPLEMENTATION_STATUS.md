@@ -57,7 +57,7 @@
 | Circuit padding (Padding=2) | WORKING | 协商+HS setup+直方图 DROP；**真实验收** `TestRealCircpadNegotiate`：PADDING_NEGOTIATE→PADDING_NEGOTIATED OK（middle Padding=2） |
 | Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB） |
 | Onion Service v3（托管） | PARTIAL | ESTABLISH_INTRO；ntor rend_circ_nonce；BEGIN_DIR 上传；**type-8 致盲证书 + 双层加密密封**；torrc HiddenService*。剩余：真网发布/INTRODUCE2 回路验收 |
-| Relay / Bridge | PARTIAL | ORPort；入站握手 VERSIONS(2)→CERTS 1/2/4/5/7→AUTH_CHALLENGE→NETINFO（协商后 CircID=4）；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布，`AssumeReachable` 跳过）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池 + 剥层/回程（离线单测，无官方客户端经 middle 出网证据）；DirCache 可提供 consensus-microdesc / micro/all / `/tor/keys` / **上一份→当前 limited-ed**（未宣告 DirCache=2）；末端跳 ESTABLISH_INTRO / ESTABLISH_RENDEZVOUS 回 ACK（未宣告 HS*；无 HSDir / INTRODUCE1 / RENDEZVOUS1）；**ExitRelay 1 出口流**；CREATE2 ntor/ntor-v3；描述符交叉证书与 Ed25519 摘要签名。未做：真网 Running / 进共识、网桥、真网多跳中继/出口收录验收 |
+| Relay / Bridge | PARTIAL | ORPort；入站握手 VERSIONS(2)→CERTS 1/2/4/5/7→AUTH_CHALLENGE→NETINFO（协商后 CircID=4）；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布，`AssumeReachable` 跳过）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池 + 剥层/回程（离线单测，无官方客户端经 middle 出网证据）；DirCache 可提供 consensus-microdesc / micro/all / `/tor/keys` / **上一份→当前 limited-ed**（未宣告 DirCache=2）；末端跳 ESTABLISH_INTRO / ESTABLISH_RENDEZVOUS 回 ACK（未宣告 HS*；无 HSDir / INTRODUCE1 / RENDEZVOUS1）；**ExitRelay 1 出口流**；CREATE2 ntor/ntor-v3；**ntor-v3 type 3 `[02 06]` 则 CGO 剥层/回程**（未宣告 Relay=5-6）；描述符交叉证书与 Ed25519 摘要签名。未做：真网 Running / 进共识、网桥、真网多跳中继/出口收录验收 |
 | Control Protocol | WORKING | GETINFO/SETCONF/SETEVENTS/SIGNAL/MAPADDRESS；**AUTHCHALLENGE SAFECOOKIE**；COOKIE/HASHEDPASSWORD；事件 CIRC/STREAM/BW/…/NOTICE |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
 
@@ -134,6 +134,7 @@
 - **C Tor**：`relay_crypto_cgo.c`、`relay_crypto.c`（`CGO_AES_BITS 128`）、`src/test/cgo_vectors.inc`
 - **禁止**：未协商成功时偷偷回退到 AES-CTR 还宣称 CGO WORKING。
 - **注意**：2026-02 `recommended-client-protocols` 仍是 `Relay=2-4`。不要对未宣告 `Relay=5/6` 的 hop 强制请求。
+- **中继（#59）**：可识别 ntor-v3 type 3 `[02 06]` 并 ENC_UIV 剥层/回程；**未**宣告 `Relay=5-6`；无真网被请求证据。见 `docs/interop/cgo-relay.md`。
 
 ### P2 — 已广泛宣告、提升兼容与匿名性
 
@@ -356,8 +357,8 @@ VERSIONS 必须 `CIRCID_LEN(v_in=0)=2`，协商后再切 4 字节。见 `docs/in
 
 - 发送先 Exit 再 Middle 再 Guard；接收反向逐层 decrypt。
 - 真实 RELAY_DROP 不再触发 DESTROY。
-- **Relay=6 CGO**：AES-128 UIV+、v1 cell、DATA 上限 488。真实 3-hop + `IsTor=true` + soak 1059120。
-- **缺口**：官方 v0 relay-cell 向量。
+- **Relay=6 CGO**：AES-128 UIV+、v1 cell、DATA 上限 488。真实 3-hop + `IsTor=true` + soak 1059120。中继侧协商剥层见 #59（PARTIAL）。
+- **缺口**：官方 v0 relay-cell 向量；中继侧 SENDME v1 / 真网被请求 CGO。
 
 ### SENDME / Flow control — WORKING
 
