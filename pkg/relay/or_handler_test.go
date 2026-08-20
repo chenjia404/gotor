@@ -491,9 +491,10 @@ func TestReceiveNetinfo(t *testing.T) {
 	conn.addReadData(cellData)
 
 	ctx := context.Background()
-	err = handler.receiveNetinfo(ctx, conn)
+	handler.setCircIDLen(4)
+	err = handler.receiveInitiatorFinish(ctx, conn, nil)
 	if err != nil {
-		t.Fatalf("receiveNetinfo failed: %v", err)
+		t.Fatalf("receiveInitiatorFinish failed: %v", err)
 	}
 }
 
@@ -719,11 +720,6 @@ func TestReceiveNetinfoSkipsInitiatorHandshakeCells(t *testing.T) {
 	if err := certs.EncodeLink(&buf, 4); err != nil {
 		t.Fatal(err)
 	}
-	auth := cell.NewCell(0, cell.CmdAuthenticate)
-	auth.Payload = []byte{0, 3, 0, 4, 0, 0, 0, 0}
-	if err := auth.EncodeLink(&buf, 4); err != nil {
-		t.Fatal(err)
-	}
 	pad := cell.NewCell(0, cell.CmdVPadding)
 	pad.Payload = []byte{1, 2, 3}
 	if err := pad.EncodeLink(&buf, 4); err != nil {
@@ -737,8 +733,36 @@ func TestReceiveNetinfoSkipsInitiatorHandshakeCells(t *testing.T) {
 
 	conn := newMockConn()
 	conn.addReadData(buf.Bytes())
-	if err := handler.receiveNetinfo(context.Background(), conn); err != nil {
-		t.Fatalf("receiveNetinfo: %v", err)
+	if err := handler.receiveInitiatorFinish(context.Background(), conn, nil); err != nil {
+		t.Fatalf("receiveInitiatorFinish: %v", err)
+	}
+}
+
+func TestReceiveInitiatorFinishRejectsBadAuthenticate(t *testing.T) {
+	handler := NewLinkProtocolHandler(generateTestRelayKeys(t), nil)
+	handler.setCircIDLen(4)
+	handler.slog = bytes.Repeat([]byte{0x11}, 32)
+
+	var buf bytes.Buffer
+	certs := cell.NewCell(0, cell.CmdCerts)
+	certs.Payload = []byte{0}
+	if err := certs.EncodeLink(&buf, 4); err != nil {
+		t.Fatal(err)
+	}
+	auth := cell.NewCell(0, cell.CmdAuthenticate)
+	auth.Payload = []byte{0, 3, 0, 4, 0, 0, 0, 0}
+	if err := auth.EncodeLink(&buf, 4); err != nil {
+		t.Fatal(err)
+	}
+	netinfo := cell.NewCell(0, cell.CmdNetinfo)
+	netinfo.Payload = []byte{0, 0, 0, 1, 0x04, 4, 127, 0, 0, 1, 0}
+	if err := netinfo.EncodeLink(&buf, 4); err != nil {
+		t.Fatal(err)
+	}
+	conn := newMockConn()
+	conn.addReadData(buf.Bytes())
+	if err := handler.receiveInitiatorFinish(context.Background(), conn, nil); err == nil {
+		t.Fatal("bogus AUTHENTICATE must fail")
 	}
 }
 
@@ -750,11 +774,6 @@ func TestHandleConnectionAuthorityInitiatorCells(t *testing.T) {
 	certs := cell.NewCell(0, cell.CmdCerts)
 	certs.Payload = []byte{0}
 	if err := certs.EncodeLink(&inbound, 4); err != nil {
-		t.Fatal(err)
-	}
-	auth := cell.NewCell(0, cell.CmdAuthenticate)
-	auth.Payload = []byte{0, 3, 0, 0}
-	if err := auth.EncodeLink(&inbound, 4); err != nil {
 		t.Fatal(err)
 	}
 	netinfo := cell.NewCell(0, cell.CmdNetinfo)
@@ -852,6 +871,15 @@ func runInboundHandshakePipe(t *testing.T, initiatorIsRelay bool) {
 		if err := authen.EncodeLink(clientConn, 4); err != nil {
 			t.Fatal(err)
 		}
+		select {
+		case err := <-errCh:
+			if err == nil {
+				t.Fatal("bogus AUTHENTICATE must fail handshake")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("server handshake timeout")
+		}
+		return
 	}
 	netinfoOut := cell.NewCell(0, cell.CmdNetinfo)
 	netinfoOut.Payload = []byte{0, 0, 0, 1, 0x04, 4, 127, 0, 0, 1, 0}

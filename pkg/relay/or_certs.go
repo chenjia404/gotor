@@ -143,3 +143,31 @@ func buildTLSLinkCert(tlsDER []byte, signPriv ed25519.PrivateKey, expires time.T
 	protocol.SignEd25519Certificate(cert, signPriv)
 	return protocol.EncodeEd25519Certificate(cert), nil
 }
+
+// buildLinkAuthCert 生成 type 6：certified=KP_link_ed，由 KP_relaysign_ed 签名。
+func buildLinkAuthCert(signPriv ed25519.PrivateKey, authPub ed25519.PublicKey, expires time.Time) ([]byte, error) {
+	if len(signPriv) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("invalid Ed25519 signing private key")
+	}
+	if len(authPub) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("invalid Ed25519 link auth public key")
+	}
+	signPub, ok := signPriv.Public().(ed25519.PublicKey)
+	if !ok || len(signPub) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("invalid Ed25519 signing public key")
+	}
+	cert := &protocol.Ed25519Certificate{
+		Version:      1,
+		CertType:     uint8(protocol.CertTypeEd25519Auth),
+		ExpiresAt:    expires,
+		CertKeyType:  protocol.CertKeyTypeEd25519,
+		CertifiedKey: append([]byte(nil), authPub...),
+		Extensions: []protocol.Ed25519Extension{{
+			ExtType: protocol.ExtTypeSignedWithEd25519Key,
+			Flags:   0,
+			ExtData: append([]byte(nil), signPub...),
+		}},
+	}
+	protocol.SignEd25519Certificate(cert, signPriv)
+	return protocol.EncodeEd25519Certificate(cert), nil
+}
