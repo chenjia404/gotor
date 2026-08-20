@@ -214,11 +214,6 @@ func (h *ExtensionHandler) SetForwarder(f *ForwardingHandler) {
 //	  HDATA (HLEN bytes) - handshake data
 func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, relayCell *cell.RelayCell, clientConn net.Conn) error {
 	h.logger.Info("Processing EXTEND2", "circuit_id", circuitID)
-	if circ, ok := h.circuits.GetCircuit(circuitID); ok && circ != nil {
-		circ.mu.Lock()
-		circ.didExtend = true
-		circ.mu.Unlock()
-	}
 
 	data := relayCell.Data
 
@@ -297,6 +292,12 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 	if err := h.registerExtendedCircuit(circuitID, nextCircuitID, address, nextConn, clientConn); err != nil {
 		h.logger.Error("Failed to register extended circuit", "error", err)
 		return fmt.Errorf("registration failed: %w", err)
+	}
+	// 仅在下一跳已登记后打标：无效/失败的 EXTEND2 不得绕过 DoSRefuseSingleHopClient。
+	if circ, ok := h.circuits.GetCircuit(circuitID); ok && circ != nil {
+		circ.mu.Lock()
+		circ.didExtend = true
+		circ.mu.Unlock()
 	}
 
 	if clientConn != nil {

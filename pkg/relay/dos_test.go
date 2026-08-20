@@ -1,9 +1,11 @@
 package relay
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/config"
 )
 
@@ -150,6 +152,32 @@ func TestHandleCreate2DoSWritesDestroy(t *testing.T) {
 	}
 	if len(mock.writtenData) == 0 {
 		t.Fatal("应写出 DESTROY")
+	}
+}
+
+func TestFailedExtend2DoesNotMarkDidExtend(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Destroy()
+	h := NewCircuitHandler(keys, nil)
+	circ := &ServerCircuit{CircuitID: 3}
+	h.mu.Lock()
+	h.circuits[3] = circ
+	h.mu.Unlock()
+	rc, err := cell.NewRelayCell(0, cell.RelayExtend2, []byte{0xff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.extender.HandleExtend2(context.Background(), 3, rc, nil); err == nil {
+		t.Fatal("截断 EXTEND2 应失败")
+	}
+	circ.mu.RLock()
+	marked := circ.didExtend
+	circ.mu.RUnlock()
+	if marked {
+		t.Fatal("失败的 EXTEND2 不得置 didExtend，否则可绕过单跳拒绝")
 	}
 }
 

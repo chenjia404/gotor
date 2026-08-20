@@ -11,7 +11,7 @@
 - `Enabled=auto`（默认）且无共识 `DoS*` 参数时视为**关**，不假装已启用。
 - 显式 `DoSConnectionEnabled 1`：每 IP 并发 OR 连接上限（默认 100），在 accept 后、TLS 前拒绝。
 - 显式 `DoSCircuitCreationEnabled 1`：该 IP 并发连接 ≥ `MinConnections`（默认 3）后，对 CREATE2 套令牌桶（Rate/Burst，默认 3/90）；桶空则进入 `DefenseTimePeriod`（默认 1h）一律拒绝，DESTROY `RESOURCELIMIT`。
-- `DoSRefuseSingleHopClient 1`：从未 EXTEND 的电路上 `BEGIN` / `BEGIN_DIR` / `RESOLVE` 则 DESTROY。
+- `DoSRefuseSingleHopClient 1`：从未**成功** EXTEND（下一跳已登记）的电路上 `BEGIN` / `BEGIN_DIR` / `RESOLVE` 则 DESTROY。截断或失败的 EXTEND2 不打标。
 - 入站 OR 与 `CircuitHandler.handleCreate2` 已接线（不再只停在未接入的 `ProtectionManager`）。
 
 ## 明确未做
