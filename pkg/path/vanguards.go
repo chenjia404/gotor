@@ -116,7 +116,7 @@ func (v *VanguardSet) Load() error {
 		if !ok {
 			continue
 		}
-		fp = strings.ToUpper(strings.TrimSpace(fp))
+		fp = normalizeFP(fp)
 		sec, err := parseUnixSeconds(exp)
 		if err != nil {
 			continue
@@ -212,7 +212,7 @@ func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay, persistL1 
 	seen := make(map[string]bool)
 	persist := make(map[string]bool)
 	for _, raw := range persistL1 {
-		if fp := strings.ToUpper(strings.TrimSpace(raw)); fp != "" {
+		if fp := normalizeFP(raw); fp != "" {
 			persist[fp] = true
 			seen[fp] = true
 		}
@@ -221,20 +221,21 @@ func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay, persistL1 
 		if !now.Before(e.Until) {
 			continue
 		}
+		fp := normalizeFP(e.FP)
 		// 已升为持久 L1 的节点必须离开 L2，否则 pickL1 的 !inL2 会永远跳过该入口。
-		if persist[e.FP] {
+		if persist[fp] {
 			continue
 		}
-		r := byFP[e.FP]
+		r := byFP[fp]
 		// 当前电路目标碰巧是某 L2 时只在本条选路避开，不得从全局集合剔除。
 		if !usableL2(r) {
 			continue
 		}
-		if seen[e.FP] {
+		if seen[fp] {
 			continue
 		}
-		seen[e.FP] = true
-		kept = append(kept, e)
+		seen[fp] = true
+		kept = append(kept, layer2Entry{FP: fp, Until: e.Until})
 	}
 	cands := l2Candidates(byFP, seen)
 	for len(kept) < v.count && len(cands) > 0 {
@@ -268,7 +269,7 @@ func (v *VanguardSet) liveRelaysLocked(byFP map[string]*directory.Relay) []*dire
 		if !now.Before(e.Until) {
 			continue
 		}
-		if r := byFP[e.FP]; usableL2(r) {
+		if r := byFP[normalizeFP(e.FP)]; usableL2(r) {
 			out = append(out, r)
 		}
 	}
@@ -288,13 +289,19 @@ func indexRelays(relays []*directory.Relay) map[string]*directory.Relay {
 	return m
 }
 
+func normalizeFP(raw string) string {
+	s := strings.ToUpper(strings.TrimSpace(raw))
+	s = strings.ReplaceAll(s, " ", "")
+	return strings.TrimPrefix(s, "$")
+}
+
 func relayFP(r *directory.Relay) string {
 	if r == nil {
 		return ""
 	}
-	fp := strings.ToUpper(r.GetFingerprintHex())
+	fp := normalizeFP(r.GetFingerprintHex())
 	if fp == "" {
-		fp = strings.ToUpper(r.Fingerprint)
+		fp = normalizeFP(r.Fingerprint)
 	}
 	return fp
 }
@@ -332,7 +339,7 @@ func pickL1(byFP map[string]*directory.Relay, persistL1 []string, target *direct
 		inL2[relayFP(r)] = true
 	}
 	for _, raw := range persistL1 {
-		fp := strings.ToUpper(strings.TrimSpace(raw))
+		fp := normalizeFP(raw)
 		r := byFP[fp]
 		if r != nil && r.UsableAsGuard() && !sameRelayFP(r, target) && !familyConflict(r, target) && !inL2[fp] {
 			return r
@@ -401,8 +408,8 @@ func PersistL1Fingerprints(gm *GuardManager) []string {
 	gs := gm.GetGuards()
 	out := make([]string, 0, len(gs))
 	for _, g := range gs {
-		if g.Fingerprint != "" {
-			out = append(out, g.Fingerprint)
+		if fp := normalizeFP(g.Fingerprint); fp != "" {
+			out = append(out, fp)
 		}
 	}
 	return out

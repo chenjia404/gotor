@@ -334,6 +334,33 @@ func TestVanguardSetKeepsL2WhenTargetMatches(t *testing.T) {
 	}
 }
 
+func TestVanguardSetAcceptsSpacedPersistL1(t *testing.T) {
+	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	pool := vgPool()
+	raw := pool[0].Fingerprint
+	var b strings.Builder
+	for i := 0; i < len(raw); i += 4 {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		end := i + 4
+		if end > len(raw) {
+			end = len(raw)
+		}
+		b.WriteString(raw[i:end])
+	}
+	p, err := v.SelectHSPath(pool, pool[6], []string{"$" + b.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Guard.Fingerprint != pool[0].Fingerprint {
+		t.Fatalf("C Tor 空格/$ 指纹应对上共识 hex，got %s", p.Guard.Nickname)
+	}
+	if containsFP(v.Fingerprints(), pool[0].Fingerprint) {
+		t.Fatal("规范化后的入口仍应从 L2 剔除")
+	}
+}
+
 func TestVanguardSetRejectsL1SameFamilyAsTarget(t *testing.T) {
 	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	pool := vgPool()
