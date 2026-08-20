@@ -419,6 +419,8 @@ func (gm *GuardManager) loadTorState() (bool, error) {
 	if gm.torStatePath == "" {
 		return false, nil
 	}
+	torStateFileMu.Lock()
+	defer torStateFileMu.Unlock()
 	sf, err := datadir.LoadState(gm.torStatePath)
 	if err != nil || sf == nil || len(sf.Guards) == 0 {
 		return false, err
@@ -454,25 +456,25 @@ func (gm *GuardManager) saveTorState() error {
 	if gm.torStatePath == "" {
 		return nil
 	}
-	existing, err := datadir.LoadState(gm.torStatePath)
-	if err != nil {
-		existing = &datadir.StateFile{}
-	}
 	gm.mu.RLock()
 	guards := append([]GuardEntry(nil), gm.state.Guards...)
 	gm.mu.RUnlock()
-	existing.Guards = existing.Guards[:0]
-	for _, g := range guards {
-		fields := map[string]string{"in": "default"}
-		if g.Confirmed {
-			fields["confirmed_on"] = g.LastUsed.UTC().Format("2006-01-02T15:04:05")
-			fields["confirmed_idx"] = "0"
+	torStateFileMu.Lock()
+	defer torStateFileMu.Unlock()
+	return datadir.WithStateFile(gm.torStatePath, "Tor 0.4.9.11 (gotor)", func(existing *datadir.StateFile) error {
+		existing.Guards = existing.Guards[:0]
+		for _, g := range guards {
+			fields := map[string]string{"in": "default"}
+			if g.Confirmed {
+				fields["confirmed_on"] = g.LastUsed.UTC().Format("2006-01-02T15:04:05")
+				fields["confirmed_idx"] = "0"
+			}
+			existing.Guards = append(existing.Guards, datadir.GuardRecord{
+				RSAID:    strings.ToUpper(g.Fingerprint),
+				Nickname: g.Nickname,
+				Fields:   fields,
+			})
 		}
-		existing.Guards = append(existing.Guards, datadir.GuardRecord{
-			RSAID:    strings.ToUpper(g.Fingerprint),
-			Nickname: g.Nickname,
-			Fields:   fields,
-		})
-	}
-	return datadir.SaveState(gm.torStatePath, existing, "Tor 0.4.9.11 (gotor)")
+		return nil
+	})
 }

@@ -2,6 +2,7 @@
 package datadir
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -333,6 +334,38 @@ func SaveState(path string, sf *StateFile, torVersion string) error {
 		return err
 	}
 	return nil
+}
+
+// WithStateFile 在 path.lock 下读改写 DataDirectory/state，避免 Guard 与 L2 互相覆盖。
+func WithStateFile(path, torVersion string, fn func(*StateFile) error) error {
+	if path == "" {
+		return fmt.Errorf("empty state path")
+	}
+	if fn == nil {
+		return fmt.Errorf("nil state callback")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	lk := flock.New(path + ".lock")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ok, err := lk.TryLockContext(ctx, 50*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("state lock: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("timeout waiting for state lock")
+	}
+	defer func() { _ = lk.Unlock() }()
+	sf, err := LoadState(path)
+	if err != nil {
+		return err
+	}
+	if err := fn(sf); err != nil {
+		return err
+	}
+	return SaveState(path, sf, torVersion)
 }
 
 // PrepareUnixSocket 删除陈旧 unix socket，并确保父目录存在。

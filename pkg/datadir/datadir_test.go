@@ -124,6 +124,33 @@ func TestValidRSAFingerprint(t *testing.T) {
 	}
 }
 
+func TestWithStateFilePreservesOtherKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, StateFileName)
+	if err := WithStateFile(path, "Tor 0.4.9.11 (gotor)", func(sf *StateFile) error {
+		sf.Set("GuardDummy", "keep")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WithStateFile(path, "Tor 0.4.9.11 (gotor)", func(sf *StateFile) error {
+		sf.Set("GotorHSLayer2Guards", "AA=1")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sf, err := LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := sf.Get("GuardDummy"); !ok || v != "keep" {
+		t.Fatalf("二次写不得覆盖其它键: %q %v", v, ok)
+	}
+	if v, ok := sf.Get("GotorHSLayer2Guards"); !ok || v != "AA=1" {
+		t.Fatalf("新键丢失: %q %v", v, ok)
+	}
+}
+
 func TestPrepareUnixSocket(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "ctrl.sock")

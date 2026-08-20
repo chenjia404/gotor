@@ -21,6 +21,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/metrics"
 	"github.com/opd-ai/go-tor/pkg/onion"
+	"github.com/opd-ai/go-tor/pkg/path"
 	"github.com/opd-ai/go-tor/pkg/pool"
 	"github.com/opd-ai/go-tor/pkg/ratelimit"
 	"github.com/opd-ai/go-tor/pkg/stream"
@@ -171,9 +172,11 @@ type Server struct {
 	perClientLimiter *ratelimit.KeyedRateLimiter // Per-client rate limiter
 	metrics          *metrics.Metrics            // Optional metrics for recording rate limit events
 
-	circpadCfg    circuit.CircpadConfig
-	circpadCfgSet bool
-	onionRelays   []*directory.Relay // 用于检查中间跳 Padding=2
+	circpadCfg     circuit.CircpadConfig
+	circpadCfgSet  bool
+	onionRelays    []*directory.Relay // 用于检查中间跳 Padding=2
+	onionVanguards *path.VanguardSet
+	onionGuards    *path.GuardManager
 
 	eventPub EventPublisher
 }
@@ -339,14 +342,28 @@ func (s *Server) SetOnionNetwork(
 	if builder != nil {
 		begindir := onion.NewBegindirFetcher(builder, s.logger)
 		begindir.SetRelays(relays)
+		begindir.SetVanguards(s.onionVanguards, s.onionGuards)
 		s.onionClient.SetBegindir(begindir)
 		adapter := onion.NewCircuitAdapter(builder, mgr, relays, s.logger)
+		adapter.SetVanguards(s.onionVanguards, s.onionGuards)
 		s.onionClient.SetCircuitBuilder(adapter)
 		s.onionClient.SetCellSender(adapter)
 	}
 	s.logger.Info("Onion network configured",
 		"hsdirs", len(hsdirs),
-		"relays", len(relays))
+		"relays", len(relays),
+		"vanguards_lite", s.onionVanguards != nil)
+}
+
+// SetOnionPathDefense 注入 vanguards-lite 与入口 Guard 持久化（须在 SetOnionNetwork 之前或同时调用）。
+func (s *Server) SetOnionPathDefense(v *path.VanguardSet, gm *path.GuardManager) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.onionVanguards = v
+	s.onionGuards = gm
+	s.mu.Unlock()
 }
 
 // LoadOnionAuthDir 加载 ClientOnionAuthDir。
