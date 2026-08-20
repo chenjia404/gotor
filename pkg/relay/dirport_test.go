@@ -237,6 +237,58 @@ func TestDirCacheServesConsensusDiffURL(t *testing.T) {
 	}
 }
 
+func TestDirCacheFPRLISTFiltersSignatures(t *testing.T) {
+	dir := t.TempDir()
+	a := "aaaaaaaaaa1111111111aaaaaaaaaa1111111111"
+	b := "bbbbbbbbbb2222222222bbbbbbbbbb2222222222"
+	c := "cccccccccccccccccccccccccccccccccccccccc"
+	z := "ffffffffffffffffffffffffffffffffffffffff"
+	curr := "" +
+		"network-status-version 3\n" +
+		"vote-status consensus\n" +
+		"valid-after 2024-01-01 01:00:00\n" +
+		"directory-footer\n" +
+		"directory-signature sha256 " + strings.ToUpper(a) + " SA\n-----BEGIN SIGNATURE-----\nA\n-----END SIGNATURE-----\n" +
+		"directory-signature sha256 " + strings.ToUpper(b) + " SB\n-----BEGIN SIGNATURE-----\nB\n-----END SIGNATURE-----\n" +
+		"directory-signature sha256 " + strings.ToUpper(c) + " SC\n-----BEGIN SIGNATURE-----\nC\n-----END SIGNATURE-----\n"
+	if err := os.WriteFile(filepath.Join(dir, cachedConsensusName), []byte(curr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(dir, nil)
+
+	okURL := "/tor/status-vote/current/consensus-microdesc/" + a[:6] + "+" + b[:6]
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, okURL, http.NoBody))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("过半签名应 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, strings.ToUpper(a)) || !strings.Contains(body, strings.ToUpper(b)) {
+		t.Fatal("必须保留请求权威的签名")
+	}
+	if strings.Contains(body, strings.ToUpper(c)) {
+		t.Fatal("未请求的权威签名必须去掉")
+	}
+
+	fail := httptest.NewRecorder()
+	s.handler().ServeHTTP(fail, httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc/"+a[:6]+"+"+z[:6], http.NoBody))
+	if fail.Code != http.StatusNotFound {
+		t.Fatalf("未过半必须 404, got %d", fail.Code)
+	}
+
+	bad := httptest.NewRecorder()
+	s.handler().ServeHTTP(bad, httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc/not-hex", http.NoBody))
+	if bad.Code != http.StatusNotFound {
+		t.Fatalf("非法 FPRLIST 必须 404, got %d", bad.Code)
+	}
+
+	plain := httptest.NewRecorder()
+	s.handler().ServeHTTP(plain, httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody))
+	if plain.Code != http.StatusOK || !strings.Contains(plain.Body.String(), strings.ToUpper(c)) {
+		t.Fatal("无 FPRLIST 必须回全部签名")
+	}
+}
+
 func TestDirCacheConsensusDiffViaBeginDir(t *testing.T) {
 	dir := t.TempDir()
 	prev, _ := writeConsensusPair(t, dir)

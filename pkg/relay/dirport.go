@@ -30,7 +30,7 @@ const (
 )
 
 // DirCacheServer 用 CacheDirectory 的落盘共识/microdesc 应答 BEGIN_DIR / DirPort。
-// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/ 提供 limited-ed，并协商 gzip/deflate/.z 与 304；不宣告 DirCache=2。
+// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/<FPRLIST> 提供 limited-ed，按 FPRLIST 过滤权威签名（未过半 404），并协商 gzip/deflate/.z 与 304；不宣告 DirCache=2。
 type DirCacheServer struct {
 	cacheDir string
 	logger   *logger.Logger
@@ -40,6 +40,7 @@ type DirCacheServer struct {
 	diffMu     sync.Mutex
 	diffFrom   string
 	diffTo     string
+	diffFPR    string
 	diffCached string
 
 	hs *hsDirStore
@@ -56,7 +57,9 @@ func (d *DirCacheServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tor/status-vote/current/consensus-microdesc/diff/", d.serveConsensusDiffPath)
 	mux.HandleFunc("/tor/status-vote/current/consensus/diff/", d.serveConsensusDiffPath)
+	mux.HandleFunc("/tor/status-vote/current/consensus-microdesc/", d.serveConsensus)
 	mux.HandleFunc("/tor/status-vote/current/consensus-microdesc", d.serveConsensus)
+	mux.HandleFunc("/tor/status-vote/current/consensus/", d.serveConsensus)
 	mux.HandleFunc("/tor/status-vote/current/consensus", d.serveConsensus)
 	mux.HandleFunc("/tor/micro/all", d.serveFile("cached-microdescs"))
 	mux.HandleFunc("/tor/keys/all", d.serveFile("cached-certs"))
@@ -123,15 +126,30 @@ func (d *DirCacheServer) serveConsensus(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	fps, filter, ok := fprlistFromConsensusPath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 	curr, ok := d.readCachedFile(cachedConsensusName)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+	fprKey := ""
+	if filter {
+		var matched int
+		curr, matched, ok = directory.FilterConsensusByFPRLIST(curr, fps)
+		if !ok || !directory.FPRLISTHasMajority(len(fps), matched) {
+			http.NotFound(w, r)
+			return
+		}
+		fprKey = strings.Join(fps, "+")
+	}
 	hashes := directory.ParseOrDiffFromConsensusHeader(r.Header.Get("X-Or-Diff-From-Consensus"))
 	mod := consensusLastModified(curr, d.cachedModTime(cachedConsensusName))
 	if len(hashes) > 0 {
-		if diff, ok := d.diffFromHashes(hashes, curr); ok {
+		if diff, ok := d.diffFromHashes(hashes, curr, fprKey); ok {
 			writeDirBody(w, r, []byte(diff), mod)
 			return
 		}
@@ -144,7 +162,12 @@ func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.R
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	hash, ok := parseConsensusDiffPath(r.URL.Path)
+	hash, fprRaw, ok := parseConsensusDiffPath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	fps, filter, ok := directory.ParseFPRLIST(fprRaw)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -154,7 +177,17 @@ func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.R
 		http.NotFound(w, r)
 		return
 	}
-	diff, ok := d.diffFromHashes([]string{hash}, curr)
+	fprKey := ""
+	if filter {
+		var matched int
+		curr, matched, ok = directory.FilterConsensusByFPRLIST(curr, fps)
+		if !ok || !directory.FPRLISTHasMajority(len(fps), matched) {
+			http.NotFound(w, r)
+			return
+		}
+		fprKey = strings.Join(fps, "+")
+	}
+	diff, ok := d.diffFromHashes([]string{hash}, curr, fprKey)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -162,7 +195,7 @@ func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.R
 	writeDirBody(w, r, []byte(diff), consensusLastModified(curr, d.cachedModTime(cachedConsensusName)))
 }
 
-func parseConsensusDiffPath(path string) (hash string, ok bool) {
+func parseConsensusDiffPath(path string) (hash, fprlist string, ok bool) {
 	const (
 		micro = "/tor/status-vote/current/consensus-microdesc/diff/"
 		ns    = "/tor/status-vote/current/consensus/diff/"
@@ -174,27 +207,47 @@ func parseConsensusDiffPath(path string) (hash string, ok bool) {
 	case strings.HasPrefix(path, ns):
 		rest = strings.TrimPrefix(path, ns)
 	default:
-		return "", false
+		return "", "", false
 	}
 	rest = strings.Trim(rest, "/")
 	if rest == "" || strings.Contains(rest, "..") {
-		return "", false
+		return "", "", false
 	}
-	hash, _, _ = strings.Cut(rest, "/")
+	hash, fprlist, _ = strings.Cut(rest, "/")
 	hash = strings.ToLower(hash)
 	if len(hash) != 64 {
-		return "", false
+		return "", "", false
 	}
 	for i := 0; i < len(hash); i++ {
 		c := hash[i]
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return "", false
+			return "", "", false
 		}
 	}
-	return hash, true
+	return hash, fprlist, true
 }
 
-func (d *DirCacheServer) diffFromHashes(hashes []string, curr string) (string, bool) {
+func fprlistFromConsensusPath(path string) (fps []string, filter bool, ok bool) {
+	if strings.Contains(path, "/diff/") {
+		return nil, false, false
+	}
+	rest := ""
+	switch {
+	case path == "/tor/status-vote/current/consensus-microdesc" || path == "/tor/status-vote/current/consensus-microdesc/":
+		return nil, false, true
+	case strings.HasPrefix(path, "/tor/status-vote/current/consensus-microdesc/"):
+		rest = strings.TrimPrefix(path, "/tor/status-vote/current/consensus-microdesc/")
+	case path == "/tor/status-vote/current/consensus" || path == "/tor/status-vote/current/consensus/":
+		return nil, false, true
+	case strings.HasPrefix(path, "/tor/status-vote/current/consensus/"):
+		rest = strings.TrimPrefix(path, "/tor/status-vote/current/consensus/")
+	default:
+		return nil, false, false
+	}
+	return directory.ParseFPRLIST(rest)
+}
+
+func (d *DirCacheServer) diffFromHashes(hashes []string, curr, fprKey string) (string, bool) {
 	prev, ok := d.readCachedFile(cachedConsensusPrevName)
 	if !ok {
 		return "", false
@@ -214,7 +267,7 @@ func (d *DirCacheServer) diffFromHashes(hashes []string, curr string) (string, b
 
 	d.diffMu.Lock()
 	defer d.diffMu.Unlock()
-	if d.diffCached != "" && d.diffFrom == from && d.diffTo == to {
+	if d.diffCached != "" && d.diffFrom == from && d.diffTo == to && d.diffFPR == fprKey {
 		return d.diffCached, true
 	}
 	diff, err := directory.GenerateConsensusDiff(prev, curr)
@@ -226,6 +279,7 @@ func (d *DirCacheServer) diffFromHashes(hashes []string, curr string) (string, b
 	}
 	d.diffFrom = from
 	d.diffTo = to
+	d.diffFPR = fprKey
 	d.diffCached = diff
 	return diff, true
 }
