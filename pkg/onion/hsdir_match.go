@@ -10,35 +10,58 @@ import (
 // VerifyHSDirOuterDescriptor 校验 HSDir 外层：type-8 证书未过期、由致盲公钥签发，
 // 且描述符正文由证书内 signing key 签名。HSDir 没有洋葱主身份，不能走
 // ParseDescriptorWithVerification。未宣告 HSDir=2。
-func VerifyHSDirOuterDescriptor(raw []byte) (blinded []byte, revision uint64, err error) {
-	desc, err := ParseDescriptor(raw)
-	if err != nil || desc == nil {
-		return nil, 0, fmt.Errorf("parse descriptor")
+func VerifyHSDirOuterDescriptor(raw []byte) (blinded []byte, revision uint64, canonical []byte, err error) {
+	sigIdx := bytes.Index(raw, []byte("signature "))
+	if sigIdx < 0 {
+		return nil, 0, nil, fmt.Errorf("signature line missing")
 	}
-	if len(desc.DescriptorSigningKeyCert) == 0 || len(desc.Signature) != ed25519.SignatureSize {
-		return nil, 0, fmt.Errorf("descriptor missing type-8 cert or signature")
+	// 只解析签名覆盖范围：签名行之后的 revision-counter 等不得抬高修订号。
+	desc, err := ParseDescriptor(raw[:sigIdx])
+	if err != nil || desc == nil {
+		return nil, 0, nil, fmt.Errorf("parse descriptor")
+	}
+	sig, err := parseHSDirSignatureLine(raw[sigIdx:])
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if len(desc.DescriptorSigningKeyCert) == 0 {
+		return nil, 0, nil, fmt.Errorf("descriptor missing type-8 cert")
 	}
 	cert, err := parseCertificate(desc.DescriptorSigningKeyCert)
 	if err != nil || cert.CertType != 8 {
-		return nil, 0, fmt.Errorf("type-8 certificate")
+		return nil, 0, nil, fmt.Errorf("type-8 certificate")
 	}
 	if time.Now().After(cert.ExpiresAt) {
-		return nil, 0, fmt.Errorf("type-8 certificate expired")
+		return nil, 0, nil, fmt.Errorf("type-8 certificate expired")
 	}
 	if len(cert.SigningKey) != ed25519.PublicKeySize || len(cert.SignedWithKey) != ed25519.PublicKeySize {
-		return nil, 0, fmt.Errorf("type-8 missing certified or signed-with key")
+		return nil, 0, nil, fmt.Errorf("type-8 missing certified or signed-with key")
 	}
 	if !ed25519.Verify(ed25519.PublicKey(cert.SignedWithKey), cert.SignedData, cert.Signature) {
-		return nil, 0, fmt.Errorf("type-8 certificate signature")
+		return nil, 0, nil, fmt.Errorf("type-8 certificate signature")
 	}
-	sigIdx := bytes.Index(raw, []byte("signature "))
-	if sigIdx < 0 {
-		return nil, 0, fmt.Errorf("signature line missing")
+	if !ed25519.Verify(ed25519.PublicKey(cert.SigningKey), HSDescriptorSignedMaterial(raw[:sigIdx]), sig) {
+		return nil, 0, nil, fmt.Errorf("descriptor signature")
 	}
-	if !ed25519.Verify(ed25519.PublicKey(cert.SigningKey), HSDescriptorSignedMaterial(raw[:sigIdx]), desc.Signature) {
-		return nil, 0, fmt.Errorf("descriptor signature")
+	end := len(raw)
+	if i := bytes.IndexByte(raw[sigIdx:], '\n'); i >= 0 {
+		end = sigIdx + i + 1
 	}
-	return append([]byte(nil), cert.SignedWithKey...), desc.RevisionCounter, nil
+	return append([]byte(nil), cert.SignedWithKey...), desc.RevisionCounter, append([]byte(nil), raw[:end]...), nil
+}
+
+func parseHSDirSignatureLine(fromSig []byte) ([]byte, error) {
+	line := fromSig
+	if i := bytes.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	line = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("signature ")))
+	line = bytes.TrimSuffix(line, []byte("\r"))
+	sig, err := decodeDescriptorBase64(string(line))
+	if err != nil || len(sig) != ed25519.SignatureSize {
+		return nil, fmt.Errorf("descriptor signature")
+	}
+	return sig, nil
 }
 
 // MatchHSDirDescriptor 若 raw 外层 type-8 证书由 blinded 公钥签发，则本 HSDir 应按该盲化身份提供此文档。

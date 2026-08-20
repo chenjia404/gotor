@@ -37,8 +37,8 @@ func (s *hsDirStore) put(body []byte) bool {
 	if !strings.HasPrefix(string(body), "hs-descriptor") {
 		return false
 	}
-	blinded, revision, err := onion.VerifyHSDirOuterDescriptor(body)
-	if err != nil || len(blinded) != 32 {
+	blinded, revision, canonical, err := onion.VerifyHSDirOuterDescriptor(body)
+	if err != nil || len(blinded) != 32 || len(canonical) == 0 {
 		return false
 	}
 	key := hex.EncodeToString(blinded)
@@ -56,7 +56,7 @@ func (s *hsDirStore) put(body []byte) bool {
 	} else if len(s.byBlind) >= maxHSDirEntries {
 		s.evictOldestLocked()
 	}
-	s.byBlind[key] = &hsDirEntry{body: append([]byte(nil), body...), mod: now, revision: revision}
+	s.byBlind[key] = &hsDirEntry{body: canonical, mod: now, revision: revision}
 	return true
 }
 

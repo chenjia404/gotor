@@ -42,15 +42,27 @@ func TestMatchHSDirDescriptor(t *testing.T) {
 	if MatchHSDirDescriptor([]byte("hs-descriptor 3\n"), blinded) {
 		t.Fatal("无证书不得命中")
 	}
-	if _, _, err := VerifyHSDirOuterDescriptor(desc.RawDescriptor); err != nil {
+	if _, _, _, err := VerifyHSDirOuterDescriptor(desc.RawDescriptor); err != nil {
 		t.Fatalf("验签外层: %v", err)
 	}
 	tampered := append([]byte(nil), desc.RawDescriptor...)
 	if i := bytes.Index(tampered, []byte("revision-counter")); i >= 0 {
 		tampered[i] ^= 0x01
 	}
-	if _, _, err := VerifyHSDirOuterDescriptor(tampered); err == nil {
+	if _, _, _, err := VerifyHSDirOuterDescriptor(tampered); err == nil {
 		t.Fatal("改正文必须验签失败")
+	}
+	_, rev, canon, err := VerifyHSDirOuterDescriptor(desc.RawDescriptor)
+	if err != nil || rev != 1 {
+		t.Fatalf("signed rev=%d err=%v", rev, err)
+	}
+	tailed := append(append([]byte(nil), desc.RawDescriptor...), []byte("\nrevision-counter 999999\n")...)
+	_, tailedRev, tailedCanon, err := VerifyHSDirOuterDescriptor(tailed)
+	if err != nil || tailedRev != 1 {
+		t.Fatalf("未签名尾部不得抬高 revision, got %d err=%v", tailedRev, err)
+	}
+	if bytes.Contains(tailedCanon, []byte("999999")) || !bytes.Equal(bytes.TrimSpace(tailedCanon), bytes.TrimSpace(canon)) {
+		t.Fatal("落盘正文不得含未签名尾部")
 	}
 }
 

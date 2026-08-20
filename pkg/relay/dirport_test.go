@@ -469,6 +469,10 @@ func TestDirCacheHSDirRejectsTamperAndStaleRevision(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Body.String() != string(raw3) {
 		t.Fatalf("GET 必须仍是 rev=3, status=%d", rec.Code)
 	}
+	locked := append(append([]byte(nil), raw3...), []byte("\nrevision-counter 999999\n")...)
+	if post(locked) != http.StatusBadRequest {
+		t.Fatal("未签名尾部抬高 revision 不得覆盖")
+	}
 }
 
 func bytesRepeatDir(b byte, n int) []byte {
