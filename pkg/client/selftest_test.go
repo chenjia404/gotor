@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"testing"
 
+	"net"
+
 	"github.com/opd-ai/go-tor/pkg/config"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
@@ -45,14 +47,24 @@ func TestAdvertisedORIPLiteral(t *testing.T) {
 		t.Fatalf("got %q %v", ip, err)
 	}
 	ip, err = advertisedORIP("[2001:db8::1]")
-	if err != nil || ip != "2001:db8::1" {
-		t.Fatalf("v6 %q %v", ip, err)
+	if err != nil || ip != "[2001:db8::1]" {
+		t.Fatalf("bracketed v6 %q %v", ip, err)
+	}
+	ip, err = advertisedORIP("2001:db8::1")
+	if err != nil || ip != "[2001:db8::1]" {
+		t.Fatalf("bare v6 should be bracketed, got %q %v", ip, err)
 	}
 	if _, err := advertisedORIP("0.0.0.0"); err == nil {
 		t.Fatal("unspecified 应拒绝")
 	}
 	if _, err := advertisedORIP(""); err == nil {
 		t.Fatal("空地址应拒绝")
+	}
+	if _, err := advertisedORIP("example.invalid"); err == nil {
+		t.Fatal("主机名应拒绝（不走本机解析）")
+	}
+	if _, _, err := net.SplitHostPort(ip + ":9001"); err != nil {
+		t.Fatalf("bracketed v6 必须能被 SplitHostPort 解析: %v", err)
 	}
 }
 
@@ -97,6 +109,11 @@ func TestProbeORPortViaCircuitValidation(t *testing.T) {
 	}
 
 	c.config.DisableNetwork = false
+	hostOnly := *self
+	hostOnly.Address = "example.invalid"
+	if err := c.ProbeORPortViaCircuit(context.Background(), &hostOnly); err == nil {
+		t.Fatal("主机名 Address 应拒绝")
+	}
 	if err := c.ProbeORPortViaCircuit(context.Background(), nil); err == nil {
 		t.Fatal("nil self 应拒绝")
 	}

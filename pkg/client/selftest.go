@@ -32,12 +32,12 @@ func (c *Client) ProbeORPortViaCircuit(ctx context.Context, self *directory.Rela
 	if self.Address == "" || self.ORPort <= 0 {
 		return fmt.Errorf("self hop missing advertised OR address")
 	}
-	ip, err := advertisedORIP(self.Address)
+	orAddr, err := advertisedORIP(self.Address)
 	if err != nil {
 		return err
 	}
 	target := *self
-	target.Address = ip
+	target.Address = orAddr
 
 	if c.pathSelector == nil || c.directory == nil || c.circuitMgr == nil {
 		return fmt.Errorf("path selector not ready")
@@ -122,32 +122,23 @@ func sameTestingRelay(a, b *directory.Relay) bool {
 	return false
 }
 
-// advertisedORIP 把 Address 收成 EXTEND2 可用的 IP。
-// 字面量 IP 不查网；主机名才 LookupIP（默认单测只用 TEST-NET 字面量）。
+// advertisedORIP 把 Address 收成 EXTEND2 可用的字面量 IP。
+// IPv6 带方括号，以便 BuildCircuit 的 host:port 能过 SplitHostPort。
+// 主机名不在本机解析（禁止本机 DNS）；请把 Address 写成 IP，或用 AssumeReachable。
 func advertisedORIP(addr string) (string, error) {
 	host := strings.Trim(addr, "[]")
 	if host == "" {
 		return "", fmt.Errorf("empty advertised address")
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsUnspecified() || ip.IsMulticast() {
-			return "", fmt.Errorf("invalid advertised OR address")
-		}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", fmt.Errorf("ORPort self-test requires Address to be an IP (EXTEND2 cannot use hostnames)")
+	}
+	if ip.IsUnspecified() || ip.IsMulticast() {
+		return "", fmt.Errorf("invalid advertised OR address")
+	}
+	if ip.To4() != nil {
 		return ip.String(), nil
 	}
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return "", fmt.Errorf("resolve advertised OR address: %w", err)
-	}
-	for _, ip := range ips {
-		if v4 := ip.To4(); v4 != nil && !v4.IsUnspecified() && !v4.IsMulticast() {
-			return v4.String(), nil
-		}
-	}
-	for _, ip := range ips {
-		if ip.To4() == nil && ip.To16() != nil && !ip.IsUnspecified() && !ip.IsMulticast() {
-			return ip.String(), nil
-		}
-	}
-	return "", fmt.Errorf("advertised address resolved to no usable IP")
+	return "[" + ip.String() + "]", nil
 }
