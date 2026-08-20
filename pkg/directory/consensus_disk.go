@@ -80,7 +80,7 @@ func (c *Client) persistConsensusDisk(doc string) {
 		return
 	}
 	// 换共识时保留上一份，供 DirCache 按 X-Or-Diff-From-Consensus 生成 limited-ed。
-	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 && len(existing) <= maxCachedConsensusBytes {
+	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 && len(existing) <= maxCachedConsensusBytes { // #nosec G304 -- CacheDirectory 由操作者配置
 		oldFrom := consensusDiffFromDigest(string(existing))
 		newFrom := consensusDiffFromDigest(doc)
 		if hexDigestEqual(oldFrom, newFrom) {
