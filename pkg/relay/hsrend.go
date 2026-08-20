@@ -65,20 +65,43 @@ func (h *ForwardingHandler) handleRendezvous1(circ *ServerCircuit, clientConn ne
 	cookie := payload[:rendCookieLen]
 	handshake := append([]byte(nil), payload[rendCookieLen:]...)
 	key := hex.EncodeToString(cookie)
+	// cookie 一次性取出：并发 RENDEZVOUS1 不能各发一格 RENDEZVOUS2。
 	h.hsMu.Lock()
 	slot := h.rendByCookie[key]
+	if slot != nil {
+		delete(h.rendByCookie, key)
+	}
 	h.hsMu.Unlock()
 	if slot == nil || slot.circ == nil || slot.conn == nil {
 		return h.destroyHSCircuit(circ, clientConn, "RENDEZVOUS1 cookie not recognized")
 	}
+	if slot.circ.CircuitID == circ.CircuitID {
+		return h.destroyHSCircuit(circ, clientConn, "RENDEZVOUS1 on rendezvous circuit")
+	}
+	circ.mu.RLock()
+	occupied := circ.joinedCirc != nil || len(circ.introAuth) > 0 || len(circ.rendCookie) > 0
+	circ.mu.RUnlock()
+	if occupied {
+		h.restoreRend(key, slot)
+		return h.destroyHSCircuit(circ, clientConn, "RENDEZVOUS1 on occupied circuit")
+	}
 	if err := sendRelayToClient(slot.circ, slot.conn, 0, cell.RelayRendezvous2, handshake); err != nil {
+		h.restoreRend(key, slot)
 		return h.destroyHSCircuit(circ, clientConn, "RENDEZVOUS2 send failed")
 	}
-	h.hsMu.Lock()
-	delete(h.rendByCookie, key)
-	h.hsMu.Unlock()
 	joinHSCircuits(circ, clientConn, slot.circ, slot.conn)
 	return nil
+}
+
+func (h *ForwardingHandler) restoreRend(key string, slot *hsRoleSlot) {
+	if h == nil || slot == nil || key == "" {
+		return
+	}
+	h.hsMu.Lock()
+	if h.rendByCookie[key] == nil {
+		h.rendByCookie[key] = slot
+	}
+	h.hsMu.Unlock()
 }
 
 func joinHSCircuits(a *ServerCircuit, aConn net.Conn, b *ServerCircuit, bConn net.Conn) {
