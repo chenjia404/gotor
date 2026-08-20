@@ -6,7 +6,8 @@
 > **客户端**主链路（含 v3 `.onion` HTTP、Padding=2、官方向量）已在 `IMPLEMENTATION_STATUS` 标 WORKING；  
 > Bridge/Relay **服务端**与洋葱**托管**仍非本仓库验收范围。  
 > 中继清单第 1 项（进共识 Running）：入站握手与 ORPort self-test 门闩见 [`docs/COMPAT_WITH_OFFICIAL_TOR.md`](docs/COMPAT_WITH_OFFICIAL_TOR.md)，**仍 PARTIAL**，缺真网 Running。  
-> 清单第 2 项（真网当中间跳）：出站握手 / CircID MSB / 按身份入池已接线，**仍 PARTIAL**，无官方客户端经 gotor middle 出网证据。下一项代码缺口：第 3 项 DirCache consdiff。
+> 清单第 2 项（真网当中间跳）：出站握手 / CircID MSB / 按身份入池已接线，**仍 PARTIAL**，无官方客户端经 gotor middle 出网证据。  
+> 清单第 3 项（DirCache 对外）：上一份→当前 limited-ed 已接线（#53），**仍 PARTIAL**，未宣告 DirCache=2，无真网被当缓存证据。下一项代码缺口：第 4 项 HSDir / intro / rend 中继角色。
 
 ## Current Status (January 2026)
 
