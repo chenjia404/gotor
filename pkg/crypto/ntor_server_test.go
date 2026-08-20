@@ -59,6 +59,37 @@ func TestNtorServerHandshake(t *testing.T) {
 	}
 }
 
+func TestNtorServerHandshakeWithNonceMatchesClient(t *testing.T) {
+	serverNtor, err := GenerateNtorKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverIdentity := make([]byte, 20)
+	if _, err := rand.Read(serverIdentity); err != nil {
+		t.Fatal(err)
+	}
+	var serverPublic [32]byte
+	curve25519.ScalarBaseMult(&serverPublic, &serverNtor.Private)
+	clientHandshake, clientPrivate, err := NtorClientHandshake(serverIdentity, serverPublic[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, km, nonce, err := NtorServerHandshakeWithNonce(clientHandshake, serverNtor.Private[:], serverIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(km) != NtorKeyMaterialLen || len(nonce) != NtorCircNonceLen {
+		t.Fatalf("km=%d nonce=%d", len(km), len(nonce))
+	}
+	clientKM, clientNonce, err := NtorProcessResponseWithNonce(resp, clientPrivate, serverPublic[:], serverIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(km, clientKM) || !bytes.Equal(nonce, clientNonce) {
+		t.Fatal("client/server circ_nonce or key material mismatch")
+	}
+}
+
 // TestNtorServerHandshakeInvalidInput tests error handling
 func TestNtorServerHandshakeInvalidInput(t *testing.T) {
 	tests := []struct {

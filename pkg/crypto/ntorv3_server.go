@@ -14,14 +14,24 @@ import (
 // verification 对普通电路为 NtorV3CircuitVerification。
 // serverMsgPlain 为加密前的 SM（通常含 CC_FIELD_RESPONSE）；可为空扩展 EncodeNtorV3Extensions(nil)。
 func NtorV3ServerHandshake(clientSkin, edID, onionPriv, verification, serverMsgPlain []byte) (response, keyMaterial []byte, err error) {
+	resp, km, _, err := ntorV3ServerHandshakeCore(clientSkin, edID, onionPriv, verification, serverMsgPlain)
+	return resp, km, err
+}
+
+// NtorV3ServerHandshakeWithNonce 与 NtorV3ServerHandshake 相同，并返回 rend_circ_nonce。
+func NtorV3ServerHandshakeWithNonce(clientSkin, edID, onionPriv, verification, serverMsgPlain []byte) (response, keyMaterial, circNonce []byte, err error) {
+	return ntorV3ServerHandshakeCore(clientSkin, edID, onionPriv, verification, serverMsgPlain)
+}
+
+func ntorV3ServerHandshakeCore(clientSkin, edID, onionPriv, verification, serverMsgPlain []byte) (response, keyMaterial, circNonce []byte, err error) {
 	if len(edID) != NtorV3IDLen {
-		return nil, nil, fmt.Errorf("ntor-v3 server ID length %d", len(edID))
+		return nil, nil, nil, fmt.Errorf("ntor-v3 server ID length %d", len(edID))
 	}
 	if len(onionPriv) != 32 {
-		return nil, nil, fmt.Errorf("ntor-v3 onion private length %d", len(onionPriv))
+		return nil, nil, nil, fmt.Errorf("ntor-v3 onion private length %d", len(onionPriv))
 	}
 	if len(clientSkin) < NtorV3FixedClientLen {
-		return nil, nil, fmt.Errorf("ntor-v3 client skin too short: %d", len(clientSkin))
+		return nil, nil, nil, fmt.Errorf("ntor-v3 client skin too short: %d", len(clientSkin))
 	}
 
 	id := clientSkin[:32]
@@ -32,23 +42,23 @@ func NtorV3ServerHandshake(clientSkin, edID, onionPriv, verification, serverMsgP
 	msgMAC := clientSkin[len(clientSkin)-NtorV3MACLen:]
 
 	if subtle.ConstantTimeCompare(id, edID) != 1 {
-		return nil, nil, fmt.Errorf("ntor-v3 identity mismatch")
+		return nil, nil, nil, fmt.Errorf("ntor-v3 identity mismatch")
 	}
 
 	var b, B [32]byte
 	copy(b[:], onionPriv)
 	curve25519.ScalarBaseMult(&B, &b)
 	if subtle.ConstantTimeCompare(Bclaimed, B[:]) != 1 {
-		return nil, nil, fmt.Errorf("ntor-v3 onion KEYID mismatch")
+		return nil, nil, nil, fmt.Errorf("ntor-v3 onion KEYID mismatch")
 	}
 	if isAllZero(X[:]) {
-		return nil, nil, fmt.Errorf("ntor-v3 client ephemeral is identity")
+		return nil, nil, nil, fmt.Errorf("ntor-v3 client ephemeral is identity")
 	}
 
 	var Bx [32]byte
 	curve25519.ScalarMult(&Bx, &b, &X)
 	if isAllZero(Bx[:]) {
-		return nil, nil, fmt.Errorf("ntor-v3 EXP(X,b) identity")
+		return nil, nil, nil, fmt.Errorf("ntor-v3 EXP(X,b) identity")
 	}
 
 	phase1 := make([]byte, 0, 32+32+32+32+len(ntorV3ProtoID)+8+len(verification))
@@ -69,17 +79,17 @@ func NtorV3ServerHandshake(clientSkin, edID, onionPriv, verification, serverMsgP
 	macMsg = append(macMsg, encCM...)
 	expectedMAC := ntorV3MAC(ntorV3TMsgMAC, macK1, macMsg)
 	if subtle.ConstantTimeCompare(msgMAC, expectedMAC) != 1 {
-		return nil, nil, fmt.Errorf("ntor-v3 client MSG MAC mismatch")
+		return nil, nil, nil, fmt.Errorf("ntor-v3 client MSG MAC mismatch")
 	}
 
 	// 解密 CM（本实现暂不强制解析扩展）
 	if _, err := ntorV3AESCTR(encK1, encCM); err != nil {
-		return nil, nil, fmt.Errorf("ntor-v3 decrypt CM: %w", err)
+		return nil, nil, nil, fmt.Errorf("ntor-v3 decrypt CM: %w", err)
 	}
 
 	yKP, err := GenerateNtorKeyPair()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var y, Y [32]byte
 	copy(y[:], yKP.Private[:])
@@ -88,7 +98,7 @@ func NtorV3ServerHandshake(clientSkin, edID, onionPriv, verification, serverMsgP
 	var Yx [32]byte
 	curve25519.ScalarMult(&Yx, &y, &X)
 	if isAllZero(Yx[:]) {
-		return nil, nil, fmt.Errorf("ntor-v3 EXP(X,y) identity")
+		return nil, nil, nil, fmt.Errorf("ntor-v3 EXP(X,y) identity")
 	}
 
 	secret := make([]byte, 0, 32+32+32+32+32+32+len(ntorV3ProtoID)+8+len(verification))
@@ -110,10 +120,11 @@ func NtorV3ServerHandshake(clientSkin, edID, onionPriv, verification, serverMsgP
 	rawFinal := ntorV3KDF(ntorV3TFinal, keySeed, NtorV3EncKeyLen+NtorV3KeyMaterialLen+NtorCircNonceLen)
 	encKey := rawFinal[:NtorV3EncKeyLen]
 	keyMaterial = append([]byte(nil), rawFinal[NtorV3EncKeyLen:NtorV3EncKeyLen+NtorV3KeyMaterialLen]...)
+	circNonce = append([]byte(nil), rawFinal[NtorV3EncKeyLen+NtorV3KeyMaterialLen:]...)
 
 	encSM, err := ntorV3AESCTR(encKey, serverMsgPlain)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	authInput := make([]byte, 0, 32+32+32+32+32+32+8+len(encSM)+len(ntorV3ProtoID)+len(ntorV3ServerStr))
@@ -132,5 +143,5 @@ func NtorV3ServerHandshake(clientSkin, edID, onionPriv, verification, serverMsgP
 	response = append(response, Y[:]...)
 	response = append(response, auth...)
 	response = append(response, encSM...)
-	return response, keyMaterial, nil
+	return response, keyMaterial, circNonce, nil
 }
