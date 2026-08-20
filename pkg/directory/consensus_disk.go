@@ -79,17 +79,14 @@ func (c *Client) persistConsensusDisk(doc string) {
 		c.logger.Warn("refusing to write oversized cached-microdesc-consensus")
 		return
 	}
-	// 换共识时保留上一份，供 DirCache 按 X-Or-Diff-From-Consensus 生成 limited-ed。
+	// 换共识时把上一份推进历史库（最多 72 小时），供落后多期的客户端拿 limited-ed。
 	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 && len(existing) <= maxCachedConsensusBytes { // #nosec G304 -- CacheDirectory 由操作者配置
 		oldFrom := consensusDiffFromDigest(string(existing))
 		newFrom := consensusDiffFromDigest(doc)
 		if hexDigestEqual(oldFrom, newFrom) {
 			return
 		}
-		prevPath := filepath.Join(filepath.Dir(path), cachedMicrodescConsensusPrevName)
-		if err := writeFileAtomic(prevPath, existing, 0o600); err != nil {
-			c.logger.Warn("failed to persist previous consensus for consdiff", "error", err)
-		}
+		persistConsensusHistory(filepath.Dir(path), existing, doc)
 	}
 	if err := writeFileAtomic(path, []byte(doc), 0o600); err != nil {
 		c.logger.Warn("failed to persist cached-microdesc-consensus", "error", err)

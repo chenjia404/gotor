@@ -208,8 +208,8 @@ func (d *ServerDescriptor) build() error {
 		base64.RawStdEncoding.EncodeToString(d.Ed25519Identity))
 	fmt.Fprintf(&buf, "platform %s\n", d.Platform)
 	// proto 只写已实现能力。
-	// DirCache 已能对外提供上一份→当前的 limited-ed、gzip/deflate/x-zstd/x-tor-lzma 与 304，
-	// 但仍缺多小时历史 diff / 真网被当缓存的证据，禁止写 DirCache=2。
+	// DirCache 已能对外提供最多 72 小时历史→当前的 limited-ed、gzip/deflate/x-zstd/x-tor-lzma 与 304，
+	// 但仍缺真网被当缓存的证据，禁止写 DirCache=2。
 	// HS 中继可转发 INTRODUCE1→INTRODUCE2、RENDEZVOUS1→RENDEZVOUS2，
 	// 以及 BEGIN_DIR /tor/hs/3 收/服外层描述符；仍缺限速/生命周期/真网被选，
 	// 禁止写 HSDir= / HSIntro= / HSRend=。
