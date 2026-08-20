@@ -48,6 +48,42 @@ func TestNewServerFromConfigAndListen(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 }
 
+func TestServerReachabilityAssumeReachable(t *testing.T) {
+	dir := t.TempDir()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.DataDirectory = dir
+	cfg.ORPort = port
+	cfg.ORListenAddr = "127.0.0.1"
+	cfg.RelayAddress = "192.0.2.1"
+	cfg.Nickname = "assumeRel"
+	cfg.PublishServerDescriptor = true
+	cfg.AssumeReachable = true
+
+	srv, err := NewServerFromConfig(cfg, logger.NewDefault())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 不 Start：避免向权威 POST。只检查门闩与 TestingHop。
+	hop := srv.TestingHop()
+	if hop == nil || !hop.HasExtendKeys() {
+		t.Fatal("TestingHop 无效")
+	}
+	if hop.HasFlag("Running") {
+		t.Fatal("TestingHop 不得带 Running")
+	}
+	st := srv.ReachabilityStatus()
+	if !st.Assumed || !st.CanPublish {
+		t.Fatalf("AssumeReachable+Publish 应允许发布: %+v", st)
+	}
+}
+
 func TestNtorKeyPersistedAcrossLoad(t *testing.T) {
 	dir := t.TempDir()
 	keys, err := GenerateRelayKeys()

@@ -221,6 +221,19 @@ func run(ctx context.Context, cfg *config.Config, log *logger.Logger) error {
 		_ = torClient.Stop()
 		return fmt.Errorf("start client: %w", err)
 	}
+	if relaySrv != nil && cfg.PublishServerDescriptor && !cfg.DisableNetwork {
+		if !cfg.AssumeReachable {
+			hop := relaySrv.TestingHop()
+			relaySrv.SetORPortProber(func(pctx context.Context) error {
+				return torClient.ProbeORPortViaCircuit(pctx, hop)
+			})
+			if err := relaySrv.StartReachability(ctx); err != nil {
+				log.Error("ORPort self-test not started", "error", err)
+			}
+		} else {
+			log.Info("AssumeReachable: skipped ORPort circuit self-test")
+		}
+	}
 	stats := torClient.GetStats()
 	log.Info("client listeners ready",
 		"bootstrap", time.Since(start).Round(time.Second),
