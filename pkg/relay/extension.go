@@ -3,7 +3,9 @@
 package relay
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -13,6 +15,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/connection"
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/protocol"
 )
 
 // LinkSpecifier represents a way to reach the next relay
@@ -92,13 +95,85 @@ func extractAddressFromLinkSpecs(specs []LinkSpecifier) (string, error) {
 	return "", fmt.Errorf("no usable address in link specifiers")
 }
 
+// nextHopIdentity 来自 EXTEND2 的身份 specifier，供出站 CERTS 校验。
+type nextHopIdentity struct {
+	rsaFingerprint string // 40 字符大写 hex（type 2）
+	ed25519        []byte // 32 字节（type 3）
+}
+
+func (id nextHopIdentity) hasIdentity() bool {
+	return id.rsaFingerprint != "" || len(id.ed25519) == 32
+}
+
+func (id nextHopIdentity) matches(want nextHopIdentity) bool {
+	if want.rsaFingerprint != "" && id.rsaFingerprint != want.rsaFingerprint {
+		return false
+	}
+	if len(want.ed25519) == 32 && !bytes.Equal(id.ed25519, want.ed25519) {
+		return false
+	}
+	return true
+}
+
+func poolKey(address string, ident nextHopIdentity) string {
+	return address + "|" + ident.rsaFingerprint + "|" + fmt.Sprintf("%x", ident.ed25519)
+}
+
+func poolKeyFromConn(conn *connection.Connection) string {
+	if conn == nil {
+		return ""
+	}
+	return poolKey(conn.Address(), nextHopIdentity{
+		rsaFingerprint: conn.ExpectedFingerprint(),
+		ed25519:        conn.ExpectedIdentity(),
+	})
+}
+
+// pooledORConn 出站 OR 连接按「地址+身份」入池，禁止同 IP 不同身份复用。
+type pooledORConn struct {
+	conn  *connection.Connection
+	ident nextHopIdentity
+}
+
+// identitiesFromLinkSpecs 抽取 type 2 RSA 指纹与 type 3 Ed25519。
+func identitiesFromLinkSpecs(specs []LinkSpecifier) nextHopIdentity {
+	var id nextHopIdentity
+	for _, spec := range specs {
+		switch spec.Type {
+		case 2:
+			if len(spec.Data) == 20 {
+				id.rsaFingerprint = fmt.Sprintf("%X", spec.Data)
+			}
+		case 3:
+			if len(spec.Data) == 32 {
+				id.ed25519 = append([]byte(nil), spec.Data...)
+			}
+		}
+	}
+	return id
+}
+
+// newOutboundCircID 为出站 CREATE2 分配 CircID。
+// tor-spec create-created-cells：link protocol v4+ 发起方 MUST set MSB to 1。
+func newOutboundCircID() uint32 {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0x80000001
+	}
+	id := binary.BigEndian.Uint32(b[:]) | 0x80000000
+	if id == 0x80000000 {
+		return 0x80000001
+	}
+	return id
+}
+
 // ExtensionHandler handles circuit extension for relay servers
 type ExtensionHandler struct {
 	keys          *RelayKeys
 	circuits      *CircuitHandler
 	forwarder     *ForwardingHandler
 	logger        *logger.Logger
-	connPool      map[string]*connection.Connection // Pool of outbound connections
+	connPool      map[string]*pooledORConn // address+identity → 出站 OR
 	connMutex     sync.Mutex
 	clientConns   map[uint32]net.Conn // circuitID → 入向 OR 连接（发送 EXTENDED2）
 	clientMu      sync.Mutex
@@ -116,7 +191,7 @@ func NewExtensionHandler(keys *RelayKeys, circuits *CircuitHandler, log *logger.
 		keys:          keys,
 		circuits:      circuits,
 		logger:        log.Component("extension"),
-		connPool:      make(map[string]*connection.Connection),
+		connPool:      make(map[string]*pooledORConn),
 		clientConns:   make(map[uint32]net.Conn),
 		linkReaders:   make(map[string]bool),
 		pendingCreate: make(map[string]map[uint32]chan *cell.Cell),
@@ -154,6 +229,11 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 		return fmt.Errorf("no usable address: %w", err)
 	}
 
+	ident := identitiesFromLinkSpecs(specs)
+	if !ident.hasIdentity() {
+		return fmt.Errorf("EXTEND2 missing identity link specifier")
+	}
+
 	h.logger.Debug("Extracted next hop address", "address", address)
 
 	if offset+4 > len(data) {
@@ -176,22 +256,25 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 		return fmt.Errorf("unsupported handshake type: %d", htype)
 	}
 
-	nextConn, err := h.connectToNextHop(ctx, address)
+	nextConn, err := h.connectToNextHop(ctx, address, ident)
 	if err != nil {
 		h.logger.Error("Failed to connect to next hop", "address", address, "error", err)
 		return fmt.Errorf("connection failed: %w", err)
 	}
 
-	nextCircuitID := uint32(time.Now().UnixNano() & 0x7FFFFFFF)
+	nextCircuitID := newOutboundCircID()
 
+	orKey := poolKey(address, ident)
 	if err := h.sendCreate2ToNextHop(nextConn, nextCircuitID, htype, handshakeData); err != nil {
 		h.logger.Error("Failed to send CREATE2 to next hop", "error", err)
+		h.forgetIfDead(orKey, nextConn)
 		return fmt.Errorf("create2 failed: %w", err)
 	}
 
 	created2Cell, err := h.receiveCreated2FromNextHop(ctx, nextConn, nextCircuitID)
 	if err != nil {
 		h.logger.Error("Failed to receive CREATED2 from next hop", "error", err)
+		h.forgetIfDead(orKey, nextConn)
 		return fmt.Errorf("created2 failed: %w", err)
 	}
 
@@ -230,21 +313,27 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 	return nil
 }
 
-func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string) (*connection.Connection, error) {
-	// Check if we already have a connection to this relay
-	h.connMutex.Lock()
-	if conn, exists := h.connPool[address]; exists {
-		h.connMutex.Unlock()
+func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string, ident nextHopIdentity) (*connection.Connection, error) {
+	key := poolKey(address, ident)
+	if conn := h.takePooled(key, ident); conn != nil {
 		h.logger.Debug("Reusing existing connection", "address", address)
 		return conn, nil
 	}
-	h.connMutex.Unlock()
 
 	h.logger.Info("Connecting to next hop", "address", address)
 
 	// Create connection config
 	cfg := connection.DefaultConfig(address)
 	cfg.Timeout = 10 * time.Second
+	if len(ident.ed25519) == 32 {
+		cfg.ExpectedIdentity = append([]byte(nil), ident.ed25519...)
+	}
+	if ident.rsaFingerprint != "" {
+		cfg.ExpectedFingerprint = ident.rsaFingerprint
+	}
+	if ident.hasIdentity() {
+		cfg.RequireCERTS = true
+	}
 
 	// Connect to next hop
 	conn := connection.New(cfg, h.logger)
@@ -258,60 +347,54 @@ func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string)
 		return nil, fmt.Errorf("link handshake failed: %w", err)
 	}
 
-	// Cache the connection
 	h.connMutex.Lock()
-	h.connPool[address] = conn
+	h.connPool[key] = &pooledORConn{conn: conn, ident: ident}
 	h.connMutex.Unlock()
 
 	h.logger.Info("Connection to next hop established", "address", address)
 	return conn, nil
 }
 
-// performLinkHandshake performs the link protocol handshake with next hop
-func (h *ExtensionHandler) performLinkHandshake(ctx context.Context, conn *connection.Connection) error {
-	// Send VERSIONS cell
-	versions := []uint16{3, 4, 5}
-	versionsPayload := make([]byte, len(versions)*2)
-	for i, v := range versions {
-		binary.BigEndian.PutUint16(versionsPayload[i*2:], v)
+func (h *ExtensionHandler) takePooled(key string, ident nextHopIdentity) *connection.Connection {
+	h.connMutex.Lock()
+	p := h.connPool[key]
+	if p == nil {
+		h.connMutex.Unlock()
+		return nil
 	}
-
-	versionsCell := &cell.Cell{
-		CircID:  0,
-		Command: cell.CmdVersions,
-		Payload: versionsPayload,
-	}
-
-	if err := conn.SendCell(versionsCell); err != nil {
-		return fmt.Errorf("failed to send VERSIONS: %w", err)
-	}
-
-	// Receive VERSIONS response
-	respCell, err := conn.ReceiveCellWithContext(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to receive VERSIONS: %w", err)
-	}
-
-	if respCell.Command != cell.CmdVersions {
-		return fmt.Errorf("expected VERSIONS, got %d", respCell.Command)
-	}
-
-	// 协商到 v≥4 时使用 4 字节 CircID（与后续 CREATE2/RELAY 一致）
-	negotiated := uint16(3)
-	for i := 0; i+1 < len(respCell.Payload); i += 2 {
-		v := binary.BigEndian.Uint16(respCell.Payload[i : i+2])
-		if v >= 4 && v > negotiated {
-			negotiated = v
+	if !p.conn.IsOpen() || !p.ident.matches(ident) {
+		delete(h.connPool, key)
+		dead := p.conn
+		h.connMutex.Unlock()
+		if dead != nil {
+			_ = dead.Close()
 		}
+		return nil
 	}
-	if negotiated >= 4 {
-		conn.SetCircIDLen(4)
-	} else {
-		conn.SetCircIDLen(2)
-	}
+	h.connMutex.Unlock()
+	return p.conn
+}
 
-	// CERTS/AUTH/NETINFO 完整交换后续补齐；CircID 宽度已对齐
-	h.logger.Debug("Link handshake completed (simplified)", "link_version", negotiated)
+func (h *ExtensionHandler) forgetIfDead(key string, conn *connection.Connection) {
+	if conn == nil || conn.IsOpen() {
+		return
+	}
+	h.connMutex.Lock()
+	if p := h.connPool[key]; p != nil && p.conn == conn {
+		delete(h.connPool, key)
+	}
+	h.connMutex.Unlock()
+	_ = conn.Close()
+}
+
+// performLinkHandshake 复用客户端出站握手：VERSIONS → 收 CERTS → 发 NETINFO → 收 NETINFO
+// （跳过 AUTH_CHALLENGE）。官方下一跳在 CREATE2 之前会先发完这组 cell。
+func (h *ExtensionHandler) performLinkHandshake(ctx context.Context, conn *connection.Connection) error {
+	hs := protocol.NewHandshake(conn, h.logger)
+	if err := hs.PerformHandshake(ctx); err != nil {
+		return err
+	}
+	h.logger.Debug("Link handshake completed", "link_version", hs.NegotiatedVersion())
 	return nil
 }
 
@@ -341,35 +424,44 @@ func (h *ExtensionHandler) receiveCreated2FromNextHop(ctx context.Context, conn 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	addr := conn.Address()
+	key := poolKeyFromConn(conn)
 	h.connMutex.Lock()
-	readerActive := h.linkReaders[addr]
+	readerActive := h.linkReaders[key]
 	h.connMutex.Unlock()
 
-	var respCell *cell.Cell
-	var err error
-	if readerActive {
-		ch := h.registerPending(addr, expectedCircuitID)
-		defer h.unregisterPending(addr, expectedCircuitID)
-		select {
-		case respCell = <-ch:
-		case <-ctx.Done():
-			return nil, fmt.Errorf("timeout waiting CREATED2: %w", ctx.Err())
+	for {
+		var respCell *cell.Cell
+		var err error
+		if readerActive {
+			ch := h.registerPending(key, expectedCircuitID)
+			select {
+			case respCell = <-ch:
+				h.unregisterPending(key, expectedCircuitID)
+			case <-ctx.Done():
+				h.unregisterPending(key, expectedCircuitID)
+				return nil, fmt.Errorf("timeout waiting CREATED2: %w", ctx.Err())
+			}
+		} else {
+			respCell, err = conn.ReceiveCellWithContext(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("failed to receive cell: %w", err)
+			}
 		}
-	} else {
-		respCell, err = conn.ReceiveCellWithContext(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to receive cell: %w", err)
-		}
-	}
 
-	if respCell.Command != cell.CmdCreated2 {
-		return nil, fmt.Errorf("expected CREATED2, got %d", respCell.Command)
+		if respCell.Command == cell.CmdPadding || respCell.Command == cell.CmdVPadding {
+			continue
+		}
+		if respCell.Command == cell.CmdDestroy {
+			return nil, fmt.Errorf("next hop DESTROY while waiting CREATED2")
+		}
+		if respCell.Command != cell.CmdCreated2 {
+			return nil, fmt.Errorf("expected CREATED2, got %d", respCell.Command)
+		}
+		if respCell.CircID != expectedCircuitID {
+			return nil, fmt.Errorf("circuit ID mismatch: expected %d, got %d", expectedCircuitID, respCell.CircID)
+		}
+		return respCell, nil
 	}
-	if respCell.CircID != expectedCircuitID {
-		return nil, fmt.Errorf("circuit ID mismatch: expected %d, got %d", expectedCircuitID, respCell.CircID)
-	}
-	return respCell, nil
 }
 
 // registerExtendedCircuit registers the extended circuit mapping
@@ -382,7 +474,7 @@ func (h *ExtensionHandler) registerExtendedCircuit(incomingCircID, outgoingCircI
 			return err
 		}
 	}
-	h.ensureLinkReader(nextHop, nextConn)
+	h.ensureLinkReader(nextConn)
 	h.logger.Debug("Registered circuit extension",
 		"incoming_circ", incomingCircID,
 		"outgoing_circ", outgoingCircID,
@@ -390,32 +482,34 @@ func (h *ExtensionHandler) registerExtendedCircuit(incomingCircID, outgoingCircI
 	return nil
 }
 
-func (h *ExtensionHandler) ensureLinkReader(addr string, conn *connection.Connection) {
+func (h *ExtensionHandler) ensureLinkReader(conn *connection.Connection) {
 	if conn == nil {
 		return
 	}
+	key := poolKeyFromConn(conn)
 	h.connMutex.Lock()
-	if h.linkReaders[addr] {
+	if h.linkReaders[key] {
 		h.connMutex.Unlock()
 		return
 	}
-	h.linkReaders[addr] = true
+	h.linkReaders[key] = true
 	h.connMutex.Unlock()
-	go h.readOutboundLink(addr, conn)
+	go h.readOutboundLink(key, conn)
 }
 
-func (h *ExtensionHandler) readOutboundLink(addr string, conn *connection.Connection) {
+func (h *ExtensionHandler) readOutboundLink(key string, conn *connection.Connection) {
+	addr := conn.Address()
 	for {
 		c, err := conn.ReceiveCell()
 		if err != nil {
 			h.logger.Debug("outbound link read ended", "address", addr, "error", err)
 			h.connMutex.Lock()
-			delete(h.linkReaders, addr)
-			delete(h.connPool, addr)
+			delete(h.linkReaders, key)
+			delete(h.connPool, key)
 			h.connMutex.Unlock()
 			return
 		}
-		if h.deliverPending(addr, c) {
+		if h.deliverPending(key, c) {
 			continue
 		}
 		if h.forwarder != nil {
@@ -520,11 +614,13 @@ func (h *ExtensionHandler) Close() error {
 	h.connMutex.Lock()
 	defer h.connMutex.Unlock()
 
-	for addr, conn := range h.connPool {
+	for addr, p := range h.connPool {
 		h.logger.Debug("Closing connection", "address", addr)
-		conn.Close()
+		if p != nil && p.conn != nil {
+			_ = p.conn.Close()
+		}
 	}
 
-	h.connPool = make(map[string]*connection.Connection)
+	h.connPool = make(map[string]*pooledORConn)
 	return nil
 }
