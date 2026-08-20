@@ -329,7 +329,7 @@ func pickL1(byFP map[string]*directory.Relay, persistL1 []string, target *direct
 	for _, raw := range persistL1 {
 		fp := strings.ToUpper(strings.TrimSpace(raw))
 		r := byFP[fp]
-		if r != nil && r.UsableAsGuard() && !sameRelayFP(r, target) && !familyConflict(r, target) {
+		if r != nil && r.UsableAsGuard() && !sameRelayFP(r, target) && !familyConflict(r, target) && !inL2[fp] {
 			return r
 		}
 	}

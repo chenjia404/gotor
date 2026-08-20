@@ -52,6 +52,9 @@ func TestVanguardSetFillsFourAndSticks(t *testing.T) {
 	if p1.Middle == nil || p1.Middle.Fingerprint == p1.Guard.Fingerprint || p1.Middle.Fingerprint == target.Fingerprint {
 		t.Fatal("L2 须与 L1/目标不同")
 	}
+	if containsFP(v.Fingerprints(), pool[0].Fingerprint) {
+		t.Fatal("新填 L2 不得含持久 L1")
+	}
 	fps := v.Fingerprints()
 	if len(fps) != 4 {
 		t.Fatalf("L2 数 %d, want 4", len(fps))
