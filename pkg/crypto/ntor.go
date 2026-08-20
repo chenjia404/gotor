@@ -281,7 +281,6 @@ func ntorServerHandshakeCore(clientHandshake, serverNtorPrivate, serverNodeID, e
 	if err != nil {
 		return nil, nil, err
 	}
-	keyMaterial = keyMaterial[:NtorKeyMaterialLen]
 
 	response = make([]byte, NtorResponseLen)
 	copy(response[0:32], serverEphemeral.Public[:])

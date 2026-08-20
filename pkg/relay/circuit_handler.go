@@ -24,8 +24,11 @@ type ServerCircuit struct {
 	crypto       *circuitCrypto
 	ctx          context.Context
 	cancel       context.CancelFunc
-	ccEnabled    bool // ntor-v3 已回 CC_FIELD_RESPONSE
-	sendmeInc    int  // FlowCtrl=2 时一般为 31
+	ccEnabled    bool   // ntor-v3 已回 CC_FIELD_RESPONSE
+	sendmeInc    int    // FlowCtrl=2 时一般为 31
+	circNonce    []byte // rend_circ_nonce，ESTABLISH_INTRO MAC
+	introAuth    []byte // 已建立引言点的 AUTH_KEY（32 字节）
+	rendCookie   []byte // ESTABLISH_RENDEZVOUS cookie（20 字节）
 	mu           sync.RWMutex
 }
 
@@ -128,7 +131,7 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 	}
 	handshakeData := c.Payload[4 : 4+hlen]
 
-	var response, keyMaterial []byte
+	var response, keyMaterial, circNonce []byte
 	var err error
 	switch htype {
 	case 0x0002: // classic ntor
@@ -136,7 +139,7 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 			h.logger.Warn("Invalid ntor handshake length", "len", len(handshakeData))
 			return h.sendDestroyCell(conn, c.CircID, cell.DestroyReasonProtocol)
 		}
-		response, keyMaterial, err = crypto.NtorServerHandshake(
+		response, keyMaterial, circNonce, err = crypto.NtorServerHandshakeWithNonce(
 			handshakeData,
 			h.keys.NtorOnionKey,
 			h.keys.RSANodeID(),
@@ -149,7 +152,7 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 		sm := crypto.EncodeNtorV3Extensions([]crypto.NtorV3Extension{
 			{Type: crypto.NtorV3ExtCCResponse, Data: []byte{31}},
 		})
-		response, keyMaterial, err = crypto.NtorV3ServerHandshake(
+		response, keyMaterial, circNonce, err = crypto.NtorV3ServerHandshakeWithNonce(
 			handshakeData,
 			h.keys.Ed25519Public,
 			h.keys.NtorOnionKey,
@@ -187,6 +190,7 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 		cancel:       ccancel,
 		ccEnabled:    ccOn,
 		sendmeInc:    inc,
+		circNonce:    append([]byte(nil), circNonce...),
 	}
 
 	// Store circuit

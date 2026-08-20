@@ -89,6 +89,18 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 	case cell.RelayTruncate:
 		return h.handleTruncate(circuitID)
 
+	case cell.RelayEstablishIntro:
+		if relayCell.StreamID != 0 {
+			return h.rejectHSControlStream(circ, clientConn, "ESTABLISH_INTRO")
+		}
+		return h.handleEstablishIntro(circ, clientConn, relayCell.Data)
+
+	case cell.RelayEstablishRendezvous:
+		if relayCell.StreamID != 0 {
+			return h.rejectHSControlStream(circ, clientConn, "ESTABLISH_RENDEZVOUS")
+		}
+		return h.handleEstablishRendezvous(circ, clientConn, relayCell.Data)
+
 	default:
 		return nil
 	}
