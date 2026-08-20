@@ -33,7 +33,8 @@ const (
 )
 
 // DirCacheServer 用 CacheDirectory 的落盘共识/microdesc 应答 BEGIN_DIR / DirPort。
-// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/<FPRLIST> 提供 limited-ed，按 FPRLIST 过滤权威签名（未过半 404），并协商 x-tor-lzma/x-zstd/gzip/deflate/.z 与 304；不宣告 DirCache=2。
+// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/<FPRLIST> 从最多 72 小时历史共识提供 limited-ed，
+// 按 FPRLIST 过滤权威签名（未过半 404），并协商 x-tor-lzma/x-zstd/gzip/deflate/.z 与 304；不宣告 DirCache=2。
 type DirCacheServer struct {
 	cacheDir string
 	logger   *logger.Logger
@@ -41,13 +42,14 @@ type DirCacheServer struct {
 	ln       net.Listener
 
 	diffMu     sync.Mutex
-	diffFrom   string
 	diffTo     string
-	diffFPR    string
-	diffCached string
+	diffByFrom map[string]string
+	diffWait   map[string]chan struct{}
 
 	hs *hsDirStore
 }
+
+const maxCachedConsensusDiffs = 72
 
 func NewDirCacheServer(cacheDir string, log *logger.Logger) *DirCacheServer {
 	if log == nil {
@@ -251,40 +253,80 @@ func fprlistFromConsensusPath(path string) (fps []string, filter bool, ok bool) 
 }
 
 func (d *DirCacheServer) diffFromHashes(hashes []string, curr, fprKey string) (string, bool) {
-	prev, ok := d.readCachedFile(cachedConsensusPrevName)
+	prev, from, ok := directory.LookupHistoricalConsensus(d.cacheDir, hashes, curr)
 	if !ok {
 		return "", false
 	}
-	from := strings.ToLower(directory.ConsensusDiffFromDigest(prev))
 	to := strings.ToLower(directory.ConsensusDiffFromDigest(curr))
-	matched := false
-	for _, h := range hashes {
-		if strings.EqualFold(h, from) {
-			matched = true
-			break
-		}
+	from = strings.ToLower(from)
+	if from == to {
+		return "", false
 	}
-	if !matched {
+	// FPRLIST 过滤体会让 (from,fpr) 组合爆炸；未鉴权 DirPort 不得为其实时 LCS。
+	// 过滤请求改走整份过滤共识（header）或 /diff/ 404，仍禁止写 DirCache=2。
+	if fprKey != "" {
 		return "", false
 	}
 
-	d.diffMu.Lock()
-	defer d.diffMu.Unlock()
-	if d.diffCached != "" && d.diffFrom == from && d.diffTo == to && d.diffFPR == fprKey {
-		return d.diffCached, true
-	}
-	diff, err := directory.GenerateConsensusDiff(prev, curr)
-	if err != nil {
-		if d.logger != nil {
-			d.logger.Warn("consdiff generate failed; serving full consensus instead", "error", err)
+	for {
+		d.diffMu.Lock()
+		if d.diffTo != to {
+			d.diffByFrom = make(map[string]string, 8)
+			d.diffTo = to
 		}
-		return "", false
+		if d.diffByFrom == nil {
+			d.diffByFrom = make(map[string]string, 8)
+		}
+		if diff, ok := d.diffByFrom[from]; ok {
+			d.diffMu.Unlock()
+			return diff, true
+		}
+		if ch, waiting := d.diffWait[from]; waiting {
+			d.diffMu.Unlock()
+			<-ch
+			continue
+		}
+		if d.diffWait == nil {
+			d.diffWait = make(map[string]chan struct{})
+		}
+		// 同时只跑一份 LCS，避免未鉴权并发把 CPU 打满。
+		if len(d.diffWait) > 0 {
+			var ch chan struct{}
+			for _, c := range d.diffWait {
+				ch = c
+				break
+			}
+			d.diffMu.Unlock()
+			<-ch
+			continue
+		}
+		done := make(chan struct{})
+		d.diffWait[from] = done
+		d.diffMu.Unlock()
+
+		diff, err := directory.GenerateConsensusDiff(prev, curr)
+
+		d.diffMu.Lock()
+		delete(d.diffWait, from)
+		if err == nil && d.diffTo == to {
+			if len(d.diffByFrom) >= maxCachedConsensusDiffs {
+				for k := range d.diffByFrom {
+					delete(d.diffByFrom, k)
+					break
+				}
+			}
+			d.diffByFrom[from] = diff
+		}
+		close(done)
+		d.diffMu.Unlock()
+		if err != nil {
+			if d.logger != nil {
+				d.logger.Warn("consdiff generate failed; serving full consensus instead", "error", err)
+			}
+			return "", false
+		}
+		return diff, true
 	}
-	d.diffFrom = from
-	d.diffTo = to
-	d.diffFPR = fprKey
-	d.diffCached = diff
-	return diff, true
 }
 
 func (d *DirCacheServer) readCachedFile(name string) (string, bool) {
@@ -528,7 +570,7 @@ func compressDirBody(enc string, body []byte) (payload []byte, used string) {
 }
 
 // serveKeysFP 按 dir-spec 提供 /tor/keys/fp/<F>[+<F>…]，从 CacheDirectory/cached-certs 抽取。
-// consdiff / gzip / zstd / lzma / 304 已接线；在缺多小时历史 diff / 真网被当缓存之前，禁止宣告 DirCache=2。
+// consdiff（含 72h 历史）/ gzip / zstd / lzma / 304 已接线；在缺真网被当缓存之前，禁止宣告 DirCache=2。
 func (d *DirCacheServer) serveKeysFP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

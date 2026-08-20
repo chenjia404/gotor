@@ -208,6 +208,124 @@ func TestDirCacheUnknownDiffHashFallsBackToFull(t *testing.T) {
 	}
 }
 
+func testConsensusAt(ts time.Time, marker string) string {
+	va := ts.UTC().Format("2006-01-02 15:04:05")
+	fu := ts.UTC().Add(time.Hour).Format("2006-01-02 15:04:05")
+	vu := ts.UTC().Add(3 * time.Hour).Format("2006-01-02 15:04:05")
+	return "" +
+		"network-status-version 3\n" +
+		"vote-status consensus\n" +
+		"consensus-method 32\n" +
+		"valid-after " + va + "\n" +
+		"fresh-until " + fu + "\n" +
+		"valid-until " + vu + "\n" +
+		"marker " + marker + "\n" +
+		"directory-footer\n" +
+		"directory-signature sha256 AA BB\n-----BEGIN SIGNATURE-----\n" +
+		marker + "\n-----END SIGNATURE-----\n"
+}
+
+func TestDirCacheServesDiffFromTwoPeriodsAgo(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	old := testConsensusAt(base, "p0")
+	mid := testConsensusAt(base.Add(time.Hour), "p1")
+	curr := testConsensusAt(base.Add(2*time.Hour), "p2")
+	if err := os.MkdirAll(filepath.Join(dir, directory.CachedMicrodescConsensusHistDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeHist := func(doc string) {
+		t.Helper()
+		digest := strings.ToLower(directory.ConsensusDiffFromDigest(doc))
+		path := filepath.Join(dir, directory.CachedMicrodescConsensusHistDir, digest)
+		if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeHist(old)
+	writeHist(mid)
+	if err := os.WriteFile(filepath.Join(dir, cachedConsensusPrevName), []byte(mid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, cachedConsensusName), []byte(curr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewDirCacheServer(dir, nil)
+	hash := directory.ConsensusDiffFromDigest(old)
+	req := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+	req.Header.Set("X-Or-Diff-From-Consensus", hash)
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	want, err := directory.GenerateConsensusDiff(old, curr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Body.String() != want {
+		t.Fatal("落后两期必须回 old→current 的 limited-ed，而不是整份或只认 .prev")
+	}
+
+	urlRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(urlRec, httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc/diff/"+hash+"/all", http.NoBody))
+	if urlRec.Code != http.StatusOK || urlRec.Body.String() != want {
+		t.Fatalf("/diff/ 落后两期应 200 limited-ed, got %d", urlRec.Code)
+	}
+
+	// 中间一份也应能 diff。
+	midHash := directory.ConsensusDiffFromDigest(mid)
+	midWant, err := directory.GenerateConsensusDiff(mid, curr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	midReq := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+	midReq.Header.Set("X-Or-Diff-From-Consensus", midHash)
+	midRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(midRec, midReq)
+	if midRec.Body.String() != midWant {
+		t.Fatal("上一份历史也必须能生成 limited-ed")
+	}
+
+	// 超过 72h 的 hist 即使文件还在，对外也不得再出 diff。
+	stale := testConsensusAt(base.Add(-73*time.Hour), "too-old")
+	staleHash := directory.ConsensusDiffFromDigest(stale)
+	writeHist(stale)
+	staleReq := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+	staleReq.Header.Set("X-Or-Diff-From-Consensus", staleHash)
+	staleRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(staleRec, staleReq)
+	if staleRec.Body.String() != curr {
+		t.Fatal("过期历史必须回整份当前共识，不得出 limited-ed")
+	}
+	staleURL := httptest.NewRecorder()
+	s.handler().ServeHTTP(staleURL, httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc/diff/"+staleHash+"/all", http.NoBody))
+	if staleURL.Code != http.StatusNotFound {
+		t.Fatalf("过期 /diff/ 应为 404, got %d", staleURL.Code)
+	}
+}
+
+func TestDirCacheConsensusDiffCachedOnSecondHit(t *testing.T) {
+	dir := t.TempDir()
+	prev, curr := writeConsensusPair(t, dir)
+	s := NewDirCacheServer(dir, nil)
+	hash := directory.ConsensusDiffFromDigest(prev)
+	want, err := directory.GenerateConsensusDiff(prev, curr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+		req.Header.Set("X-Or-Diff-From-Consensus", hash)
+		rec := httptest.NewRecorder()
+		s.handler().ServeHTTP(rec, req)
+		if rec.Body.String() != want {
+			t.Fatalf("第 %d 次应命中同一 limited-ed", i+1)
+		}
+	}
+}
+
 func TestDirCacheServesConsensusDiffURL(t *testing.T) {
 	dir := t.TempDir()
 	prev, _ := writeConsensusPair(t, dir)
@@ -297,6 +415,23 @@ func TestDirCacheFPRLISTFiltersSignatures(t *testing.T) {
 	s.handler().ServeHTTP(lzRec, lz)
 	if lzRec.Header().Get("Content-Encoding") != "x-zstd" {
 		t.Fatalf("FPRLIST 过滤体应回退 zstd, got %q", lzRec.Header().Get("Content-Encoding"))
+	}
+
+	// 过滤请求不得为每个 FPRLIST 实时 GenerateConsensusDiff（未鉴权 CPU 放大）。
+	prev := strings.Replace(curr, "01:00:00", "00:00:00", 1)
+	prev = strings.Replace(prev, "\nA\n", "\nOLD\n", 1)
+	if err := os.WriteFile(filepath.Join(dir, cachedConsensusPrevName), []byte(prev), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	diffReq := httptest.NewRequest(http.MethodGet, okURL, http.NoBody)
+	diffReq.Header.Set("X-Or-Diff-From-Consensus", directory.ConsensusDiffFromDigest(prev))
+	diffRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(diffRec, diffReq)
+	if strings.HasPrefix(diffRec.Body.String(), "network-status-diff-version") {
+		t.Fatal("FPRLIST 不得回 limited-ed")
+	}
+	if !strings.Contains(diffRec.Body.String(), strings.ToUpper(a)) || strings.Contains(diffRec.Body.String(), strings.ToUpper(c)) {
+		t.Fatal("FPRLIST+Diff 头应回过滤后的整份共识")
 	}
 }
 
