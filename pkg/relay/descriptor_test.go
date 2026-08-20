@@ -199,6 +199,35 @@ func TestGenerateServerDescriptor(t *testing.T) {
 	}
 }
 
+func TestDescriptorDoesNotAdvertiseDirCache2(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc, err := GenerateServerDescriptor(keys, &DescriptorConfig{
+		Nickname: "DirCacheLatch",
+		Address:  "192.0.2.1",
+		ORPort:   9001,
+		DirPort:  9030,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(desc.RawDescriptor)
+	if strings.Contains(raw, "DirCache=") {
+		t.Fatalf("未达对外 DirCache=2 验收前禁止在 proto 宣告 DirCache，得到:\n%s", protoLineOf(raw))
+	}
+}
+
+func protoLineOf(raw string) string {
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.HasPrefix(line, "proto ") {
+			return line
+		}
+	}
+	return ""
+}
+
 func TestGenerateServerDescriptorNilKeys(t *testing.T) {
 	config := &DescriptorConfig{
 		Nickname: "Test",

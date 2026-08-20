@@ -43,7 +43,7 @@ func TestStripConsensusPreambleForDiffLineNumbers(t *testing.T) {
 	}
 	// Diff 行号相对无 @type 的文档：首个 signature 为第 3 行。
 	want := "network-status-version 3\nbody2\ndirectory-signature sha256 CC DD\n-----BEGIN SIGNATURE-----\ny\n-----END SIGNATURE-----\n"
-	diff, err := makeConsensusDiff(body, want)
+	diff, err := GenerateConsensusDiff(body, want)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestMakeConsensusDiffRoundTrip(t *testing.T) {
 		"valid-until 2024-01-01 04:00:00\n" +
 		"directory-footer\n" +
 		"directory-signature 1 sha256 CCCC DDDD\n-----BEGIN SIGNATURE-----\nyy\n-----END SIGNATURE-----\n"
-	diff, err := makeConsensusDiff(oldDoc, newDoc)
+	diff, err := GenerateConsensusDiff(oldDoc, newDoc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestMakeConsensusDiffRoundTrip(t *testing.T) {
 func TestApplyConsensusDiffFromDigestUsesSignedBody(t *testing.T) {
 	oldDoc := "network-status-version 3\nbody\ndirectory-signature sha256 AA BB\n-----BEGIN SIGNATURE-----\nOLD\n-----END SIGNATURE-----\n"
 	newDoc := "network-status-version 3\nbody2\ndirectory-signature sha256 CC DD\n-----BEGIN SIGNATURE-----\nNEW\n-----END SIGNATURE-----\n"
-	diff, err := makeConsensusDiff(oldDoc, newDoc)
+	diff, err := GenerateConsensusDiff(oldDoc, newDoc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,6 +212,23 @@ func TestApplyConsensusDiffRejectsForwardOrder(t *testing.T) {
 		"2,3d\n"
 	if _, err := applyConsensusDiff(oldDoc, diff); err == nil {
 		t.Fatal("期望拒绝非从后往前的命令")
+	}
+}
+
+func TestApplyConsensusDiffAcceptsZeroAppend(t *testing.T) {
+	oldDoc := "keep\n"
+	want := "inserted\nkeep\n"
+	diff := "network-status-diff-version 1\n" +
+		"hash " + consensusDiffFromDigest(oldDoc) + " " + sha3_256Hex([]byte(want)) + "\n" +
+		"0a\n" +
+		"inserted\n" +
+		".\n"
+	got, err := applyConsensusDiff(oldDoc, diff)
+	if err != nil {
+		t.Fatalf("0a 应对齐 C Tor: %v", err)
+	}
+	if got != normalizeConsensusText(want) {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -304,7 +321,7 @@ func TestFetchConsensusAppliesLimitedEdDiff(t *testing.T) {
 	withTestAuthorities(t, auths)
 	consA := buildSignedConsensusExtra(t, auths, "params cc_alg=2\n")
 	consB := buildSignedConsensusExtra(t, auths, "params cc_alg=3\n")
-	diff, err := makeConsensusDiff(consA, consB)
+	diff, err := GenerateConsensusDiff(consA, consB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +462,7 @@ func TestFetchConsensusDiffVerifyFailureDoesNotCache(t *testing.T) {
 	consA := buildSignedConsensusExtra(t, auths, "params cc_alg=2\n")
 	consB := buildSignedConsensusExtra(t, auths, "params cc_alg=3\n")
 	tampered := strings.Replace(consB, "cc_alg=3", "cc_alg=9", 1)
-	diff, err := makeConsensusDiff(consA, tampered)
+	diff, err := GenerateConsensusDiff(consA, tampered)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,41 +516,4 @@ func TestFetchConsensusDiffVerifyFailureDoesNotCache(t *testing.T) {
 	if client.cachedSignedSHA3() != consensusDiffFromDigest(consB) {
 		t.Fatal("缓存应为验签通过的 B")
 	}
-}
-
-func makeConsensusDiff(oldDoc, newDoc string) (string, error) {
-	oldNorm := normalizeConsensusText(oldDoc)
-	newNorm := normalizeConsensusText(newDoc)
-	from := consensusDiffFromDigest(oldDoc)
-	to := sha3_256Hex([]byte(newNorm))
-	oldLines := splitConsensusLines(oldNorm)
-	newLines := splitConsensusLines(newNorm)
-	if len(oldLines) < 2 {
-		return "", fmt.Errorf("makeConsensusDiff: 旧文档行数不足")
-	}
-	delStart := firstDirectorySignatureLine(oldLines)
-	if delStart == 0 {
-		delStart = len(oldLines)
-	}
-	if delStart < 2 {
-		return "", fmt.Errorf("makeConsensusDiff: 无法在保留正文的前提下构造 n,$d")
-	}
-	var b strings.Builder
-	b.WriteString("network-status-diff-version 1\n")
-	b.WriteString("hash ")
-	b.WriteString(from)
-	b.WriteByte(' ')
-	b.WriteString(to)
-	b.WriteByte('\n')
-	b.WriteString(strconv.Itoa(delStart))
-	b.WriteString(",$d\n")
-	b.WriteString("1,")
-	b.WriteString(strconv.Itoa(delStart - 1))
-	b.WriteString("c\n")
-	for _, line := range newLines {
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-	b.WriteString(".\n")
-	return b.String(), nil
 }
