@@ -54,5 +54,6 @@ gotor ORPort 9001 ExitRelay 1 ReduceExitPolicy 1 SocksPort 0 \
 - 末端跳可受理 ESTABLISH_INTRO / ESTABLISH_RENDEZVOUS 并回 ACK；仍缺 HSDir 收/服务、INTRODUCE1、RENDEZVOUS1，未宣告 HS*
 - 入站可校验 AUTHENTICATE type 3（LinkAuth=3）；普通客户端不认证。无 AuthType 1。
 - ntor-v3 客户端请求 type 3 `[02 06]` 时走 CGO（AES-128 UIV+ / v1）；未请求则仍 tor1。描述符不写 `Relay=5-6`。
+- extra-info：描述符写 `extra-info-digest`，与 extra-info 一次 POST；只写已完成 900s 观测格。无观测不写 history。仍缺 dirreq/exit/conn-bi-direct 与真网归档。
 - FlowCtrl=2 出口侧使用 `sendme_inc=31` 与初始 cwnd=124，未实现完整 Vegas 自适应
 - 客户端 SOCKS 流量不会被当成出口

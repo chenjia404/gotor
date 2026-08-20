@@ -61,7 +61,7 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 | 角色 | 已对齐（含真网证据） | PARTIAL | 官方有我们没有 |
 |------|----------------------|---------|----------------|
 | **客户端** | 共识 9/9 验签、`cached-certs` 重启 0 次 `/tor/keys/fp`、DirCache=2 consdiff、microdesc、Link TLS+CERTS type 7、默认 ntor-v3 CREATE2/EXTEND2、3-hop SOCKS5 `IsTor=true`、RESOLVE、FlowCtrl=2 Vegas soak、Relay=5/6 CGO、Conflux=1、EXTEND2 IPv6、`p`/`p6` 出口策略、Desc=4 family-ids、Padding=2 协商 ACK、v3 `.onion` 客户端 HTTP 200 | Guard 选路与官方指纹仍可能有差异；Fast/MiddleOnly/BadExit 已强制但未单独真网标 WORKING；circpad token-removal | Vanguards-lite；完整 PT/网桥客户端生产路径；与 Tor Browser 同级的隔离/反指纹 |
-| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；**ntor-v3 type 3 `[02 06]` 则 CGO 剥层/回程**（未宣告 Relay=5-6）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 consensus-microdesc、micro/all、`/tor/keys`、**上一份→当前 limited-ed**（未宣告 DirCache=2）；末端跳可回 `INTRO_ESTABLISHED` / `RENDEZVOUS_ESTABLISHED`（未宣告 HS*） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（多小时历史 diff / 压缩 / 304 / 真网被当缓存）；HSDir 收/服务、INTRODUCE1、RENDEZVOUS1；真网被请求 CGO 的证据；官方级 DoS；完整 extra-info |
+| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；**ntor-v3 type 3 `[02 06]` 则 CGO 剥层/回程**（未宣告 Relay=5-6）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 consensus-microdesc、micro/all、`/tor/keys`、**上一份→当前 limited-ed**（未宣告 DirCache=2）；末端跳可回 `INTRO_ESTABLISHED` / `RENDEZVOUS_ESTABLISHED`（未宣告 HS*）；**extra-info-digest 交叉引用 + 观测带宽历史**（无观测不写 history） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（多小时历史 diff / 压缩 / 304 / 真网被当缓存）；HSDir 收/服务、INTRODUCE1、RENDEZVOUS1；真网被请求 CGO 的证据；官方级 DoS；完整 extra-info（dirreq/exit/conn-bi-direct 与真网归档） |
 | **洋葱托管** | 无（未上线） | ESTABLISH_INTRO；ntor `rend_circ_nonce`；BEGIN_DIR 上传；type-8 致盲证书 + 双层加密密封；torrc `HiddenService*` | **真网发布后被客户端找到并完成 INTRODUCE2→RENDEZVOUS**；官方 intro/rend 生命周期与限速；vanguards |
 | **网桥 / PT** | 无 | `pkg/pt` 子进程框架、obfs4 配置解析、本地 integration 桩 | 向 BridgeAuth 生产发布；客户端经官方 PT 进网；网桥描述符/统计与 C Tor 对齐 |
 | **控制端口** | AUTHENTICATE；**AUTHCHALLENGE SAFECOOKIE**；COOKIE / HASHEDPASSWORD；GETINFO/GETCONF/SETCONF 子集；SETEVENTS（CIRC/STREAM/BW/NOTICE 等）；SIGNAL；MAPADDRESS | GETINFO 键远少于 control-spec；`version` 仍回 `go-tor 0.1.0`（CLI `--version` 已报 `0.4.9.11 (gotor)`） | ADD_ONION / DEL_ONION；EXTENDCIRCUIT / ATTACHSTREAM；HSFETCH / HSPOST；USEFEATURE；完整 `circuit-status` / `ns/id` / `desc/id` 等 |
@@ -163,9 +163,10 @@ proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ### 8. extra-info 完整
 
-- [ ] **状态**：PARTIAL（能签名一份几乎为空的 extra-info）
-- **现有代码**：`GenerateExtraInfo`（`pkg/relay/descriptor.go`）、`PublishExtraInfo`（`pkg/relay/publisher.go`）。`Server.startPublisher` 传 `stats=nil`。
-- **要做**：dir-spec extra-info：带宽历史、conn-bi-direct、dirreq、exit 统计（若出口）、ed25519+RSA 签名与 server descriptor digest 交叉引用。权威能关联并归档。
+- [ ] **状态**：PARTIAL（digest 交叉引用 + 观测带宽历史已接线；**无** dirreq/exit/conn-bi-direct，**无**真网权威归档观察）
+- **现有代码**：`GenerateDescriptorPair`（`pkg/relay/descriptor.go`）、`BandwidthHistory`（`pkg/relay/bw_history.go`）、`PublishDescriptorPair`（`pkg/relay/publisher.go`）。互操作 `docs/interop/extra-info.md`。
+- **已做（协议切片，2026-08-20）**：先签 extra-info 再写 `extra-info-digest` SHA-1 hex + SHA-256 无填充 base64；`published` 同一时刻；router+extra-info 一次 POST。900s 已完成格才写 write/read-history；`BWHistory*` 最后一值是未完成桶。无观测不写 history。
+- **要做**：出站中间跳字节；conn-bi-direct / dirreq / exit（需 24h 观测）；真网权威归档。不要把空统计当完整。
 - **禁止**：空 extra-info 当「已实现完整」；编造未观测的带宽数字。
 
 ### 9. 官方级 DoS
