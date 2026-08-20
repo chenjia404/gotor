@@ -119,6 +119,16 @@ func poolKey(address string, ident nextHopIdentity) string {
 	return address + "|" + ident.rsaFingerprint + "|" + fmt.Sprintf("%x", ident.ed25519)
 }
 
+func poolKeyFromConn(conn *connection.Connection) string {
+	if conn == nil {
+		return ""
+	}
+	return poolKey(conn.Address(), nextHopIdentity{
+		rsaFingerprint: conn.ExpectedFingerprint(),
+		ed25519:        conn.ExpectedIdentity(),
+	})
+}
+
 // pooledORConn 出站 OR 连接按「地址+身份」入池，禁止同 IP 不同身份复用。
 type pooledORConn struct {
 	conn  *connection.Connection
@@ -414,21 +424,21 @@ func (h *ExtensionHandler) receiveCreated2FromNextHop(ctx context.Context, conn 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	addr := conn.Address()
+	key := poolKeyFromConn(conn)
 	h.connMutex.Lock()
-	readerActive := h.linkReaders[addr]
+	readerActive := h.linkReaders[key]
 	h.connMutex.Unlock()
 
 	for {
 		var respCell *cell.Cell
 		var err error
 		if readerActive {
-			ch := h.registerPending(addr, expectedCircuitID)
+			ch := h.registerPending(key, expectedCircuitID)
 			select {
 			case respCell = <-ch:
-				h.unregisterPending(addr, expectedCircuitID)
+				h.unregisterPending(key, expectedCircuitID)
 			case <-ctx.Done():
-				h.unregisterPending(addr, expectedCircuitID)
+				h.unregisterPending(key, expectedCircuitID)
 				return nil, fmt.Errorf("timeout waiting CREATED2: %w", ctx.Err())
 			}
 		} else {
@@ -464,7 +474,7 @@ func (h *ExtensionHandler) registerExtendedCircuit(incomingCircID, outgoingCircI
 			return err
 		}
 	}
-	h.ensureLinkReader(nextHop, nextConn)
+	h.ensureLinkReader(nextConn)
 	h.logger.Debug("Registered circuit extension",
 		"incoming_circ", incomingCircID,
 		"outgoing_circ", outgoingCircID,
@@ -472,32 +482,34 @@ func (h *ExtensionHandler) registerExtendedCircuit(incomingCircID, outgoingCircI
 	return nil
 }
 
-func (h *ExtensionHandler) ensureLinkReader(addr string, conn *connection.Connection) {
+func (h *ExtensionHandler) ensureLinkReader(conn *connection.Connection) {
 	if conn == nil {
 		return
 	}
+	key := poolKeyFromConn(conn)
 	h.connMutex.Lock()
-	if h.linkReaders[addr] {
+	if h.linkReaders[key] {
 		h.connMutex.Unlock()
 		return
 	}
-	h.linkReaders[addr] = true
+	h.linkReaders[key] = true
 	h.connMutex.Unlock()
-	go h.readOutboundLink(addr, conn)
+	go h.readOutboundLink(key, conn)
 }
 
-func (h *ExtensionHandler) readOutboundLink(addr string, conn *connection.Connection) {
+func (h *ExtensionHandler) readOutboundLink(key string, conn *connection.Connection) {
+	addr := conn.Address()
 	for {
 		c, err := conn.ReceiveCell()
 		if err != nil {
 			h.logger.Debug("outbound link read ended", "address", addr, "error", err)
 			h.connMutex.Lock()
-			delete(h.linkReaders, addr)
-			delete(h.connPool, addr)
+			delete(h.linkReaders, key)
+			delete(h.connPool, key)
 			h.connMutex.Unlock()
 			return
 		}
-		if h.deliverPending(addr, c) {
+		if h.deliverPending(key, c) {
 			continue
 		}
 		if h.forwarder != nil {

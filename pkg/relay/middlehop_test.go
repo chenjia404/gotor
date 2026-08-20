@@ -312,6 +312,50 @@ func TestPooledORRequiresMatchingIdentity(t *testing.T) {
 	}
 }
 
+func TestPoolKeyFromConnMatches(t *testing.T) {
+	ident := nextHopIdentity{
+		rsaFingerprint: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+		ed25519:        bytes.Repeat([]byte{0x11}, 32),
+	}
+	addr := "192.0.2.12:9001"
+	cfg := connection.DefaultConfig(addr)
+	cfg.ExpectedFingerprint = ident.rsaFingerprint
+	cfg.ExpectedIdentity = ident.ed25519
+	or := connection.New(cfg, logger.NewDefault())
+	if poolKeyFromConn(or) != poolKey(addr, ident) {
+		t.Fatalf("poolKeyFromConn=%q poolKey=%q", poolKeyFromConn(or), poolKey(addr, ident))
+	}
+}
+
+func TestReadOutboundLinkEvictsIdentityKey(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewExtensionHandler(keys, NewCircuitHandler(keys, logger.NewDefault()), logger.NewDefault())
+	ident := nextHopIdentity{rsaFingerprint: "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"}
+	addr := "192.0.2.13:9001"
+	cfg := connection.DefaultConfig(addr)
+	cfg.ExpectedFingerprint = ident.rsaFingerprint
+	or := connection.New(cfg, logger.NewDefault())
+	or.AttachOpenConn(newTestMockConn())
+	key := poolKey(addr, ident)
+	h.connPool[key] = &pooledORConn{conn: or, ident: ident}
+	h.ensureLinkReader(or)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		h.connMutex.Lock()
+		_, pooled := h.connPool[key]
+		_, reading := h.linkReaders[key]
+		h.connMutex.Unlock()
+		if !pooled && !reading {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("read loop must evict poolKey and linkReaders, not the bare address")
+}
+
 func TestForgetIfDeadEvictsClosedOR(t *testing.T) {
 	keys, err := GenerateRelayKeys()
 	if err != nil {
