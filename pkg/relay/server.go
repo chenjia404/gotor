@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/config"
+	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
@@ -18,6 +19,7 @@ type Server struct {
 	keys      *RelayKeys
 	listener  *ORListener
 	publisher *ScheduledPublisher
+	reach     *Reachability
 	dirCache  *DirCacheServer
 	policy    *ExitPolicy
 	startedAt time.Time
@@ -80,6 +82,13 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 	}
 
 	s := &Server{cfg: cfg, keys: keys, listener: ln, policy: policy, logger: log.Component("relay")}
+	s.reach = NewReachability(ReachabilityConfig{
+		AssumeReachable: cfg.AssumeReachable,
+		DisableNetwork:  cfg.DisableNetwork,
+		Address:         cfg.RelayAddress,
+		ORPort:          cfg.ORPort,
+		Publish:         cfg.PublishServerDescriptor,
+	}, s.logger)
 	cacheDir := cfg.CacheDirectory
 	if cacheDir == "" {
 		cacheDir = cfg.DataDirectory
@@ -161,18 +170,58 @@ func (s *Server) startPublisher(ctx context.Context) error {
 		return desc, extra, nil
 	}, s.logger)
 	s.publisher = sched
+	sched.SetPublishGate(s.reach.CanPublish)
+	s.reach.SetOnReachable(func() {
+		sched.TriggerNow(ctx)
+	})
 	s.logger.Info("publishing server descriptor to directory authorities",
 		"nickname", s.cfg.Nickname,
-		"address", s.cfg.RelayAddress,
 		"orport", s.cfg.ORPort,
-		"authorities", len(pcfg.Authorities))
+		"authorities", len(pcfg.Authorities),
+		"assume_reachable", s.cfg.AssumeReachable,
+		"self_test_required", s.reach.ShouldProbe())
 	return sched.Start(ctx)
+}
+
+// SetORPortProber 注入经客户端电路的 ORPort 探测（main 在 client.Start 之后调用）。
+func (s *Server) SetORPortProber(p ORPortProber) {
+	if s == nil || s.reach == nil {
+		return
+	}
+	s.reach.SetProber(p)
+}
+
+// StartReachability 启动 self-test 循环。AssumeReachable 时只放行发布、不探测。
+func (s *Server) StartReachability(ctx context.Context) error {
+	if s == nil || s.reach == nil {
+		return fmt.Errorf("relay reachability not initialized")
+	}
+	return s.reach.Start(ctx)
+}
+
+// TestingHop 返回 EXTEND2 到本 ORPort 所需的末跳身份。
+func (s *Server) TestingHop() *directory.Relay {
+	if s == nil || s.keys == nil || s.cfg == nil {
+		return nil
+	}
+	return s.keys.TestingHop(s.cfg.Nickname, s.cfg.RelayAddress, s.cfg.ORPort)
+}
+
+// ReachabilityStatus 返回 self-test 快照（无 Running / 共识含义）。
+func (s *Server) ReachabilityStatus() ReachabilityStatus {
+	if s == nil || s.reach == nil {
+		return ReachabilityStatus{}
+	}
+	return s.reach.Status()
 }
 
 // Stop 停止监听与描述符发布。
 func (s *Server) Stop() error {
 	if s == nil {
 		return nil
+	}
+	if s.reach != nil {
+		s.reach.Stop()
 	}
 	if s.publisher != nil {
 		s.publisher.Stop()

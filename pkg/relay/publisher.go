@@ -303,6 +303,7 @@ type ScheduledPublisher struct {
 	publisher    *DescriptorPublisher
 	interval     time.Duration
 	generateFunc func() (*ServerDescriptor, *ExtraInfoDescriptor, error)
+	canPublish   func() bool // nil 表示不设门闩（兼容旧调用）
 	logger       *logger.Logger
 	stopCh       chan struct{}
 	stoppedCh    chan struct{}
@@ -326,6 +327,24 @@ func NewScheduledPublisher(
 		stopCh:       make(chan struct{}),
 		stoppedCh:    make(chan struct{}),
 	}
+}
+
+// SetPublishGate 在发布前检查。返回 false 则跳过（self-test 未通过）。
+func (s *ScheduledPublisher) SetPublishGate(fn func() bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.canPublish = fn
+}
+
+// TriggerNow 立刻尝试发布一次（self-test 成功后调用）。
+func (s *ScheduledPublisher) TriggerNow(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	s.publishOnce(ctx)
 }
 
 // Start begins the scheduled publishing loop
@@ -368,6 +387,14 @@ func (s *ScheduledPublisher) publishLoop(ctx context.Context) {
 
 // publishOnce performs a single publish operation
 func (s *ScheduledPublisher) publishOnce(ctx context.Context) {
+	s.mu.Lock()
+	gate := s.canPublish
+	s.mu.Unlock()
+	if gate != nil && !gate() {
+		s.logger.Info("skipping descriptor publish until ORPort self-test succeeds (or AssumeReachable)")
+		return
+	}
+
 	descriptor, extraInfo, err := s.generateFunc()
 	if err != nil {
 		s.logger.Error("failed to generate descriptors", "error", err)

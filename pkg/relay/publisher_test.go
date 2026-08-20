@@ -452,6 +452,45 @@ func TestScheduledPublisher(t *testing.T) {
 	}
 }
 
+func TestScheduledPublisher_GateBlocksUntilAllowed(t *testing.T) {
+	log := logger.New(slog.LevelInfo, io.Discard)
+	var publishCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&publishCount, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	pub := NewDescriptorPublisher(PublisherConfig{
+		Authorities: []BridgeAuthority{{URL: server.URL + "/tor/"}},
+	}, log)
+	allow := atomic.Bool{}
+	sched := NewScheduledPublisher(pub, time.Hour, func() (*ServerDescriptor, *ExtraInfoDescriptor, error) {
+		return createTestDescriptor(t), nil, nil
+	}, log)
+	sched.SetPublishGate(func() bool { return allow.Load() })
+
+	ctx := context.Background()
+	if err := sched.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer sched.Stop()
+	time.Sleep(40 * time.Millisecond)
+	if atomic.LoadInt32(&publishCount) != 0 {
+		t.Fatalf("门闩关闭时仍发布了 %d 次", publishCount)
+	}
+
+	allow.Store(true)
+	sched.TriggerNow(ctx)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt32(&publishCount) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&publishCount) == 0 {
+		t.Fatal("门闩打开后 TriggerNow 未发布")
+	}
+}
+
 func TestScheduledPublisher_StopIdempotent(t *testing.T) {
 	log := logger.New(slog.LevelInfo, io.Discard)
 	pub := NewDescriptorPublisher(DefaultPublisherConfig(), log)
