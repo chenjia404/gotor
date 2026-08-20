@@ -532,6 +532,25 @@ func TestAttachOpenConnCellRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReceiveCellTimeoutClosesConnection(t *testing.T) {
+	a, b := net.Pipe()
+	t.Cleanup(func() {
+		a.Close()
+		b.Close()
+	})
+	c := New(DefaultConfig("192.0.2.1:3"), logger.NewDefault())
+	c.AttachOpenConn(a)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err := c.ReceiveCellWithContext(ctx)
+	if err == nil {
+		t.Fatal("expected timeout")
+	}
+	if c.IsOpen() {
+		t.Fatal("timeout must Close the connection so OR pools cannot reuse it")
+	}
+}
+
 func TestWriteBlockedHeuristic(t *testing.T) {
 	c := &Connection{}
 	if c.WriteBlocked() {

@@ -438,8 +438,8 @@ func (c *Connection) ReceiveCellWithContext(ctx context.Context) (*cell.Cell, er
 
 	select {
 	case <-ctx.Done():
-		// Context cancelled - close connection to unblock the read
-		_ = rw.Close()
+		// 超时/取消后套接字已不可用，必须 Close 以免仍被连接池当成活连接。
+		_ = c.Close()
 		return nil, ctx.Err()
 	case res := <-resultCh:
 		if res.err != nil {

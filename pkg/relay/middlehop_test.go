@@ -283,6 +283,59 @@ func TestDestroyFromNextHopTearsDown(t *testing.T) {
 	}
 }
 
+func TestPooledORRequiresMatchingIdentity(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewExtensionHandler(keys, NewCircuitHandler(keys, logger.NewDefault()), logger.NewDefault())
+	identA := nextHopIdentity{rsaFingerprint: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+	identB := nextHopIdentity{rsaFingerprint: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}
+	addr := "192.0.2.10:9001"
+	or := connection.New(connection.DefaultConfig(addr), logger.NewDefault())
+	or.AttachOpenConn(newTestMockConn())
+	keyA := poolKey(addr, identA)
+	h.connPool[keyA] = &pooledORConn{conn: or, ident: identA}
+
+	if got := h.takePooled(keyA, identB); got != nil {
+		t.Fatal("must not reuse OR conn for a different EXTEND2 identity")
+	}
+	if _, ok := h.connPool[keyA]; ok {
+		t.Fatal("mismatched identity must evict the stale pool entry")
+	}
+
+	or2 := connection.New(connection.DefaultConfig(addr), logger.NewDefault())
+	or2.AttachOpenConn(newTestMockConn())
+	h.connPool[keyA] = &pooledORConn{conn: or2, ident: identA}
+	if got := h.takePooled(keyA, identA); got != or2 {
+		t.Fatal("same identity should reuse")
+	}
+}
+
+func TestForgetIfDeadEvictsClosedOR(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewExtensionHandler(keys, NewCircuitHandler(keys, logger.NewDefault()), logger.NewDefault())
+	ident := nextHopIdentity{rsaFingerprint: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"}
+	addr := "192.0.2.11:9001"
+	or := connection.New(connection.DefaultConfig(addr), logger.NewDefault())
+	or.AttachOpenConn(newTestMockConn())
+	key := poolKey(addr, ident)
+	h.connPool[key] = &pooledORConn{conn: or, ident: ident}
+
+	h.forgetIfDead(key, or)
+	if _, ok := h.connPool[key]; !ok {
+		t.Fatal("open conn must stay pooled")
+	}
+	_ = or.Close()
+	h.forgetIfDead(key, or)
+	if _, ok := h.connPool[key]; ok {
+		t.Fatal("dead conn must leave the pool")
+	}
+}
+
 func TestOutboundLinkHandshakeThenCreate2MSB(t *testing.T) {
 	keys := generateTestRelayKeys(t)
 	serverConn, clientConn := bufferedPipe()

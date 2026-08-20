@@ -3,6 +3,7 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -104,6 +105,26 @@ func (id nextHopIdentity) hasIdentity() bool {
 	return id.rsaFingerprint != "" || len(id.ed25519) == 32
 }
 
+func (id nextHopIdentity) matches(want nextHopIdentity) bool {
+	if want.rsaFingerprint != "" && id.rsaFingerprint != want.rsaFingerprint {
+		return false
+	}
+	if len(want.ed25519) == 32 && !bytes.Equal(id.ed25519, want.ed25519) {
+		return false
+	}
+	return true
+}
+
+func poolKey(address string, ident nextHopIdentity) string {
+	return address + "|" + ident.rsaFingerprint + "|" + fmt.Sprintf("%x", ident.ed25519)
+}
+
+// pooledORConn 出站 OR 连接按「地址+身份」入池，禁止同 IP 不同身份复用。
+type pooledORConn struct {
+	conn  *connection.Connection
+	ident nextHopIdentity
+}
+
 // identitiesFromLinkSpecs 抽取 type 2 RSA 指纹与 type 3 Ed25519。
 func identitiesFromLinkSpecs(specs []LinkSpecifier) nextHopIdentity {
 	var id nextHopIdentity
@@ -142,7 +163,7 @@ type ExtensionHandler struct {
 	circuits      *CircuitHandler
 	forwarder     *ForwardingHandler
 	logger        *logger.Logger
-	connPool      map[string]*connection.Connection // Pool of outbound connections
+	connPool      map[string]*pooledORConn // address+identity → 出站 OR
 	connMutex     sync.Mutex
 	clientConns   map[uint32]net.Conn // circuitID → 入向 OR 连接（发送 EXTENDED2）
 	clientMu      sync.Mutex
@@ -160,7 +181,7 @@ func NewExtensionHandler(keys *RelayKeys, circuits *CircuitHandler, log *logger.
 		keys:          keys,
 		circuits:      circuits,
 		logger:        log.Component("extension"),
-		connPool:      make(map[string]*connection.Connection),
+		connPool:      make(map[string]*pooledORConn),
 		clientConns:   make(map[uint32]net.Conn),
 		linkReaders:   make(map[string]bool),
 		pendingCreate: make(map[string]map[uint32]chan *cell.Cell),
@@ -233,14 +254,17 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 
 	nextCircuitID := newOutboundCircID()
 
+	orKey := poolKey(address, ident)
 	if err := h.sendCreate2ToNextHop(nextConn, nextCircuitID, htype, handshakeData); err != nil {
 		h.logger.Error("Failed to send CREATE2 to next hop", "error", err)
+		h.forgetIfDead(orKey, nextConn)
 		return fmt.Errorf("create2 failed: %w", err)
 	}
 
 	created2Cell, err := h.receiveCreated2FromNextHop(ctx, nextConn, nextCircuitID)
 	if err != nil {
 		h.logger.Error("Failed to receive CREATED2 from next hop", "error", err)
+		h.forgetIfDead(orKey, nextConn)
 		return fmt.Errorf("created2 failed: %w", err)
 	}
 
@@ -280,14 +304,11 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 }
 
 func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string, ident nextHopIdentity) (*connection.Connection, error) {
-	// Check if we already have a connection to this relay
-	h.connMutex.Lock()
-	if conn, exists := h.connPool[address]; exists {
-		h.connMutex.Unlock()
+	key := poolKey(address, ident)
+	if conn := h.takePooled(key, ident); conn != nil {
 		h.logger.Debug("Reusing existing connection", "address", address)
 		return conn, nil
 	}
-	h.connMutex.Unlock()
 
 	h.logger.Info("Connecting to next hop", "address", address)
 
@@ -316,13 +337,44 @@ func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string,
 		return nil, fmt.Errorf("link handshake failed: %w", err)
 	}
 
-	// Cache the connection
 	h.connMutex.Lock()
-	h.connPool[address] = conn
+	h.connPool[key] = &pooledORConn{conn: conn, ident: ident}
 	h.connMutex.Unlock()
 
 	h.logger.Info("Connection to next hop established", "address", address)
 	return conn, nil
+}
+
+func (h *ExtensionHandler) takePooled(key string, ident nextHopIdentity) *connection.Connection {
+	h.connMutex.Lock()
+	p := h.connPool[key]
+	if p == nil {
+		h.connMutex.Unlock()
+		return nil
+	}
+	if !p.conn.IsOpen() || !p.ident.matches(ident) {
+		delete(h.connPool, key)
+		dead := p.conn
+		h.connMutex.Unlock()
+		if dead != nil {
+			_ = dead.Close()
+		}
+		return nil
+	}
+	h.connMutex.Unlock()
+	return p.conn
+}
+
+func (h *ExtensionHandler) forgetIfDead(key string, conn *connection.Connection) {
+	if conn == nil || conn.IsOpen() {
+		return
+	}
+	h.connMutex.Lock()
+	if p := h.connPool[key]; p != nil && p.conn == conn {
+		delete(h.connPool, key)
+	}
+	h.connMutex.Unlock()
+	_ = conn.Close()
 }
 
 // performLinkHandshake 复用客户端出站握手：VERSIONS → 收 CERTS → 发 NETINFO → 收 NETINFO
@@ -550,11 +602,13 @@ func (h *ExtensionHandler) Close() error {
 	h.connMutex.Lock()
 	defer h.connMutex.Unlock()
 
-	for addr, conn := range h.connPool {
+	for addr, p := range h.connPool {
 		h.logger.Debug("Closing connection", "address", addr)
-		conn.Close()
+		if p != nil && p.conn != nil {
+			_ = p.conn.Close()
+		}
 	}
 
-	h.connPool = make(map[string]*connection.Connection)
+	h.connPool = make(map[string]*pooledORConn)
 	return nil
 }
