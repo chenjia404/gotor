@@ -16,8 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/onion"
+	"github.com/ulikunitz/xz/lzma"
 )
 
 func TestDirCacheServesCachedConsensus(t *testing.T) {
@@ -286,6 +288,15 @@ func TestDirCacheFPRLISTFiltersSignatures(t *testing.T) {
 	s.handler().ServeHTTP(plain, httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody))
 	if plain.Code != http.StatusOK || !strings.Contains(plain.Body.String(), strings.ToUpper(c)) {
 		t.Fatal("无 FPRLIST 必须回全部签名")
+	}
+
+	// 过滤后的共识不实时 LZMA（避免无鉴权 DirPort 被滚动 FPRLIST 拖垮）。
+	lz := httptest.NewRequest(http.MethodGet, okURL, http.NoBody)
+	lz.Header.Set("Accept-Encoding", "x-tor-lzma, x-zstd")
+	lzRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(lzRec, lz)
+	if lzRec.Header().Get("Content-Encoding") != "x-zstd" {
+		t.Fatalf("FPRLIST 过滤体应回退 zstd, got %q", lzRec.Header().Get("Content-Encoding"))
 	}
 }
 
@@ -560,5 +571,103 @@ func TestDirCacheDotZWithAcceptEncodingGzip(t *testing.T) {
 	_ = zr.Close()
 	if err != nil || string(got) != string(body) {
 		t.Fatalf("gzip body %q %v", got, err)
+	}
+}
+
+func TestDirCacheZstdAndLzma(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("network-status-version 3\nzstd-lzma-test\n")
+	if err := os.WriteFile(filepath.Join(dir, "cached-microdesc-consensus"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(dir, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+	req.Header.Set("Accept-Encoding", "x-zstd")
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("x-zstd status %d", rec.Code)
+	}
+	if rec.Header().Get("Content-Encoding") != "x-zstd" {
+		t.Fatalf("encoding %q", rec.Header().Get("Content-Encoding"))
+	}
+	zr, err := zstd.NewReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(zr)
+	zr.Close()
+	if err != nil || string(got) != string(body) {
+		t.Fatalf("x-zstd body %q %v", got, err)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+	req2.Header.Set("Accept-Encoding", "x-tor-lzma")
+	rec2 := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("x-tor-lzma status %d", rec2.Code)
+	}
+	if rec2.Header().Get("Content-Encoding") != "x-tor-lzma" {
+		t.Fatalf("encoding %q", rec2.Header().Get("Content-Encoding"))
+	}
+	compressed := rec2.Body.Bytes()
+	// xz 魔数 FD 37 7A 58 5A 00；官方客户端按 LZMA Alone 解，不能发 xz。
+	if len(compressed) >= 3 && compressed[0] == 0xfd && compressed[1] == 0x37 && compressed[2] == 0x7a {
+		t.Fatal("x-tor-lzma 不得使用 xz 容器")
+	}
+	lr, err := lzma.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, err := io.ReadAll(lr)
+	if err != nil || string(got2) != string(body) {
+		t.Fatalf("x-tor-lzma body %q %v", got2, err)
+	}
+
+	// 官方客户端常一次列出全部算法；须优先 x-tor-lzma，不得退回 gzip。
+	req3 := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+	req3.Header.Set("Accept-Encoding", "identity, deflate, gzip, x-tor-lzma, x-zstd")
+	rec3 := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec3, req3)
+	if rec3.Header().Get("Content-Encoding") != "x-tor-lzma" {
+		t.Fatalf("多算法应优先 x-tor-lzma, got %q", rec3.Header().Get("Content-Encoding"))
+	}
+
+	// 非共识文档不应走 lzma（dir-spec 只 SHOULD 用于 consensus / consdiff）。
+	if err := os.WriteFile(filepath.Join(dir, "cached-certs"), []byte("dir-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req4 := httptest.NewRequest(http.MethodGet, "/tor/keys/all", http.NoBody)
+	req4.Header.Set("Accept-Encoding", "identity, deflate, gzip, x-tor-lzma, x-zstd")
+	rec4 := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec4, req4)
+	if rec4.Header().Get("Content-Encoding") != "x-zstd" {
+		t.Fatalf("非共识应跳过 lzma 用 zstd, got %q", rec4.Header().Get("Content-Encoding"))
+	}
+
+	// FPRLIST 过滤体不得实时 LZMA，应退回 x-zstd。
+	a := "aaaaaaaaaa1111111111aaaaaaaaaa1111111111"
+	b := "bbbbbbbbbb2222222222bbbbbbbbbb2222222222"
+	filtered := "" +
+		"network-status-version 3\n" +
+		"vote-status consensus\n" +
+		"valid-after 2024-01-01 01:00:00\n" +
+		"directory-footer\n" +
+		"directory-signature sha256 " + strings.ToUpper(a) + " SA\n-----BEGIN SIGNATURE-----\nA\n-----END SIGNATURE-----\n" +
+		"directory-signature sha256 " + strings.ToUpper(b) + " SB\n-----BEGIN SIGNATURE-----\nB\n-----END SIGNATURE-----\n"
+	if err := os.WriteFile(filepath.Join(dir, "cached-microdesc-consensus"), []byte(filtered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req5 := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc/"+a[:6]+"+"+b[:6], http.NoBody)
+	req5.Header.Set("Accept-Encoding", "x-tor-lzma, x-zstd")
+	rec5 := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec5, req5)
+	if rec5.Code != http.StatusOK {
+		t.Fatalf("FPRLIST+lzma status %d", rec5.Code)
+	}
+	if rec5.Header().Get("Content-Encoding") != "x-zstd" {
+		t.Fatalf("过滤体不得实时 x-tor-lzma, got %q", rec5.Header().Get("Content-Encoding"))
 	}
 }
