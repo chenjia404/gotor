@@ -15,12 +15,13 @@
 
 | 路径 | 行为 |
 |------|------|
-| `GET /tor/status-vote/current/consensus-microdesc` 带 `X-Or-Diff-From-Consensus` | 若摘要匹配上一份落盘共识，回 limited-ed；否则回整份当前共识 |
-| `GET /tor/status-vote/current/consensus-microdesc/diff/<HASH>/<FPRLIST>` | 匹配则 200 + limited-ed；FPRLIST 过半签名才返回，否则 404 |
+| `GET /tor/status-vote/current/consensus-microdesc` 带 `X-Or-Diff-From-Consensus` | 若摘要匹配 72 小时内历史共识，回 limited-ed；否则回整份当前共识 |
+| `GET /tor/status-vote/current/consensus-microdesc/diff/<HASH>/<FPRLIST>` | 未过滤且匹配则 200 + limited-ed；FPRLIST 过半签名才返回整份过滤共识相关路径，过滤体不实时生成 diff；未知/过期 404 |
 | `GET /tor/status-vote/current/consensus-microdesc/<FPRLIST>` | 超过半数被请求权威已签名则回过滤后的共识；`all` / 无列表回全部签名 |
 | 同上 `consensus`（非 flavor）路径 | 与现有行为一致：仍服务 `cached-microdesc-consensus` |
 | BEGIN_DIR | 同一 handler |
-| `CacheDirectory/cached-microdesc-consensus.prev` | 换共识时保留上一份，供生成 diff |
+| `CacheDirectory/cached-microdesc-consensus.prev` | 换共识时保留上一份（兼容旧缓存） |
+| `CacheDirectory/cached-microdesc-consensus.hist/<FromDigest>` | 按 signed-part SHA3-256 命名；最多 72 小时 / 72 份 |
 
 生成算法在 `pkg/directory/consdiff_gen.go`：先 `n,$d` 去掉旧签名段，再按 `r` 行身份对齐分块 LCS，命令从后往前。只产出 `d`/`c`/`a`（含 C Tor 的 `0a`）。成功后用现有 `applyConsensusDiff` 自检。
 
@@ -41,7 +42,7 @@
 
 - `+` 分隔的身份十六进制前缀（2–40 偶数位）；`all` / 空列表 = 不筛选。
 - 按 `directory-signature` 的 identity 前缀保留签名块；须超过半数被请求权威已签名，否则 404。
-- 过滤不改 signed body，diff 缓存键含 FPRLIST。
+- 过滤不改 signed body。FPRLIST 请求不实时生成 consdiff（回过滤后的整份）。
 - **仍禁止** 在 `proto` 写 `DirCache=2`
 
 ## 本切片已做（2026-08-20 x-zstd / x-tor-lzma）
@@ -54,10 +55,22 @@
 - FPRLIST 过滤体、证书、microdesc、HS 描述符若请求 lzma，退回 zstd/gzip/deflate，不实时 LZMA。
 - **仍禁止** 在 `proto` 写 `DirCache=2`
 
+## 本切片已做（2026-08-20 多小时历史，#75）
+
+对照 param-spec `max-consensus-age-to-cache-for-diff` 默认 72 小时。
+
+- 换共识时把上一份写入 `cached-microdesc-consensus.hist/<FromDigest>`，并更新 `.prev`。
+- 查找先 hist、再 `.prev`；文件名必须等于正文 FromDigest。
+- `valid-after` 距当前超过 72 小时则不用于 consdiff（header 回整份，`/diff/` 404）。
+- 最多保留 72 份；请求 HASH 最多扫 16 个。
+- FPRLIST 过滤体不实时 `GenerateConsensusDiff`（与 lzma 同样避免未鉴权 CPU 放大）。
+- 未过滤 diff 按当前 ToDigest 缓存，生成在锁外且全进程同时只跑一份 LCS。
+- **仍禁止** 在 `proto` 写 `DirCache=2`
+
 ## 明确未做（因此禁止 `DirCache=2`）
 
-- 多小时 / 多份历史共识的 diff 库（客户端落后两期以上只能拿到整份）
 - ns flavor 与 microdesc 分库存放
+- 预压缩 / 预计算的完整 consdiff 库（C Tor consdiffmgr）
 - 真网官方客户端把本中继当 DirCache 的证据；权威 V2Dir 仍取决于 Running / 可达性，不由本切片单独证明
 
 ## 禁止
