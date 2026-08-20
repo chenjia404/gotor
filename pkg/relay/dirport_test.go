@@ -19,7 +19,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/onion"
-	"github.com/ulikunitz/xz"
+	"github.com/ulikunitz/xz/lzma"
 )
 
 func TestDirCacheServesCachedConsensus(t *testing.T) {
@@ -603,11 +603,16 @@ func TestDirCacheZstdAndLzma(t *testing.T) {
 	if rec2.Header().Get("Content-Encoding") != "x-tor-lzma" {
 		t.Fatalf("encoding %q", rec2.Header().Get("Content-Encoding"))
 	}
-	xr, err := xz.NewReader(rec2.Body)
+	compressed := rec2.Body.Bytes()
+	// xz 魔数 FD 37 7A 58 5A 00；官方客户端按 LZMA Alone 解，不能发 xz。
+	if len(compressed) >= 3 && compressed[0] == 0xfd && compressed[1] == 0x37 && compressed[2] == 0x7a {
+		t.Fatal("x-tor-lzma 不得使用 xz 容器")
+	}
+	lr, err := lzma.NewReader(bytes.NewReader(compressed))
 	if err != nil {
 		t.Fatal(err)
 	}
-	got2, err := io.ReadAll(xr)
+	got2, err := io.ReadAll(lr)
 	if err != nil || string(got2) != string(body) {
 		t.Fatalf("x-tor-lzma body %q %v", got2, err)
 	}
@@ -619,5 +624,17 @@ func TestDirCacheZstdAndLzma(t *testing.T) {
 	s.handler().ServeHTTP(rec3, req3)
 	if rec3.Header().Get("Content-Encoding") != "x-tor-lzma" {
 		t.Fatalf("多算法应优先 x-tor-lzma, got %q", rec3.Header().Get("Content-Encoding"))
+	}
+
+	// 非共识文档不应走 lzma（dir-spec 只 SHOULD 用于 consensus / consdiff）。
+	if err := os.WriteFile(filepath.Join(dir, "cached-certs"), []byte("dir-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req4 := httptest.NewRequest(http.MethodGet, "/tor/keys/all", http.NoBody)
+	req4.Header.Set("Accept-Encoding", "identity, deflate, gzip, x-tor-lzma, x-zstd")
+	rec4 := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec4, req4)
+	if rec4.Header().Get("Content-Encoding") != "x-zstd" {
+		t.Fatalf("非共识应跳过 lzma 用 zstd, got %q", rec4.Header().Get("Content-Encoding"))
 	}
 }

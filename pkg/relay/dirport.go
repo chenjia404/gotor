@@ -19,7 +19,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
-	"github.com/ulikunitz/xz"
+	"github.com/ulikunitz/xz/lzma"
 )
 
 type dirZKey struct{}
@@ -382,6 +382,10 @@ func hasAcceptToken(toks []string, name string) bool {
 	return false
 }
 
+func isConsensusDirPath(path string) bool {
+	return strings.Contains(path, "/status-vote/current/consensus")
+}
+
 func negotiateDirEncoding(r *http.Request) (enc string, hideCE bool) {
 	_, isZ := r.Context().Value(dirZKey{}).(bool)
 	raw := r.Header.Get("Accept-Encoding")
@@ -393,7 +397,8 @@ func negotiateDirEncoding(r *http.Request) (enc string, hideCE bool) {
 	}
 	toks := acceptEncodingTokens(raw)
 	// 与 C Tor 预压缩偏好一致：lzma → zstd → gzip → deflate。
-	if hasAcceptToken(toks, "x-tor-lzma") {
+	// dir-spec：x-tor-lzma 只 SHOULD 用于当前共识与 consdiff，不是全部目录文档。
+	if hasAcceptToken(toks, "x-tor-lzma") && isConsensusDirPath(r.URL.Path) {
 		return "x-tor-lzma", false
 	}
 	if hasAcceptToken(toks, "x-zstd") {
@@ -445,9 +450,10 @@ func compressDirBody(enc string, body []byte) (payload []byte, used string) {
 		}
 		return buf.Bytes(), "x-zstd"
 	case "x-tor-lzma":
+		// C Tor 用 lzma_alone_encoder（legacy .lzma），不是 xz 容器。
 		// dir-spec：preset 不得高于 6（约 8MiB 字典）。
 		var buf bytes.Buffer
-		zw, err := xz.WriterConfig{DictCap: 8 << 20}.NewWriter(&buf)
+		zw, err := lzma.WriterConfig{DictCap: 8 << 20}.NewWriter(&buf)
 		if err != nil {
 			return body, ""
 		}
