@@ -16,8 +16,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/ulikunitz/xz"
 )
 
 type dirZKey struct{}
@@ -30,7 +32,7 @@ const (
 )
 
 // DirCacheServer 用 CacheDirectory 的落盘共识/microdesc 应答 BEGIN_DIR / DirPort。
-// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/<FPRLIST> 提供 limited-ed，按 FPRLIST 过滤权威签名（未过半 404），并协商 gzip/deflate/.z 与 304；不宣告 DirCache=2。
+// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/<FPRLIST> 提供 limited-ed，按 FPRLIST 过滤权威签名（未过半 404），并协商 x-tor-lzma/x-zstd/gzip/deflate/.z 与 304；不宣告 DirCache=2。
 type DirCacheServer struct {
 	cacheDir string
 	logger   *logger.Logger
@@ -390,6 +392,13 @@ func negotiateDirEncoding(r *http.Request) (enc string, hideCE bool) {
 		return "", false
 	}
 	toks := acceptEncodingTokens(raw)
+	// 与 C Tor 预压缩偏好一致：lzma → zstd → gzip → deflate。
+	if hasAcceptToken(toks, "x-tor-lzma") {
+		return "x-tor-lzma", false
+	}
+	if hasAcceptToken(toks, "x-zstd") {
+		return "x-zstd", false
+	}
 	if hasAcceptToken(toks, "gzip") {
 		return "gzip", false
 	}
@@ -421,13 +430,42 @@ func compressDirBody(enc string, body []byte) (payload []byte, used string) {
 			return body, ""
 		}
 		return buf.Bytes(), "deflate"
+	case "x-zstd":
+		var buf bytes.Buffer
+		zw, err := zstd.NewWriter(&buf, zstd.WithEncoderConcurrency(1))
+		if err != nil {
+			return body, ""
+		}
+		if _, err := zw.Write(body); err != nil {
+			_ = zw.Close()
+			return body, ""
+		}
+		if err := zw.Close(); err != nil {
+			return body, ""
+		}
+		return buf.Bytes(), "x-zstd"
+	case "x-tor-lzma":
+		// dir-spec：preset 不得高于 6（约 8MiB 字典）。
+		var buf bytes.Buffer
+		zw, err := xz.WriterConfig{DictCap: 8 << 20}.NewWriter(&buf)
+		if err != nil {
+			return body, ""
+		}
+		if _, err := zw.Write(body); err != nil {
+			_ = zw.Close()
+			return body, ""
+		}
+		if err := zw.Close(); err != nil {
+			return body, ""
+		}
+		return buf.Bytes(), "x-tor-lzma"
 	default:
 		return body, ""
 	}
 }
 
 // serveKeysFP 按 dir-spec 提供 /tor/keys/fp/<F>[+<F>…]，从 CacheDirectory/cached-certs 抽取。
-// consdiff / gzip / 304 已接线；在缺多小时历史 diff / 真网被当缓存之前，禁止宣告 DirCache=2。
+// consdiff / gzip / zstd / lzma / 304 已接线；在缺多小时历史 diff / 真网被当缓存之前，禁止宣告 DirCache=2。
 func (d *DirCacheServer) serveKeysFP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

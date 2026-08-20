@@ -16,8 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/onion"
+	"github.com/ulikunitz/xz"
 )
 
 func TestDirCacheServesCachedConsensus(t *testing.T) {
@@ -560,5 +562,62 @@ func TestDirCacheDotZWithAcceptEncodingGzip(t *testing.T) {
 	_ = zr.Close()
 	if err != nil || string(got) != string(body) {
 		t.Fatalf("gzip body %q %v", got, err)
+	}
+}
+
+func TestDirCacheZstdAndLzma(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("network-status-version 3\nzstd-lzma-test\n")
+	if err := os.WriteFile(filepath.Join(dir, "cached-microdesc-consensus"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(dir, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+	req.Header.Set("Accept-Encoding", "x-zstd")
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("x-zstd status %d", rec.Code)
+	}
+	if rec.Header().Get("Content-Encoding") != "x-zstd" {
+		t.Fatalf("encoding %q", rec.Header().Get("Content-Encoding"))
+	}
+	zr, err := zstd.NewReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(zr)
+	zr.Close()
+	if err != nil || string(got) != string(body) {
+		t.Fatalf("x-zstd body %q %v", got, err)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+	req2.Header.Set("Accept-Encoding", "x-tor-lzma")
+	rec2 := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("x-tor-lzma status %d", rec2.Code)
+	}
+	if rec2.Header().Get("Content-Encoding") != "x-tor-lzma" {
+		t.Fatalf("encoding %q", rec2.Header().Get("Content-Encoding"))
+	}
+	xr, err := xz.NewReader(rec2.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, err := io.ReadAll(xr)
+	if err != nil || string(got2) != string(body) {
+		t.Fatalf("x-tor-lzma body %q %v", got2, err)
+	}
+
+	// 官方客户端常一次列出全部算法；须优先 x-tor-lzma，不得退回 gzip。
+	req3 := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+	req3.Header.Set("Accept-Encoding", "identity, deflate, gzip, x-tor-lzma, x-zstd")
+	rec3 := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec3, req3)
+	if rec3.Header().Get("Content-Encoding") != "x-tor-lzma" {
+		t.Fatalf("多算法应优先 x-tor-lzma, got %q", rec3.Header().Get("Content-Encoding"))
 	}
 }
