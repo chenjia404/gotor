@@ -10,7 +10,7 @@
 - HS 电路（INTRO / REND / HSDir BEGIN_DIR）走 **L1 入口 → 固定 L2 → 目标**，不再每次随机中间跳。
 - L2 默认 4 个，从 `UsableAsGuard` 节点选取；寿命均匀随机 1–12 天。
 - 重启后从 `DataDirectory/state` 的自有键 `GotorHSLayer2Guards` 恢复。**不改**官方 `Guard` 行语义。
-- L1 优先用已持久化的入口 Guard（`GuardManager`）；已升为 L1 的节点会从 L2 剔除并补员，避免 L1/L2 重叠。指纹按 C Tor 风格去掉空格与 `$` 再比。
+- L1 优先用已持久化的入口 Guard（`GuardManager`）；已升为 L1 的节点会从 L2 剔除并补员，避免 L1/L2 重叠。指纹统一成 40 位 hex（兼容共识 r 行 base64 与 C Tor `$`/空格）。
 - 已注入 `VanguardSet` 时选路失败则关闭，**不**退回随机中间跳。
 - 当前电路目标碰巧是某 L2 时只在本条避开，不从全局集合剔除。
 - L1/L2/目标三跳拒绝同家族；与目标同家族的持久入口会被跳过，无法避开则关闭。

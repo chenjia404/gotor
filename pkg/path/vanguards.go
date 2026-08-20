@@ -2,6 +2,7 @@ package path
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"strings"
@@ -116,7 +117,7 @@ func (v *VanguardSet) Load() error {
 		if !ok {
 			continue
 		}
-		fp = normalizeFP(fp)
+		fp = identityToHex(fp)
 		sec, err := parseUnixSeconds(exp)
 		if err != nil {
 			continue
@@ -212,7 +213,7 @@ func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay, persistL1 
 	seen := make(map[string]bool)
 	persist := make(map[string]bool)
 	for _, raw := range persistL1 {
-		if fp := normalizeFP(raw); fp != "" {
+		if fp := identityToHex(raw); fp != "" {
 			persist[fp] = true
 			seen[fp] = true
 		}
@@ -221,7 +222,7 @@ func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay, persistL1 
 		if !now.Before(e.Until) {
 			continue
 		}
-		fp := normalizeFP(e.FP)
+		fp := identityToHex(e.FP)
 		// 已升为持久 L1 的节点必须离开 L2，否则 pickL1 的 !inL2 会永远跳过该入口。
 		if persist[fp] {
 			continue
@@ -269,7 +270,7 @@ func (v *VanguardSet) liveRelaysLocked(byFP map[string]*directory.Relay) []*dire
 		if !now.Before(e.Until) {
 			continue
 		}
-		if r := byFP[normalizeFP(e.FP)]; usableL2(r) {
+		if r := byFP[identityToHex(e.FP)]; usableL2(r) {
 			out = append(out, r)
 		}
 	}
@@ -295,15 +296,30 @@ func normalizeFP(raw string) string {
 	return strings.TrimPrefix(s, "$")
 }
 
+// identityToHex 把共识 r 行 base64、C Tor `$`/空格 hex 都收成 40 位大写 hex。
+// 不得先 ToUpper：base64 身份区分大小写。
+func identityToHex(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.ReplaceAll(s, " ", "")
+	s = strings.TrimPrefix(s, "$")
+	if s == "" {
+		return ""
+	}
+	id, err := directory.DecodeRSAIdentity(s)
+	if err != nil || len(id) != 20 {
+		return strings.ToUpper(s)
+	}
+	return strings.ToUpper(hex.EncodeToString(id))
+}
+
 func relayFP(r *directory.Relay) string {
 	if r == nil {
 		return ""
 	}
-	fp := normalizeFP(r.GetFingerprintHex())
-	if fp == "" {
-		fp = normalizeFP(r.Fingerprint)
+	if fp := identityToHex(r.GetFingerprintHex()); fp != "" {
+		return fp
 	}
-	return fp
+	return identityToHex(r.Fingerprint)
 }
 
 func usableL2(r *directory.Relay) bool {
@@ -339,7 +355,7 @@ func pickL1(byFP map[string]*directory.Relay, persistL1 []string, target *direct
 		inL2[relayFP(r)] = true
 	}
 	for _, raw := range persistL1 {
-		fp := normalizeFP(raw)
+		fp := identityToHex(raw)
 		r := byFP[fp]
 		if r != nil && r.UsableAsGuard() && !sameRelayFP(r, target) && !familyConflict(r, target) && !inL2[fp] {
 			return r
@@ -408,7 +424,7 @@ func PersistL1Fingerprints(gm *GuardManager) []string {
 	gs := gm.GetGuards()
 	out := make([]string, 0, len(gs))
 	for _, g := range gs {
-		if fp := normalizeFP(g.Fingerprint); fp != "" {
+		if fp := identityToHex(g.Fingerprint); fp != "" {
 			out = append(out, fp)
 		}
 	}

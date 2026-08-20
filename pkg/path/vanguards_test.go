@@ -1,6 +1,8 @@
 package path
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -331,6 +333,29 @@ func TestVanguardSetKeepsL2WhenTargetMatches(t *testing.T) {
 		if !containsFP(after, fp) {
 			t.Fatalf("L2 %s 因当前目标被踢出集合", fp)
 		}
+	}
+}
+
+func TestVanguardSetAcceptsBase64PersistL1(t *testing.T) {
+	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	pool := vgPool()
+	hexFP := pool[0].Fingerprint
+	raw, err := hex.DecodeString(hexFP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b64 := base64.RawStdEncoding.EncodeToString(raw)
+	pool[0].FingerprintHex = hexFP
+	pool[0].Fingerprint = b64
+	p, err := v.SelectHSPath(pool, pool[6], []string{b64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identityToHex(p.Guard.GetFingerprintHex()) != hexFP {
+		t.Fatalf("共识 r 行 base64 入口应对上 hex L2 键，got %s", p.Guard.Nickname)
+	}
+	if containsFP(v.Fingerprints(), hexFP) {
+		t.Fatal("base64 入口规范化后仍应从 L2 剔除")
 	}
 }
 
