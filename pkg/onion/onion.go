@@ -978,14 +978,15 @@ func parseLinkSpecifiers(data []byte, intro *IntroductionPoint) {
 		lstype := data[offset]
 		lslen := int(data[offset+1])
 		offset += 2
-		rest := len(data) - offset
-		if lslen < 0 || lslen > rest {
+		rest := data[offset:]
+		if lslen < 0 || lslen > len(rest) {
 			break
 		}
-
-		// 从已夹紧的 rest 切片拷贝，避免按未校验长度 make。
-		lsdata := append([]byte(nil), data[offset:offset+lslen]...)
-		offset += lslen
+		// 分配长度取自已夹紧的 rest 子切片，不按用户 LSLEN 直接 make。
+		chunk := rest[:lslen]
+		lsdata := make([]byte, len(chunk))
+		copy(lsdata, chunk)
+		offset += len(chunk)
 
 		intro.LinkSpecifiers = append(intro.LinkSpecifiers, LinkSpecifier{
 			Type: lstype,
