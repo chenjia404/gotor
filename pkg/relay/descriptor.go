@@ -208,8 +208,8 @@ func (d *ServerDescriptor) build() error {
 		base64.RawStdEncoding.EncodeToString(d.Ed25519Identity))
 	fmt.Fprintf(&buf, "platform %s\n", d.Platform)
 	// proto 只写已实现能力。
-	// DirCache 已能对外提供上一份→当前的 limited-ed，但仍缺多小时历史
-	// diff / 压缩 / If-Modified-Since / 真网被当缓存的证据，禁止写 DirCache=2。
+	// DirCache 已能对外提供上一份→当前的 limited-ed、gzip/deflate 与 304，
+	// 但仍缺多小时历史 diff / 真网被当缓存的证据，禁止写 DirCache=2。
 	// HS 中继角色本切片仅受理 ESTABLISH_INTRO / ESTABLISH_RENDEZVOUS，
 	// 尚未对外服务 HSDir / INTRODUCE1 / RENDEZVOUS1，禁止写 HSDir= / HSIntro= / HSRend=。
 	// LinkAuth=3：入站已校验 AUTHENTICATE type 3（SLOG/CLOG/SCERT/TLSSECRETS/SIG）。

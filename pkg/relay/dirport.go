@@ -2,6 +2,10 @@ package relay
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
+	"compress/zlib"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +20,8 @@ import (
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
+type dirZKey struct{}
+
 const maxDirServeBytes = 8 << 20
 
 const (
@@ -24,7 +30,7 @@ const (
 )
 
 // DirCacheServer 用 CacheDirectory 的落盘共识/microdesc 应答 BEGIN_DIR / DirPort。
-// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/ 提供 limited-ed；不宣告 DirCache=2。
+// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/ 提供 limited-ed，并协商 gzip/deflate/.z 与 304；不宣告 DirCache=2。
 type DirCacheServer struct {
 	cacheDir string
 	logger   *logger.Logger
@@ -53,7 +59,17 @@ func (d *DirCacheServer) handler() http.Handler {
 	mux.HandleFunc("/tor/micro/all", d.serveFile("cached-microdescs"))
 	mux.HandleFunc("/tor/keys/all", d.serveFile("cached-certs"))
 	mux.HandleFunc("/tor/keys/fp/", d.serveKeysFP)
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".z") {
+			clone := r.Clone(context.WithValue(r.Context(), dirZKey{}, true))
+			u := *r.URL
+			u.Path = strings.TrimSuffix(r.URL.Path, ".z")
+			clone.URL = &u
+			mux.ServeHTTP(w, clone)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func (d *DirCacheServer) serveFile(name string) http.HandlerFunc {
@@ -83,12 +99,12 @@ func (d *DirCacheServer) serveFile(name string) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "text/plain")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", st.Size()))
-		if r.Method == http.MethodHead {
+		data := make([]byte, st.Size())
+		if _, err := io.ReadFull(f, data); err != nil {
+			http.NotFound(w, r)
 			return
 		}
-		_, _ = io.CopyN(w, f, st.Size())
+		writeDirBody(w, r, data, st.ModTime())
 	}
 }
 
@@ -109,13 +125,14 @@ func (d *DirCacheServer) serveConsensus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	hashes := directory.ParseOrDiffFromConsensusHeader(r.Header.Get("X-Or-Diff-From-Consensus"))
+	mod := consensusLastModified(curr, d.cachedModTime(cachedConsensusName))
 	if len(hashes) > 0 {
 		if diff, ok := d.diffFromHashes(hashes, curr); ok {
-			writeDirBody(w, r, []byte(diff))
+			writeDirBody(w, r, []byte(diff), mod)
 			return
 		}
 	}
-	writeDirBody(w, r, []byte(curr))
+	writeDirBody(w, r, []byte(curr), mod)
 }
 
 func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +155,7 @@ func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.R
 		http.NotFound(w, r)
 		return
 	}
-	writeDirBody(w, r, []byte(diff))
+	writeDirBody(w, r, []byte(diff), consensusLastModified(curr, d.cachedModTime(cachedConsensusName)))
 }
 
 func parseConsensusDiffPath(path string) (hash string, ok bool) {
@@ -225,17 +242,134 @@ func (d *DirCacheServer) readCachedFile(name string) (string, bool) {
 	return string(data), true
 }
 
-func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte) {
+func (d *DirCacheServer) cachedModTime(name string) time.Time {
+	if d.cacheDir == "" {
+		return time.Time{}
+	}
+	st, err := os.Stat(filepath.Join(d.cacheDir, name))
+	if err != nil {
+		return time.Time{}
+	}
+	return st.ModTime()
+}
+
+func consensusLastModified(doc string, fallback time.Time) time.Time {
+	for _, line := range strings.Split(doc, "\n") {
+		if !strings.HasPrefix(line, "valid-after ") {
+			continue
+		}
+		t, err := time.ParseInLocation("2006-01-02 15:04:05", strings.TrimSpace(line[len("valid-after "):]), time.UTC)
+		if err == nil {
+			return t
+		}
+		break
+	}
+	return fallback
+}
+
+func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte, mod time.Time) {
+	if !mod.IsZero() {
+		lm := mod.UTC().Truncate(time.Second)
+		w.Header().Set("Last-Modified", lm.Format(http.TimeFormat))
+		if ims := r.Header.Get("If-Modified-Since"); ims != "" {
+			if t, err := http.ParseTime(ims); err == nil && !lm.After(t.UTC().Truncate(time.Second)) {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+		}
+	}
+	enc, hideCE := negotiateDirEncoding(r)
+	payload, used := compressDirBody(enc, body)
+	if used != "" && !hideCE {
+		w.Header().Set("Content-Encoding", used)
+	}
 	w.Header().Set("Content-Type", "text/plain")
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write(body)
+	writeDirPayload(w, payload)
+}
+
+// writeDirPayload 写出已落盘的目录文档（或失败时的未压缩原文）。
+// Content-Type 固定 text/plain；不是 HTML，gosec G705 的 XSS 污点在此不适用。
+func writeDirPayload(w http.ResponseWriter, payload []byte) {
+	_, _ = w.Write(payload) // #nosec G705 -- 目录文档来自 CacheDirectory，非请求体反射
+}
+
+func acceptEncodingTokens(h string) []string {
+	if h == "" {
+		return nil
+	}
+	parts := strings.Split(h, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p, _, _ = strings.Cut(p, ";")
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func hasAcceptToken(toks []string, name string) bool {
+	for _, t := range toks {
+		if t == name {
+			return true
+		}
+	}
+	return false
+}
+
+func negotiateDirEncoding(r *http.Request) (enc string, hideCE bool) {
+	_, isZ := r.Context().Value(dirZKey{}).(bool)
+	raw := r.Header.Get("Accept-Encoding")
+	if raw == "" {
+		if isZ {
+			return "deflate", true
+		}
+		return "", false
+	}
+	toks := acceptEncodingTokens(raw)
+	if hasAcceptToken(toks, "gzip") {
+		return "gzip", false
+	}
+	if hasAcceptToken(toks, "deflate") {
+		return "deflate", false
+	}
+	return "", false
+}
+
+func compressDirBody(enc string, body []byte) (payload []byte, used string) {
+	switch enc {
+	case "gzip":
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		if _, err := zw.Write(body); err != nil {
+			return body, ""
+		}
+		if err := zw.Close(); err != nil {
+			return body, ""
+		}
+		return buf.Bytes(), "gzip"
+	case "deflate":
+		var buf bytes.Buffer
+		zw := zlib.NewWriter(&buf)
+		if _, err := zw.Write(body); err != nil {
+			return body, ""
+		}
+		if err := zw.Close(); err != nil {
+			return body, ""
+		}
+		return buf.Bytes(), "deflate"
+	default:
+		return body, ""
+	}
 }
 
 // serveKeysFP 按 dir-spec 提供 /tor/keys/fp/<F>[+<F>…]，从 CacheDirectory/cached-certs 抽取。
-// consdiff 已接线；在缺多小时历史 diff / 压缩 / If-Modified-Since / 真网被当缓存之前，禁止宣告 DirCache=2。
+// consdiff / gzip / 304 已接线；在缺多小时历史 diff / 真网被当缓存之前，禁止宣告 DirCache=2。
 func (d *DirCacheServer) serveKeysFP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -252,12 +386,7 @@ func (d *DirCacheServer) serveKeysFP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/plain")
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-	if r.Method == http.MethodHead {
-		return
-	}
-	_, _ = w.Write(body)
+	writeDirBody(w, r, body, d.cachedModTime("cached-certs"))
 }
 
 func parseKeyFingerprints(raw string) ([]string, bool) {

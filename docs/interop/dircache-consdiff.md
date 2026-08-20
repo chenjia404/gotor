@@ -23,11 +23,21 @@
 
 生成算法在 `pkg/directory/consdiff_gen.go`：先 `n,$d` 去掉旧签名段，再按 `r` 行身份对齐分块 LCS，命令从后往前。只产出 `d`/`c`/`a`（含 C Tor 的 `0a`）。成功后用现有 `applyConsensusDiff` 自检。
 
+## 本切片已做（2026-08-20 压缩 / 304）
+
+对照 dir-spec [standards-compliance](https://spec.torproject.org/dir-spec/standards-compliance.html)。
+
+- `Accept-Encoding: gzip` / `deflate` → 对应 `Content-Encoding`（优先 gzip）
+- 路径 `.z` **且无** `Accept-Encoding`：zlib deflate，**不**带 `Content-Encoding`（旧客户端）
+- 路径 `.z` **且有** `Accept-Encoding`：按无 `.z` 协商（须在 advertised 集合内编码一次）
+- 共识 `Last-Modified` 用 `valid-after`（UTC）；`If-Modified-Since` ≥ 该时刻则 **304** 无正文。坏 IMS 忽略。
+- 其它落盘文档用文件 mtime。
+- **仍禁止** 在 `proto` 写 `DirCache=2`
+
 ## 明确未做（因此禁止 `DirCache=2`）
 
 - 多小时 / 多份历史共识的 diff 库（客户端落后两期以上只能拿到整份）
-- `Accept-Encoding` 压缩（deflate/gzip/zstd）与 `.z` URL
-- `If-Modified-Since` / 304
+- zstd / lzma
 - 按 FPRLIST 过滤权威签名子集
 - ns flavor 与 microdesc 分库存放
 - 真网官方客户端把本中继当 DirCache 的证据；权威 V2Dir 仍取决于 Running / 可达性，不由本切片单独证明
