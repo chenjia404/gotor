@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,11 +49,13 @@ type ServerDescriptor struct {
 	NtorPrivate     []byte            // ntor 私钥，签发 ntor-onion-key-crosscert
 
 	// Internal fields
-	rsaPrivate     *rsa.PrivateKey    // RSA private key for signing
-	ed25519Private ed25519.PrivateKey // Ed25519 主身份私钥，签发 type-04
-	Digest         []byte             // SHA-1 digest of descriptor (computed)
-	Signature      []byte             // RSA signature of descriptor
-	RawDescriptor  []byte             // Complete descriptor text
+	rsaPrivate      *rsa.PrivateKey    // RSA private key for signing
+	ed25519Private  ed25519.PrivateKey // Ed25519 主身份私钥，签发 type-04
+	Digest          []byte             // SHA-1 digest of descriptor (computed)
+	Signature       []byte             // RSA signature of descriptor
+	RawDescriptor   []byte             // Complete descriptor text
+	extraInfoSHA1   []byte             // 对应 extra-info 的 SHA-1
+	extraInfoSHA256 []byte             // 对应 extra-info 的 SHA-256
 }
 
 // ExtraInfoDescriptor represents optional extra-info descriptor
@@ -62,26 +65,30 @@ type ExtraInfoDescriptor struct {
 	Fingerprint   string
 	PublishedTime time.Time
 	Statistics    map[string]string
-	Digest        []byte
+	Digest        []byte // SHA-1（签到 router-signature\n，不含 PEM）
+	DigestSHA256  []byte // SHA-256（整份含签名，dir-spec 既有实现差）
 	Signature     []byte
 	RawDescriptor []byte // Complete extra-info descriptor text
 }
 
 // DescriptorConfig holds configuration for descriptor generation
 type DescriptorConfig struct {
-	Nickname        string   // Relay nickname (default: auto-generated)
-	Address         string   // IPv4 address (required)
-	ORPort          uint16   // OR port (required)
-	DirPort         uint16   // Directory port (0 for bridges)
-	Contact         string   // Contact info (optional)
-	Family          []string // Family members (optional)
-	BandwidthAvg    uint64   // Average bandwidth (default: 1MB/s)
-	BandwidthBurst  uint64   // Burst bandwidth (default: 2MB/s)
-	IPv6Addr        string   // IPv6 address:port (optional)
-	IsBridge        bool     // Whether this is a bridge relay
-	Uptime          int      // 已运行秒数
-	ExitPolicyLines []string // 真实 accept/reject 行；空则 reject *:*
-	IPv6Policy      string   // ipv6-policy 行（可含关键字）
+	Nickname        string    // Relay nickname (default: auto-generated)
+	Address         string    // IPv4 address (required)
+	ORPort          uint16    // OR port (required)
+	DirPort         uint16    // Directory port (0 for bridges)
+	Contact         string    // Contact info (optional)
+	Family          []string  // Family members (optional)
+	BandwidthAvg    uint64    // Average bandwidth (default: 1MB/s)
+	BandwidthBurst  uint64    // Burst bandwidth (default: 2MB/s)
+	IPv6Addr        string    // IPv6 address:port (optional)
+	IsBridge        bool      // Whether this is a bridge relay
+	Uptime          int       // 已运行秒数
+	ExitPolicyLines []string  // 真实 accept/reject 行；空则 reject *:*
+	IPv6Policy      string    // ipv6-policy 行（可含关键字）
+	PublishedTime   time.Time // 零值则用现在；与 extra-info 必须同一时刻
+	ExtraInfoSHA1   []byte    // extra-info SHA-1（20 字节）；空则不写 extra-info-digest
+	ExtraInfoSHA256 []byte    // extra-info SHA-256（32 字节）；与 SHA-1 一起写
 }
 
 // GenerateServerDescriptor creates a signed server descriptor
@@ -133,13 +140,18 @@ func GenerateServerDescriptor(keys *RelayKeys, config *DescriptorConfig) (*Serve
 	var ntorPublic [32]byte
 	curve25519.ScalarBaseMult(&ntorPublic, (*[32]byte)(keys.NtorOnionKey))
 
+	published := config.PublishedTime.UTC()
+	if published.IsZero() {
+		published = time.Now().UTC()
+	}
+
 	desc := &ServerDescriptor{
 		Nickname:        nickname,
 		Address:         config.Address,
 		ORPort:          config.ORPort,
 		DirPort:         config.DirPort,
 		Platform:        "go-tor 0.1.0 on Go",
-		PublishedTime:   time.Now().UTC(),
+		PublishedTime:   published,
 		Uptime:          config.Uptime,
 		BandwidthAvg:    bandwidthAvg,
 		BandwidthBurst:  bandwidthBurst,
@@ -155,6 +167,8 @@ func GenerateServerDescriptor(keys *RelayKeys, config *DescriptorConfig) (*Serve
 		NtorPrivate:     append([]byte(nil), keys.NtorOnionKey...),
 		rsaPrivate:      keys.RSAPrivate,
 		ed25519Private:  keys.Ed25519Private,
+		extraInfoSHA1:   append([]byte(nil), config.ExtraInfoSHA1...),
+		extraInfoSHA256: append([]byte(nil), config.ExtraInfoSHA256...),
 	}
 
 	// Build and sign descriptor
@@ -206,6 +220,15 @@ func (d *ServerDescriptor) build() error {
 	fmt.Fprintf(&buf, "uptime %d\n", d.Uptime)
 	fmt.Fprintf(&buf, "bandwidth %d %d %d\n",
 		d.BandwidthAvg, d.BandwidthBurst, d.BandwidthObs)
+	if len(d.extraInfoSHA1) == sha1.Size {
+		sha1Hex := strings.ToUpper(hex.EncodeToString(d.extraInfoSHA1))
+		if len(d.extraInfoSHA256) == sha256.Size {
+			fmt.Fprintf(&buf, "extra-info-digest %s %s\n", sha1Hex,
+				base64.RawStdEncoding.EncodeToString(d.extraInfoSHA256))
+		} else {
+			fmt.Fprintf(&buf, "extra-info-digest %s\n", sha1Hex)
+		}
+	}
 	if err := writeRSAPublicPEM(&buf, "onion-key", &tapKey.PublicKey); err != nil {
 		return err
 	}
@@ -463,6 +486,37 @@ func (d *ServerDescriptor) Validate() error {
 	return nil
 }
 
+// GenerateDescriptorPair 先签 extra-info，再把 extra-info-digest 写入 server descriptor。
+// published 两边相同。stats 只应含观测值；nil/空则不写 write-history / read-history。
+func GenerateDescriptorPair(keys *RelayKeys, config *DescriptorConfig, stats map[string]string) (*ServerDescriptor, *ExtraInfoDescriptor, error) {
+	if keys == nil {
+		return nil, nil, fmt.Errorf("relay keys cannot be nil")
+	}
+	if config == nil {
+		return nil, nil, fmt.Errorf("descriptor config cannot be nil")
+	}
+	cfg := *config
+	if cfg.PublishedTime.IsZero() {
+		cfg.PublishedTime = time.Now().UTC()
+	}
+	nickname := cfg.Nickname
+	if nickname == "" {
+		nickname = generateNickname(keys)
+	}
+	extra, err := generateExtraInfoAt(keys, nickname, strings.ToUpper(keys.Fingerprint()), cfg.PublishedTime, stats)
+	if err != nil {
+		return nil, nil, err
+	}
+	cfg.Nickname = nickname
+	cfg.ExtraInfoSHA1 = extra.Digest
+	cfg.ExtraInfoSHA256 = extra.DigestSHA256
+	desc, err := GenerateServerDescriptor(keys, &cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return desc, extra, nil
+}
+
 // GenerateExtraInfo creates an extra-info descriptor with statistics
 // Per dir-spec.txt §2.2, extra-info provides bandwidth and usage statistics
 func GenerateExtraInfo(keys *RelayKeys, desc *ServerDescriptor, stats map[string]string) (*ExtraInfoDescriptor, error) {
@@ -472,15 +526,31 @@ func GenerateExtraInfo(keys *RelayKeys, desc *ServerDescriptor, stats map[string
 	if desc == nil {
 		return nil, fmt.Errorf("server descriptor cannot be nil")
 	}
-
 	published := desc.PublishedTime
 	if published.IsZero() {
 		published = time.Now().UTC()
 	}
+	return generateExtraInfoAt(keys, desc.Nickname, desc.Fingerprint(), published, stats)
+}
+
+func generateExtraInfoAt(keys *RelayKeys, nickname, fingerprint string, published time.Time, stats map[string]string) (*ExtraInfoDescriptor, error) {
+	if keys == nil {
+		return nil, fmt.Errorf("relay keys cannot be nil")
+	}
+	if nickname == "" {
+		return nil, fmt.Errorf("extra-info nickname is required")
+	}
+	fingerprint = strings.ToUpper(strings.ReplaceAll(fingerprint, " ", ""))
+	if len(fingerprint) != 40 {
+		return nil, fmt.Errorf("extra-info fingerprint must be 40 hex chars")
+	}
+	if published.IsZero() {
+		published = time.Now().UTC()
+	}
 	extraInfo := &ExtraInfoDescriptor{
-		Nickname:      desc.Nickname,
-		Fingerprint:   desc.Fingerprint(),
-		PublishedTime: published,
+		Nickname:      nickname,
+		Fingerprint:   fingerprint,
+		PublishedTime: published.UTC(),
 		Statistics:    stats,
 	}
 
@@ -498,9 +568,7 @@ func GenerateExtraInfo(keys *RelayKeys, desc *ServerDescriptor, stats map[string
 	writePEMBlock(&buf, "identity-ed25519", "ED25519 CERT", idCert)
 	fmt.Fprintf(&buf, "published %s\n",
 		extraInfo.PublishedTime.Format("2006-01-02 15:04:05"))
-	for key, value := range stats {
-		fmt.Fprintf(&buf, "%s %s\n", key, value)
-	}
+	writeExtraInfoStats(&buf, stats)
 
 	edSig := signRouterEd25519(signPriv, buf.Bytes())
 	fmt.Fprintf(&buf, "router-sig-ed25519 %s\n",
@@ -518,7 +586,39 @@ func GenerateExtraInfo(keys *RelayKeys, desc *ServerDescriptor, stats map[string
 	fmt.Fprintf(&buf, "router-signature\n")
 	writePEMBlock(&buf, "", "SIGNATURE", sig)
 	extraInfo.RawDescriptor = buf.Bytes()
+	sum256 := sha256.Sum256(extraInfo.RawDescriptor)
+	extraInfo.DigestSHA256 = sum256[:]
+	if err := VerifyExtraInfoDocument(extraInfo.RawDescriptor, keys.Ed25519Public, &keys.RSAPrivate.PublicKey); err != nil {
+		return nil, fmt.Errorf("extra-info self-check failed: %w", err)
+	}
 	return extraInfo, nil
+}
+
+func writeExtraInfoStats(buf *bytes.Buffer, stats map[string]string) {
+	if len(stats) == 0 {
+		return
+	}
+	preferred := []string{"write-history", "read-history", "ipv6-write-history", "ipv6-read-history"}
+	seen := make(map[string]bool, len(preferred))
+	for _, k := range preferred {
+		v := strings.TrimSpace(stats[k])
+		if v == "" {
+			continue
+		}
+		fmt.Fprintf(buf, "%s %s\n", k, v)
+		seen[k] = true
+	}
+	rest := make([]string, 0, len(stats))
+	for k, v := range stats {
+		if seen[k] || strings.TrimSpace(v) == "" {
+			continue
+		}
+		rest = append(rest, k)
+	}
+	sort.Strings(rest)
+	for _, k := range rest {
+		fmt.Fprintf(buf, "%s %s\n", k, strings.TrimSpace(stats[k]))
+	}
 }
 
 // String returns human-readable descriptor summary

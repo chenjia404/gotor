@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"strconv"
@@ -105,6 +106,51 @@ func verifyRouterEd25519Sig(raw []byte, signPub ed25519.PublicKey) error {
 		return fmt.Errorf("router-sig-ed25519 verify failed")
 	}
 	return nil
+}
+
+// VerifyExtraInfoDocument 校验 extra-info 的 identity-ed25519 与双签名。
+func VerifyExtraInfoDocument(raw []byte, edID ed25519.PublicKey, rsaID *rsa.PublicKey) error {
+	if len(raw) == 0 {
+		return fmt.Errorf("empty extra-info")
+	}
+	if !bytes.HasPrefix(raw, []byte("extra-info ")) {
+		return fmt.Errorf("extra-info must start with extra-info")
+	}
+	lineEnd := bytes.IndexByte(raw, '\n')
+	if lineEnd < 0 {
+		return fmt.Errorf("truncated extra-info first line")
+	}
+	fields := strings.Fields(string(raw[:lineEnd]))
+	if len(fields) != 3 {
+		return fmt.Errorf("extra-info first line wants nickname fingerprint")
+	}
+	der := x509.MarshalPKCS1PublicKey(rsaID)
+	sum := sha1.Sum(der) // #nosec G401
+	wantFP := strings.ToUpper(hex.EncodeToString(sum[:]))
+	if fields[2] != wantFP {
+		return fmt.Errorf("extra-info fingerprint mismatch")
+	}
+	idCertDER, err := extractPEMAfterKeyword(raw, "identity-ed25519", "ED25519 CERT")
+	if err != nil {
+		return fmt.Errorf("identity-ed25519: %w", err)
+	}
+	idCert, err := protocol.ParseEd25519Certificate(idCertDER)
+	if err != nil {
+		return fmt.Errorf("parse identity-ed25519: %w", err)
+	}
+	if idCert.CertType != uint8(protocol.CertTypeEd25519Signing) {
+		return fmt.Errorf("identity-ed25519 type %d, want 4", idCert.CertType)
+	}
+	if err := idCert.VerifySignature(edID); err != nil {
+		return fmt.Errorf("identity-ed25519 signature: %w", err)
+	}
+	if ext := idCert.SignedWithEd25519Key(); ext != nil && !bytes.Equal(ext, edID) {
+		return fmt.Errorf("identity-ed25519 signed-with-ed25519-key mismatch")
+	}
+	if err := verifyRouterEd25519Sig(raw, idCert.CertifiedKey); err != nil {
+		return err
+	}
+	return verifyRouterRSASig(raw, rsaID)
 }
 
 func verifyRouterRSASig(raw []byte, rsaID *rsa.PublicKey) error {

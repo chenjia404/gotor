@@ -330,6 +330,49 @@ func TestPublishDescriptor_ContextCancellation(t *testing.T) {
 	}
 }
 
+func TestPublishDescriptorPairConcatenated(t *testing.T) {
+	log := logger.New(slog.LevelInfo, io.Discard)
+	var received []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	pub := NewDescriptorPublisher(PublisherConfig{
+		Authorities: []BridgeAuthority{{URL: server.URL + "/tor/"}},
+	}, log)
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc, extra, err := GenerateDescriptorPair(keys, &DescriptorConfig{
+		Nickname: "PairPub",
+		Address:  "192.0.2.30",
+		ORPort:   9001,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := pub.PublishDescriptorPair(context.Background(), desc, extra)
+	if err != nil || n != 1 {
+		t.Fatalf("pair publish %d %v", n, err)
+	}
+	body := string(received)
+	if !strings.Contains(body, "router PairPub") {
+		t.Fatal("POST 应含 server descriptor")
+	}
+	if !strings.Contains(body, "extra-info PairPub") {
+		t.Fatal("POST 应含 extra-info")
+	}
+	if !strings.Contains(body, "extra-info-digest ") {
+		t.Fatal("描述符应含 extra-info-digest")
+	}
+	if strings.Index(body, "router PairPub") > strings.Index(body, "extra-info PairPub") {
+		t.Fatal("C Tor 顺序：先 router 再 extra-info")
+	}
+}
+
 func TestPublishExtraInfo(t *testing.T) {
 	log := logger.New(slog.LevelInfo, io.Discard)
 
