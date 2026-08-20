@@ -50,7 +50,7 @@ gotor ORPort 9001 ExitRelay 1 ReduceExitPolicy 1 SocksPort 0 \
 - 真网权威落库与 Exit flag 收录：**未验证**，不标 WORKING
 - PT / Bridge / ExtORPort / ServerTransportPlugin 生产路径：明确不做
 - Directory Authority：不做
-- DirPort / BEGIN_DIR 可服务已缓存的 `cached-microdesc-consensus` / `cached-microdescs` / `cached-certs`（`/tor/keys/fp`、`/tor/keys/all`）以及上一份→当前 limited-ed；仍缺多小时历史 / 压缩 / 304，未宣告 DirCache=2
+- DirPort / BEGIN_DIR 可服务已缓存的 `cached-microdesc-consensus` / `cached-microdescs` / `cached-certs`（`/tor/keys/fp`、`/tor/keys/all`）、上一份→当前 limited-ed、gzip/deflate/`.z` 与 If-Modified-Since 304；仍缺多小时历史 / 真网被当缓存，未宣告 DirCache=2
 - 末端跳可受理 ESTABLISH_INTRO / ESTABLISH_RENDEZVOUS 并回 ACK；仍缺 HSDir 收/服务、INTRODUCE1、RENDEZVOUS1，未宣告 HS*
 - 入站可校验 AUTHENTICATE type 3（LinkAuth=3）；普通客户端不认证。无 AuthType 1。
 - ntor-v3 客户端请求 type 3 `[02 06]` 时走 CGO（AES-128 UIV+ / v1）；未请求则仍 tor1。描述符不写 `Relay=5-6`。
