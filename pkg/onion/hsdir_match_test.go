@@ -1,6 +1,7 @@
 package onion
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"testing"
 	"time"
@@ -40,5 +41,15 @@ func TestMatchHSDirDescriptor(t *testing.T) {
 	}
 	if MatchHSDirDescriptor([]byte("hs-descriptor 3\n"), blinded) {
 		t.Fatal("无证书不得命中")
+	}
+	if _, _, err := VerifyHSDirOuterDescriptor(desc.RawDescriptor); err != nil {
+		t.Fatalf("验签外层: %v", err)
+	}
+	tampered := append([]byte(nil), desc.RawDescriptor...)
+	if i := bytes.Index(tampered, []byte("revision-counter")); i >= 0 {
+		tampered[i] ^= 0x01
+	}
+	if _, _, err := VerifyHSDirOuterDescriptor(tampered); err == nil {
+		t.Fatal("改正文必须验签失败")
 	}
 }

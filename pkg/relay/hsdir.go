@@ -2,6 +2,7 @@ package relay
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"strings"
@@ -18,14 +19,15 @@ const (
 )
 
 type hsDirEntry struct {
-	body []byte
-	mod  time.Time
+	body     []byte
+	mod      time.Time
+	revision uint64
 }
 
-// hsDirStore 内存保存已 POST 的 v3 外层描述符。未宣告 HSDir=2。
+// hsDirStore 按盲化公钥保存已验签的 v3 外层描述符。未宣告 HSDir=2。
 type hsDirStore struct {
 	mu      sync.Mutex
-	entries []hsDirEntry
+	byBlind map[string]*hsDirEntry
 }
 
 func (s *hsDirStore) put(body []byte) bool {
@@ -35,18 +37,26 @@ func (s *hsDirStore) put(body []byte) bool {
 	if !strings.HasPrefix(string(body), "hs-descriptor") {
 		return false
 	}
-	desc, err := onion.ParseDescriptor(body)
-	if err != nil || desc == nil || len(desc.DescriptorSigningKeyCert) == 0 {
+	blinded, revision, err := onion.VerifyHSDirOuterDescriptor(body)
+	if err != nil || len(blinded) != 32 {
 		return false
 	}
+	key := hex.EncodeToString(blinded)
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.expireLocked(now)
-	if len(s.entries) >= maxHSDirEntries {
-		s.entries = s.entries[1:]
+	if s.byBlind == nil {
+		s.byBlind = make(map[string]*hsDirEntry)
 	}
-	s.entries = append(s.entries, hsDirEntry{body: append([]byte(nil), body...), mod: now})
+	s.expireLocked(now)
+	if existing, ok := s.byBlind[key]; ok {
+		if revision <= existing.revision {
+			return false
+		}
+	} else if len(s.byBlind) >= maxHSDirEntries {
+		s.evictOldestLocked()
+	}
+	s.byBlind[key] = &hsDirEntry{body: append([]byte(nil), body...), mod: now, revision: revision}
 	return true
 }
 
@@ -58,23 +68,39 @@ func (s *hsDirStore) get(blinded []byte) ([]byte, time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.expireLocked(now)
-	for i := len(s.entries) - 1; i >= 0; i-- {
-		e := s.entries[i]
-		if onion.MatchHSDirDescriptor(e.body, blinded) {
-			return e.body, e.mod, true
-		}
+	e, ok := s.byBlind[hex.EncodeToString(blinded)]
+	if !ok {
+		return nil, time.Time{}, false
 	}
-	return nil, time.Time{}, false
+	return e.body, e.mod, true
 }
 
 func (s *hsDirStore) expireLocked(now time.Time) {
-	kept := s.entries[:0]
-	for _, e := range s.entries {
-		if now.Sub(e.mod) < hsDirTTL {
-			kept = append(kept, e)
+	if s.byBlind == nil {
+		s.byBlind = make(map[string]*hsDirEntry)
+		return
+	}
+	for k, e := range s.byBlind {
+		if now.Sub(e.mod) >= hsDirTTL {
+			delete(s.byBlind, k)
 		}
 	}
-	s.entries = kept
+}
+
+func (s *hsDirStore) evictOldestLocked() {
+	var oldestKey string
+	var oldest time.Time
+	first := true
+	for k, e := range s.byBlind {
+		if first || e.mod.Before(oldest) {
+			oldestKey = k
+			oldest = e.mod
+			first = false
+		}
+	}
+	if oldestKey != "" {
+		delete(s.byBlind, oldestKey)
+	}
 }
 
 func (d *DirCacheServer) serveHSPublish(w http.ResponseWriter, r *http.Request) {

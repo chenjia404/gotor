@@ -1171,7 +1171,6 @@ func parseCertificate(certData []byte) (*Certificate, error) {
 	nExtensions := certData[offset]
 	offset++
 
-	// Parse extensions (skip for now, but account for their size)
 	for i := uint8(0); i < nExtensions; i++ {
 		if offset+2 > len(certData) {
 			return nil, fmt.Errorf("certificate truncated in extension %d", i)
@@ -1181,6 +1180,11 @@ func parseCertificate(certData []byte) (*Certificate, error) {
 		// Extension type (1 byte) + flags (1 byte) + data (extLen bytes)
 		if offset+2+int(extLen) > len(certData) {
 			return nil, fmt.Errorf("certificate truncated in extension %d data", i)
+		}
+		extType := certData[offset]
+		extData := certData[offset+2 : offset+2+int(extLen)]
+		if extType == 0x04 && extLen == 32 && len(extData) == 32 {
+			cert.SignedWithKey = append([]byte(nil), extData...)
 		}
 		offset += 2 + int(extLen)
 	}
@@ -1202,12 +1206,13 @@ func parseCertificate(certData []byte) (*Certificate, error) {
 // Certificate represents a Tor Ed25519 certificate per cert-spec.txt
 // AUDIT-002 FIX: Complete certificate structure
 type Certificate struct {
-	Version    uint8     // Certificate version (must be 1)
-	CertType   uint8     // Certificate type (4 = signing key cert)
-	ExpiresAt  time.Time // Expiration time
-	SigningKey []byte    // The certified Ed25519 public key (32 bytes)
-	Signature  []byte    // Ed25519 signature (64 bytes)
-	SignedData []byte    // All data that was signed (for verification)
+	Version       uint8     // Certificate version (must be 1)
+	CertType      uint8     // Certificate type (4 = signing key cert)
+	ExpiresAt     time.Time // Expiration time
+	SigningKey    []byte    // The certified Ed25519 public key (32 bytes)
+	Signature     []byte    // Ed25519 signature (64 bytes)
+	SignedData    []byte    // All data that was signed (for verification)
+	SignedWithKey []byte    // ExtType 4 signed-with-ed25519-key（type-8 为致盲公钥）
 }
 
 // VerifyDescriptorSignatureWithCertChain performs full certificate chain validation

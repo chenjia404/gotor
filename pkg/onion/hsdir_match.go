@@ -1,10 +1,45 @@
 package onion
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"fmt"
 	"time"
 )
+
+// VerifyHSDirOuterDescriptor 校验 HSDir 外层：type-8 证书未过期、由致盲公钥签发，
+// 且描述符正文由证书内 signing key 签名。HSDir 没有洋葱主身份，不能走
+// ParseDescriptorWithVerification。未宣告 HSDir=2。
+func VerifyHSDirOuterDescriptor(raw []byte) (blinded []byte, revision uint64, err error) {
+	desc, err := ParseDescriptor(raw)
+	if err != nil || desc == nil {
+		return nil, 0, fmt.Errorf("parse descriptor")
+	}
+	if len(desc.DescriptorSigningKeyCert) == 0 || len(desc.Signature) != ed25519.SignatureSize {
+		return nil, 0, fmt.Errorf("descriptor missing type-8 cert or signature")
+	}
+	cert, err := parseCertificate(desc.DescriptorSigningKeyCert)
+	if err != nil || cert.CertType != 8 {
+		return nil, 0, fmt.Errorf("type-8 certificate")
+	}
+	if time.Now().After(cert.ExpiresAt) {
+		return nil, 0, fmt.Errorf("type-8 certificate expired")
+	}
+	if len(cert.SigningKey) != ed25519.PublicKeySize || len(cert.SignedWithKey) != ed25519.PublicKeySize {
+		return nil, 0, fmt.Errorf("type-8 missing certified or signed-with key")
+	}
+	if !ed25519.Verify(ed25519.PublicKey(cert.SignedWithKey), cert.SignedData, cert.Signature) {
+		return nil, 0, fmt.Errorf("type-8 certificate signature")
+	}
+	sigIdx := bytes.Index(raw, []byte("signature "))
+	if sigIdx < 0 {
+		return nil, 0, fmt.Errorf("signature line missing")
+	}
+	if !ed25519.Verify(ed25519.PublicKey(cert.SigningKey), HSDescriptorSignedMaterial(raw[:sigIdx]), desc.Signature) {
+		return nil, 0, fmt.Errorf("descriptor signature")
+	}
+	return append([]byte(nil), cert.SignedWithKey...), desc.RevisionCounter, nil
+}
 
 // MatchHSDirDescriptor 若 raw 外层 type-8 证书由 blinded 公钥签发，则本 HSDir 应按该盲化身份提供此文档。
 // 中继 HSDir 切片用此把 POST 正文索引到 GET /tor/hs/3/<base64>，不宣称 HSDir=2。
@@ -25,6 +60,11 @@ func MatchHSDirDescriptor(raw, blinded []byte) bool {
 
 // BuildSignedHSDescriptor 构造带 type-8 证书的 v3 外层文档，供 HSDir 收/服单测。
 func BuildSignedHSDescriptor(identity ed25519.PrivateKey) (raw, blinded []byte, err error) {
+	return BuildSignedHSDescriptorAtRevision(identity, 1)
+}
+
+// BuildSignedHSDescriptorAtRevision 指定 revision-counter。
+func BuildSignedHSDescriptorAtRevision(identity ed25519.PrivateKey, revision uint64) (raw, blinded []byte, err error) {
 	if len(identity) == 0 {
 		return nil, nil, fmt.Errorf("empty identity")
 	}
@@ -35,7 +75,7 @@ func BuildSignedHSDescriptor(identity ed25519.PrivateKey) (raw, blinded []byte, 
 		Version:         3,
 		Address:         addr,
 		BlindedPubkey:   blinded,
-		RevisionCounter: 1,
+		RevisionCounter: revision,
 		Lifetime:        3 * time.Hour,
 		IntroPoints: []IntroductionPoint{{
 			LinkSpecifiers: []LinkSpecifier{{Type: 0, Data: []byte{192, 0, 2, 1, 0, 80}}},
