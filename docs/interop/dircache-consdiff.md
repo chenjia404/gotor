@@ -28,7 +28,7 @@
 
 对照 dir-spec [standards-compliance](https://spec.torproject.org/dir-spec/standards-compliance.html)。
 
-- `Accept-Encoding: gzip` / `deflate` → 对应 `Content-Encoding`（优先 gzip）
+- `Accept-Encoding: gzip` / `deflate` → 对应 `Content-Encoding`
 - 路径 `.z` **且无** `Accept-Encoding`：zlib deflate，**不**带 `Content-Encoding`（旧客户端）
 - 路径 `.z` **且有** `Accept-Encoding`：按无 `.z` 协商（须在 advertised 集合内编码一次）
 - 共识 `Last-Modified` 用 `valid-after`（UTC）；`If-Modified-Since` ≥ 该时刻则 **304** 无正文。坏 IMS 忽略。
@@ -44,10 +44,19 @@
 - 过滤不改 signed body，diff 缓存键含 FPRLIST。
 - **仍禁止** 在 `proto` 写 `DirCache=2`
 
+## 本切片已做（2026-08-20 x-zstd / x-tor-lzma）
+
+对照 dir-spec [standards-compliance](https://spec.torproject.org/dir-spec/standards-compliance.html)。
+
+- 协商顺序：`x-tor-lzma` → `x-zstd` → `gzip` → `deflate`（与 C Tor 预压缩偏好一致）。
+- `x-zstd`：标准 zstd，单线程实时编码。
+- `x-tor-lzma`：LZMA Alone（非 xz 容器），字典 ≤ 8MiB（preset 6）；只缓存整份共识与 limited-ed（最多 2 份）。
+- FPRLIST 过滤体、证书、microdesc、HS 描述符若请求 lzma，退回 zstd/gzip/deflate，不实时 LZMA。
+- **仍禁止** 在 `proto` 写 `DirCache=2`
+
 ## 明确未做（因此禁止 `DirCache=2`）
 
 - 多小时 / 多份历史共识的 diff 库（客户端落后两期以上只能拿到整份）
-- zstd / lzma
 - ns flavor 与 microdesc 分库存放
 - 真网官方客户端把本中继当 DirCache 的证据；权威 V2Dir 仍取决于 Running / 可达性，不由本切片单独证明
 
