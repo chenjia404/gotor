@@ -55,7 +55,7 @@
 | Relay=6 CGO | WORKING | 真实 3-hop CGO + `IsTor=true` + soak **1059120** 字节 |
 | Conflux=1 | WORKING | 真实双电路 LINK + SOCKS `IsTor=true` ExitIP=`192.42.116.116`（2026-08-19） |
 | Circuit padding (Padding=2) | WORKING | 协商+HS setup+直方图 DROP；**真实验收** `TestRealCircpadNegotiate`：PADDING_NEGOTIATE→PADDING_NEGOTIATED OK（middle Padding=2） |
-| Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB） |
+| Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB）。**vanguards-lite**：HS 电路 L1→固定 L2→目标并落盘（#65）；仍无 L3 / 托管侧 / 共识 `guard-hs-l2-*` |
 | Onion Service v3（托管） | PARTIAL | ESTABLISH_INTRO；ntor rend_circ_nonce；BEGIN_DIR 上传；**type-8 致盲证书 + 双层加密密封**；torrc HiddenService*。剩余：真网发布/INTRODUCE2 回路验收 |
 | Relay / Bridge | PARTIAL | ORPort；入站握手 VERSIONS(2)→CERTS 1/2/4/5/7→AUTH_CHALLENGE→NETINFO（协商后 CircID=4）；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布，`AssumeReachable` 跳过）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池 + 剥层/回程（离线单测，无官方客户端经 middle 出网证据）；DirCache 可提供 consensus-microdesc / micro/all / `/tor/keys` / **上一份→当前 limited-ed**（未宣告 DirCache=2）；末端跳 ESTABLISH_INTRO / ESTABLISH_RENDEZVOUS 回 ACK（未宣告 HS*；无 HSDir / INTRODUCE1 / RENDEZVOUS1）；**ExitRelay 1 出口流**；CREATE2 ntor/ntor-v3；**ntor-v3 type 3 `[02 06]` 则 CGO 剥层/回程**（未宣告 Relay=5-6）；描述符交叉证书与 Ed25519 摘要签名；**extra-info-digest + 观测带宽历史**（无观测不写 history）；**官方 DoS* 键 + CREATE2/每 IP 接线**（默认 auto 关，无共识参数）。未做：真网 Running / 进共识、网桥、真网多跳中继/出口收录验收 |
 | Control Protocol | WORKING | GETINFO/SETCONF/SETEVENTS/SIGNAL/MAPADDRESS；**AUTHCHALLENGE SAFECOOKIE**；COOKIE/HASHEDPASSWORD；事件 CIRC/STREAM/BW/…/NOTICE |
