@@ -16,7 +16,8 @@
 | 路径 | 行为 |
 |------|------|
 | `GET /tor/status-vote/current/consensus-microdesc` 带 `X-Or-Diff-From-Consensus` | 若摘要匹配上一份落盘共识，回 limited-ed；否则回整份当前共识 |
-| `GET /tor/status-vote/current/consensus-microdesc/diff/<HASH>/<FPRLIST>` | 匹配则 200 + limited-ed；否则 404 |
+| `GET /tor/status-vote/current/consensus-microdesc/diff/<HASH>/<FPRLIST>` | 匹配则 200 + limited-ed；FPRLIST 过半签名才返回，否则 404 |
+| `GET /tor/status-vote/current/consensus-microdesc/<FPRLIST>` | 超过半数被请求权威已签名则回过滤后的共识；`all` / 无列表回全部签名 |
 | 同上 `consensus`（非 flavor）路径 | 与现有行为一致：仍服务 `cached-microdesc-consensus` |
 | BEGIN_DIR | 同一 handler |
 | `CacheDirectory/cached-microdesc-consensus.prev` | 换共识时保留上一份，供生成 diff |
@@ -34,11 +35,19 @@
 - 其它落盘文档用文件 mtime。
 - **仍禁止** 在 `proto` 写 `DirCache=2`
 
+## 本切片已做（2026-08-20 FPRLIST）
+
+对照 dir-spec [general-use-http-urls](https://spec.torproject.org/dir-spec/general-use-http-urls.html) 的 FPRLIST。
+
+- `+` 分隔的身份十六进制前缀（2–40 偶数位）；`all` / 空列表 = 不筛选。
+- 按 `directory-signature` 的 identity 前缀保留签名块；须超过半数被请求权威已签名，否则 404。
+- 过滤不改 signed body，diff 缓存键含 FPRLIST。
+- **仍禁止** 在 `proto` 写 `DirCache=2`
+
 ## 明确未做（因此禁止 `DirCache=2`）
 
 - 多小时 / 多份历史共识的 diff 库（客户端落后两期以上只能拿到整份）
 - zstd / lzma
-- 按 FPRLIST 过滤权威签名子集
 - ns flavor 与 microdesc 分库存放
 - 真网官方客户端把本中继当 DirCache 的证据；权威 V2Dir 仍取决于 Running / 可达性，不由本切片单独证明
 
