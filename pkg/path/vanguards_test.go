@@ -263,6 +263,32 @@ func TestVanguardSetExpiresAndRefills(t *testing.T) {
 	}
 }
 
+func TestVanguardSetDropsL2WhenItBecomesPersistL1(t *testing.T) {
+	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	pool := vgPool()
+	if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
+		t.Fatal(err)
+	}
+	l2 := append([]string{}, v.Fingerprints()...)
+	if len(l2) != 4 {
+		t.Fatalf("%v", l2)
+	}
+	promoted := l2[0]
+	p, err := v.SelectHSPath(pool, pool[6], []string{promoted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Guard.Fingerprint != promoted {
+		t.Fatalf("晋升入口应作 L1，got %s", p.Guard.Fingerprint)
+	}
+	if containsFP(v.Fingerprints(), promoted) {
+		t.Fatal("已是入口的节点必须退出 L2")
+	}
+	if len(v.Fingerprints()) != 4 {
+		t.Fatalf("退出后应补满 L2，got %v", v.Fingerprints())
+	}
+}
+
 func TestVanguardSetKeepsL2WhenTargetMatches(t *testing.T) {
 	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	pool := vgPool()
