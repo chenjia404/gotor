@@ -14,7 +14,7 @@
 - Ed25519 + RSA 双签名；发布前自检。
 - 与 C Tor 一样把 router + extra-info **拼成一次 POST**（不再先发无 digest 的描述符再单独 POST extra-info）。
 - 带宽历史只写**已完成**的 900s 观测格；停机空档不补零。无观测则不写 `write-history` / `read-history`。
-- 观测来自 OR 入站 TCP 套接字读写；可读写 C Tor `DataDirectory/state` 的 `BWHistoryReadValues` / `BWHistoryWriteValues` / `*Ends`（不改官方键语义）。`AvoidDiskWrites` 时不落盘。
+- 观测来自 OR 入站 TCP 套接字读写；可读写 C Tor `DataDirectory/state` 的 `BWHistoryReadValues` / `BWHistoryWriteValues` / `*Ends`。**最后一值是未完成桶**，`*Ends` 是该桶结束时刻；未到点不写入 extra-info。`AvoidDiskWrites` 时不落盘。
 
 ## 明确未做
 

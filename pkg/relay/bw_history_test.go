@@ -142,6 +142,7 @@ func TestBandwidthHistoryStateRoundTrip(t *testing.T) {
 
 	loaded := NewBandwidthHistory()
 	loaded.SetStatePath(path)
+	loaded.now = func() time.Time { return now }
 	if err := loaded.Load(); err != nil {
 		t.Fatal(err)
 	}
@@ -156,6 +157,60 @@ func TestBandwidthHistoryStateRoundTrip(t *testing.T) {
 	}
 	if _, ok := again.Get("GuardDummy"); !ok {
 		t.Fatal("Persist 不得丢掉 state 里其它键")
+	}
+}
+
+func TestBandwidthHistoryStateLastValueIsLive(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, datadir.StateFileName)
+	sf := &datadir.StateFile{}
+	sf.Set(bwHistoryReadValues, "10,99")
+	sf.Set(bwHistoryWriteValues, "4,7")
+	sf.Set(bwHistoryReadEnds, "2026-08-20 12:30:00")
+	sf.Set(bwHistoryWriteEnds, "2026-08-20 12:30:00")
+	if err := datadir.SaveState(path, sf, "Tor 0.4.9.11 (gotor)"); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 8, 20, 12, 20, 0, 0, time.UTC)
+	h := NewBandwidthHistory()
+	h.SetStatePath(path)
+	h.now = func() time.Time { return now }
+	if err := h.Load(); err != nil {
+		t.Fatal(err)
+	}
+	stats := h.StatsMap()
+	if stats["read-history"] != "2026-08-20 12:15:00 (900 s) 10" {
+		t.Fatalf("未完成桶不得写入 history: %+v", stats)
+	}
+	if h.curRead != 99 || h.curWrite != 7 {
+		t.Fatalf("live counters read=%d write=%d", h.curRead, h.curWrite)
+	}
+
+	if err := h.Persist(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := datadir.LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := again.Get(bwHistoryReadValues); v != "10,99" {
+		t.Fatalf("Persist 应保留未完成桶: %q", v)
+	}
+	if v, _ := again.Get(bwHistoryReadEnds); v != "2026-08-20 12:30:00" {
+		t.Fatalf("Ends 应为当前桶结束: %q", v)
+	}
+
+	later := time.Date(2026, 8, 20, 12, 30, 0, 0, time.UTC)
+	done := NewBandwidthHistory()
+	done.SetStatePath(path)
+	done.now = func() time.Time { return later }
+	if err := done.Load(); err != nil {
+		t.Fatal(err)
+	}
+	got := done.StatsMap()["read-history"]
+	if got != "2026-08-20 12:30:00 (900 s) 10,99" {
+		t.Fatalf("过了 Ends 后最后一格才完成: %q", got)
 	}
 }
 

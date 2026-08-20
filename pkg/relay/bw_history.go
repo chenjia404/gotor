@@ -62,7 +62,7 @@ func (h *BandwidthHistory) SetStatePath(path string) {
 	h.mu.Unlock()
 }
 
-// Load 从 C Tor state 读入已完成格。官方二进制留下的观测可接着用。
+// Load 从 C Tor state 读入 BWHistory*。最后一格若尚未到 *Ends 则是未完成桶，不写入 extra-info。
 func (h *BandwidthHistory) Load() error {
 	if h == nil || h.statePath == "" {
 		return nil
@@ -73,32 +73,43 @@ func (h *BandwidthHistory) Load() error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	slots, ok := slotsFromState(sf, h.interval)
-	if ok {
-		h.slots = slots
+	now := h.now()
+	st, ok := parseBWState(sf, h.interval, now)
+	if !ok {
+		h.resetCurrentLocked(now)
+		return nil
 	}
-	h.resetCurrentLocked(h.now())
+	h.slots = st.completed
+	if st.hasLive {
+		h.curStart = st.curStart
+		h.curRead = st.curRead
+		h.curWrite = st.curWrite
+	} else {
+		h.resetCurrentLocked(now)
+	}
 	return nil
 }
 
-// Persist 把已完成格写回 state，保留 Guard 等其它键。无观测则不改 BWHistory*。
+// Persist 按 C Tor 语义写回：已完成格 + 当前未完成桶（最后一值），*Ends 为当前桶结束时刻。
 func (h *BandwidthHistory) Persist() error {
 	if h == nil || h.statePath == "" {
 		return nil
 	}
 	h.mu.Lock()
 	h.rotateLocked(h.now())
-	slots := append([]bwSlot(nil), h.slots...)
+	completed := append([]bwSlot(nil), h.slots...)
+	curStart, curRead, curWrite := h.curStart, h.curRead, h.curWrite
+	interval := h.interval
 	path := h.statePath
 	h.mu.Unlock()
-	if len(slots) == 0 {
+	if len(completed) == 0 && curRead == 0 && curWrite == 0 {
 		return nil
 	}
 	sf, err := datadir.LoadState(path)
 	if err != nil {
 		return err
 	}
-	writeSlotsToState(sf, slots)
+	writeSlotsToState(sf, completed, curStart, curRead, curWrite, interval)
 	return datadir.SaveState(path, sf, "Tor 0.4.9.11 (gotor)")
 }
 
@@ -207,9 +218,19 @@ func formatHistoryValue(end time.Time, nsec int, values []uint64) string {
 	return b.String()
 }
 
-func slotsFromState(sf *datadir.StateFile, interval time.Duration) ([]bwSlot, bool) {
+type bwLoaded struct {
+	completed []bwSlot
+	curStart  time.Time
+	curRead   uint64
+	curWrite  uint64
+	hasLive   bool
+}
+
+// parseBWState 按 C Tor：*Ends 是最后一桶的结束时刻；now < Ends 则最后一值是未完成桶。
+func parseBWState(sf *datadir.StateFile, interval time.Duration, now time.Time) (bwLoaded, bool) {
+	var empty bwLoaded
 	if sf == nil {
-		return nil, false
+		return empty, false
 	}
 	readStr, okR := sf.Get(bwHistoryReadValues)
 	writeStr, okW := sf.Get(bwHistoryWriteValues)
@@ -218,55 +239,81 @@ func slotsFromState(sf *datadir.StateFile, interval time.Duration) ([]bwSlot, bo
 		endStr, okE = sf.Get(bwHistoryWriteEnds)
 	}
 	if !okR || !okW || !okE {
-		return nil, false
+		return empty, false
 	}
 	reads, ok := parseUintList(readStr)
 	if !ok {
-		return nil, false
+		return empty, false
 	}
 	writes, ok := parseUintList(writeStr)
 	if !ok {
-		return nil, false
+		return empty, false
 	}
 	end, err := time.ParseInLocation("2006-01-02 15:04:05", strings.TrimSpace(endStr), time.UTC)
 	if err != nil {
-		return nil, false
+		return empty, false
 	}
 	n := len(reads)
 	if len(writes) < n {
 		n = len(writes)
 	}
 	if n == 0 {
-		return nil, false
+		return empty, false
 	}
 	reads = reads[len(reads)-n:]
 	writes = writes[len(writes)-n:]
 	nsec := intervalSeconds(interval)
-	slots := make([]bwSlot, n)
-	for i := 0; i < n; i++ {
-		slots[i] = bwSlot{
-			End:   end.Add(-time.Duration(n-1-i) * time.Duration(nsec) * time.Second),
-			Read:  reads[i],
-			Write: writes[i],
+	dur := time.Duration(nsec) * time.Second
+	live := now.Before(end)
+	completedN := n
+	out := bwLoaded{}
+	if live {
+		completedN = n - 1
+		out.hasLive = true
+		out.curStart = end.Add(-dur)
+		out.curRead = reads[n-1]
+		out.curWrite = writes[n-1]
+	}
+	if completedN > 0 {
+		if completedN > maxBWIntervals {
+			reads = reads[completedN-maxBWIntervals : completedN]
+			writes = writes[completedN-maxBWIntervals : completedN]
+			completedN = maxBWIntervals
+		} else {
+			reads = reads[:completedN]
+			writes = writes[:completedN]
+		}
+		lastCompletedEnd := end
+		if live {
+			lastCompletedEnd = end.Add(-dur)
+		}
+		out.completed = make([]bwSlot, completedN)
+		for i := 0; i < completedN; i++ {
+			out.completed[i] = bwSlot{
+				End:   lastCompletedEnd.Add(-time.Duration(completedN-1-i) * dur),
+				Read:  reads[i],
+				Write: writes[i],
+			}
 		}
 	}
-	if len(slots) > maxBWIntervals {
-		slots = slots[len(slots)-maxBWIntervals:]
-	}
-	return slots, true
+	return out, true
 }
 
-func writeSlotsToState(sf *datadir.StateFile, slots []bwSlot) {
-	if sf == nil || len(slots) == 0 {
+func writeSlotsToState(sf *datadir.StateFile, completed []bwSlot, curStart time.Time, curRead, curWrite uint64, interval time.Duration) {
+	if sf == nil {
 		return
 	}
-	reads := make([]string, len(slots))
-	writes := make([]string, len(slots))
-	for i, s := range slots {
+	n := len(completed) + 1
+	reads := make([]string, n)
+	writes := make([]string, n)
+	for i, s := range completed {
 		reads[i] = strconv.FormatUint(s.Read, 10)
 		writes[i] = strconv.FormatUint(s.Write, 10)
 	}
-	end := slots[len(slots)-1].End.UTC().Format("2006-01-02 15:04:05")
+	reads[n-1] = strconv.FormatUint(curRead, 10)
+	writes[n-1] = strconv.FormatUint(curWrite, 10)
+	nsec := intervalSeconds(interval)
+	end := curStart.Add(time.Duration(nsec) * time.Second).UTC().Format("2006-01-02 15:04:05")
 	sf.Set(bwHistoryReadValues, strings.Join(reads, ","))
 	sf.Set(bwHistoryWriteValues, strings.Join(writes, ","))
 	sf.Set(bwHistoryReadEnds, end)
