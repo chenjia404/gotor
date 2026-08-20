@@ -61,7 +61,7 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 | 角色 | 已对齐（含真网证据） | PARTIAL | 官方有我们没有 |
 |------|----------------------|---------|----------------|
 | **客户端** | 共识 9/9 验签、`cached-certs` 重启 0 次 `/tor/keys/fp`、DirCache=2 consdiff、microdesc、Link TLS+CERTS type 7、默认 ntor-v3 CREATE2/EXTEND2、3-hop SOCKS5 `IsTor=true`、RESOLVE、FlowCtrl=2 Vegas soak、Relay=5/6 CGO、Conflux=1、EXTEND2 IPv6、`p`/`p6` 出口策略、Desc=4 family-ids、Padding=2 协商 ACK、v3 `.onion` 客户端 HTTP 200 | Guard 选路与官方指纹仍可能有差异；Fast/MiddleOnly/BadExit 已强制但未单独真网标 WORKING；circpad token-removal；**vanguards-lite 固定 L2**（无 L3 / 无托管侧 / 无共识 `guard-hs-l2-*`） | 完整 vanguards（L3）；完整 PT/网桥客户端生产路径；与 Tor Browser 同级的隔离/反指纹 |
-| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；**ntor-v3 type 3 `[02 06]` 则 CGO 剥层/回程**（未宣告 Relay=5-6）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 consensus-microdesc、micro/all、`/tor/keys`、**上一份→当前 limited-ed**、**gzip/deflate/`.z` / 304**（未宣告 DirCache=2）；末端跳可回 `INTRO_ESTABLISHED` / `RENDEZVOUS_ESTABLISHED`（未宣告 HS*）；**extra-info-digest 交叉引用 + 观测带宽历史**（无观测不写 history）；**官方 DoS* 键 + CREATE2/每 IP 接线**（默认 auto 关） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（多小时历史 diff / 真网被当缓存）；HSDir 收/服务、INTRODUCE1、RENDEZVOUS1；真网被请求 CGO 的证据；共识驱动的完整 dos.c；完整 extra-info（dirreq/exit/conn-bi-direct 与真网归档） |
+| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；**ntor-v3 type 3 `[02 06]` 则 CGO 剥层/回程**（未宣告 Relay=5-6）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 consensus-microdesc、micro/all、`/tor/keys`、**上一份→当前 limited-ed**、**gzip/deflate/`.z` / 304**（未宣告 DirCache=2）；末端跳 ESTABLISH + **INTRODUCE1→INTRODUCE2 / RENDEZVOUS1→RENDEZVOUS2** + **HSDir `/tor/hs/3` 验签收/服**（未宣告 HS*）；**extra-info-digest 交叉引用 + 观测带宽历史**（无观测不写 history）；**官方 DoS* 键 + CREATE2/每 IP 接线**（默认 auto 关） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（多小时历史 diff / 真网被当缓存）；真网被选为 intro/rend/HSDir；HS* proto（限速/生命周期/哈希环）；真网被请求 CGO 的证据；共识驱动的完整 dos.c；完整 extra-info（dirreq/exit/conn-bi-direct 与真网归档） |
 | **洋葱托管** | 无（未上线） | ESTABLISH_INTRO；ntor `rend_circ_nonce`；BEGIN_DIR 上传；type-8 致盲证书 + 双层加密密封；torrc `HiddenService*` | **真网发布后被客户端找到并完成 INTRODUCE2→RENDEZVOUS**；官方 intro/rend 生命周期与限速；vanguards |
 | **网桥 / PT** | 无 | `pkg/pt` 子进程框架、obfs4 配置解析、本地 integration 桩 | 向 BridgeAuth 生产发布；客户端经官方 PT 进网；网桥描述符/统计与 C Tor 对齐 |
 | **控制端口** | AUTHENTICATE；**AUTHCHALLENGE SAFECOOKIE**；COOKIE / HASHEDPASSWORD；GETINFO/GETCONF/SETCONF 子集；SETEVENTS（CIRC/STREAM/BW/NOTICE 等）；SIGNAL；MAPADDRESS | GETINFO 键远少于 control-spec；`version` 仍回 `go-tor 0.1.0`（CLI `--version` 已报 `0.4.9.11 (gotor)`） | ADD_ONION / DEL_ONION；EXTENDCIRCUIT / ATTACHSTREAM；HSFETCH / HSPOST；USEFEATURE；完整 `circuit-status` / `ns/id` / `desc/id` 等 |
@@ -132,11 +132,11 @@ proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ### 4. HSDir / intro / rend 中继角色
 
-- [ ] **状态**：PARTIAL（中继末端跳可校验 ESTABLISH_INTRO 并回 INTRO_ESTABLISHED，受理 ESTABLISH_RENDEZVOUS 并回 RENDEZVOUS_ESTABLISHED；CREATE2 保存 `rend_circ_nonce`。未宣告 HS*。**无** HSDir 收/服务、INTRODUCE1、RENDEZVOUS1，**无**真网被选为 intro/rend/HSDir 证据）
-- **现有代码**：客户端 `pkg/onion/onion.go`、`pkg/onion/hsdir_index.go`、`pkg/onion/begindir.go`、`pkg/onion/establish_intro.go`。中继 `pkg/relay/hsintro.go`、`pkg/relay/hsrend.go`、`pkg/relay/forwarding.go`、`pkg/relay/circuit_handler.go`。互操作 `docs/interop/hs-intro-rend.md`。
-- **已做（协议切片，2026-08-20）**：ntor / ntor-v3 服务端展开 circ_nonce；`VerifyEstablishIntroPayload` 后回 38；20 字节 cookie 后回 39；重复/坏 MAC/`StreamID≠0` 则 DESTROY。描述符 proto **禁止** `HSDir=` / `HSIntro=` / `HSRend=`。
-- **要做（未达 HS* proto）**：HSDir=2 收/服务 v3 描述符；INTRODUCE1 转发；RENDEZVOUS1；引言点/会合点生命周期与限速。在此之前 **禁止** 在 `proto` 写 HS*。
-- **禁止**：描述符写上 HSDir/HSIntro/HSRend 但收到 cell 就 DESTROY；用电路 ntor 冒充 hs-ntor；把 ACK 单测写成「已具备完整 HS 中继角色」。
+- [ ] **状态**：PARTIAL（末端跳 ESTABLISH + **INTRODUCE1 转发 INTRODUCE2 / ACK** + **RENDEZVOUS1 会合并拼电路** + **HSDir `/tor/hs/3` 验签收/服**。未宣告 HS*。**无**真网被选为 intro/rend/HSDir 证据）
+- **现有代码**：客户端 `pkg/onion/onion.go`、`pkg/onion/hsdir_index.go`、`pkg/onion/begindir.go`、`pkg/onion/establish_intro.go`、`pkg/onion/hsdir_match.go`。中继 `pkg/relay/hsintro.go`、`pkg/relay/hsrend.go`、`pkg/relay/hsdir.go`、`pkg/relay/forwarding.go`、`pkg/relay/circuit_handler.go`。互操作 `docs/interop/hs-intro-rend.md`。
+- **已做（协议切片，2026-08-20，#69）**：INTRODUCE1 按 AUTH_KEY 转发；RENDEZVOUS1 cookie 一次性取出后发 RENDEZVOUS2 并拼接；HSDir POST 验 type-8/正文签名，revision 只取自签名覆盖范围，按盲化公钥覆盖更高修订。描述符 proto **禁止** `HSDir=` / `HSIntro=` / `HSRend=`。
+- **要做（未达 HS* proto）**：引言点/会合点限速与官方生命周期；HSDir 哈希环责任与副本；真网被选。在此之前 **禁止** 在 `proto` 写 HS*。
+- **禁止**：描述符写上 HSDir/HSIntro/HSRend 但收到 cell 就 DESTROY；用电路 ntor 冒充 hs-ntor；把离线单测写成「已具备完整 HS 中继角色」。
 
 ### 5. LinkAuth=3 服务端
 
