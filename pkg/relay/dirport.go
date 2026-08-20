@@ -41,18 +41,15 @@ type DirCacheServer struct {
 	srv      *http.Server
 	ln       net.Listener
 
-	diffMu    sync.Mutex
-	diffSlots [dirDiffCacheSlots]dirDiffSlot
+	diffMu     sync.Mutex
+	diffTo     string
+	diffByFrom map[string]string
+	diffWait   map[string]chan struct{}
 
 	hs *hsDirStore
 }
 
-// 只缓存「未过滤」历史→当前 diff。槽数对齐 hist 上限，避免 72 个已知 FromDigest 反复 LCS。
-const dirDiffCacheSlots = 72
-
-type dirDiffSlot struct {
-	from, to, fpr, diff string
-}
+const maxCachedConsensusDiffs = 72
 
 func NewDirCacheServer(cacheDir string, log *logger.Logger) *DirCacheServer {
 	if log == nil {
@@ -271,41 +268,65 @@ func (d *DirCacheServer) diffFromHashes(hashes []string, curr, fprKey string) (s
 		return "", false
 	}
 
-	d.diffMu.Lock()
-	defer d.diffMu.Unlock()
-	if diff, hit := d.lookupDiffSlot(from, to, fprKey); hit {
-		return diff, true
-	}
-	diff, err := directory.GenerateConsensusDiff(prev, curr)
-	if err != nil {
-		if d.logger != nil {
-			d.logger.Warn("consdiff generate failed; serving full consensus instead", "error", err)
+	for {
+		d.diffMu.Lock()
+		if d.diffTo != to {
+			d.diffByFrom = make(map[string]string, 8)
+			d.diffTo = to
 		}
-		return "", false
-	}
-	d.storeDiffSlot(from, to, fprKey, diff)
-	return diff, true
-}
-
-func (d *DirCacheServer) lookupDiffSlot(from, to, fpr string) (string, bool) {
-	for i := range d.diffSlots {
-		s := &d.diffSlots[i]
-		if s.diff == "" || s.from != from || s.to != to || s.fpr != fpr {
+		if d.diffByFrom == nil {
+			d.diffByFrom = make(map[string]string, 8)
+		}
+		if diff, ok := d.diffByFrom[from]; ok {
+			d.diffMu.Unlock()
+			return diff, true
+		}
+		if ch, waiting := d.diffWait[from]; waiting {
+			d.diffMu.Unlock()
+			<-ch
 			continue
 		}
-		if i > 0 {
-			hit := *s
-			copy(d.diffSlots[1:i+1], d.diffSlots[:i])
-			d.diffSlots[0] = hit
+		if d.diffWait == nil {
+			d.diffWait = make(map[string]chan struct{})
 		}
-		return d.diffSlots[0].diff, true
-	}
-	return "", false
-}
+		// 同时只跑一份 LCS，避免未鉴权并发把 CPU 打满。
+		if len(d.diffWait) > 0 {
+			var ch chan struct{}
+			for _, c := range d.diffWait {
+				ch = c
+				break
+			}
+			d.diffMu.Unlock()
+			<-ch
+			continue
+		}
+		done := make(chan struct{})
+		d.diffWait[from] = done
+		d.diffMu.Unlock()
 
-func (d *DirCacheServer) storeDiffSlot(from, to, fpr, diff string) {
-	copy(d.diffSlots[1:], d.diffSlots[:dirDiffCacheSlots-1])
-	d.diffSlots[0] = dirDiffSlot{from: from, to: to, fpr: fpr, diff: diff}
+		diff, err := directory.GenerateConsensusDiff(prev, curr)
+
+		d.diffMu.Lock()
+		delete(d.diffWait, from)
+		if err == nil && d.diffTo == to {
+			if len(d.diffByFrom) >= maxCachedConsensusDiffs {
+				for k := range d.diffByFrom {
+					delete(d.diffByFrom, k)
+					break
+				}
+			}
+			d.diffByFrom[from] = diff
+		}
+		close(done)
+		d.diffMu.Unlock()
+		if err != nil {
+			if d.logger != nil {
+				d.logger.Warn("consdiff generate failed; serving full consensus instead", "error", err)
+			}
+			return "", false
+		}
+		return diff, true
+	}
 }
 
 func (d *DirCacheServer) readCachedFile(name string) (string, bool) {

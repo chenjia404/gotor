@@ -306,6 +306,26 @@ func TestDirCacheServesDiffFromTwoPeriodsAgo(t *testing.T) {
 	}
 }
 
+func TestDirCacheConsensusDiffCachedOnSecondHit(t *testing.T) {
+	dir := t.TempDir()
+	prev, curr := writeConsensusPair(t, dir)
+	s := NewDirCacheServer(dir, nil)
+	hash := directory.ConsensusDiffFromDigest(prev)
+	want, err := directory.GenerateConsensusDiff(prev, curr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+		req.Header.Set("X-Or-Diff-From-Consensus", hash)
+		rec := httptest.NewRecorder()
+		s.handler().ServeHTTP(rec, req)
+		if rec.Body.String() != want {
+			t.Fatalf("第 %d 次应命中同一 limited-ed", i+1)
+		}
+	}
+}
+
 func TestDirCacheServesConsensusDiffURL(t *testing.T) {
 	dir := t.TempDir()
 	prev, _ := writeConsensusPair(t, dir)
