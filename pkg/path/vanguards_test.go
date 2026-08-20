@@ -273,13 +273,23 @@ func TestVanguardSetDropsL2WhenItBecomesPersistL1(t *testing.T) {
 	if len(l2) != 4 {
 		t.Fatalf("%v", l2)
 	}
-	promoted := l2[0]
+	targetFP := strings.ToUpper(pool[6].Fingerprint)
+	promoted := ""
+	for _, fp := range l2 {
+		if fp != targetFP {
+			promoted = fp
+			break
+		}
+	}
+	if promoted == "" {
+		t.Fatal("L2 除目标外应有可晋升入口")
+	}
 	p, err := v.SelectHSPath(pool, pool[6], []string{promoted})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if p.Guard.Fingerprint != promoted {
-		t.Fatalf("晋升入口应作 L1，got %s", p.Guard.Fingerprint)
+		t.Fatalf("晋升入口应作 L1，got %s persist=%s beforeL2=%v afterL2=%v", p.Guard.Fingerprint, promoted, l2, v.Fingerprints())
 	}
 	if containsFP(v.Fingerprints(), promoted) {
 		t.Fatal("已是入口的节点必须退出 L2")
