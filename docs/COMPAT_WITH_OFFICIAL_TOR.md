@@ -61,7 +61,7 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 | 角色 | 已对齐（含真网证据） | PARTIAL | 官方有我们没有 |
 |------|----------------------|---------|----------------|
 | **客户端** | 共识 9/9 验签、`cached-certs` 重启 0 次 `/tor/keys/fp`、DirCache=2 consdiff、microdesc、Link TLS+CERTS type 7、默认 ntor-v3 CREATE2/EXTEND2、3-hop SOCKS5 `IsTor=true`、RESOLVE、FlowCtrl=2 Vegas soak、Relay=5/6 CGO、Conflux=1、EXTEND2 IPv6、`p`/`p6` 出口策略、Desc=4 family-ids、Padding=2 协商 ACK、v3 `.onion` 客户端 HTTP 200 | Guard 选路与官方指纹仍可能有差异；Fast/MiddleOnly/BadExit 已强制但未单独真网标 WORKING；circpad token-removal | Vanguards-lite；完整 PT/网桥客户端生产路径；与 Tor Browser 同级的隔离/反指纹 |
-| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；CREATE2 经典 ntor / ntor-v3；EXTEND2→CREATE2→EXTENDED2 剥层转发（仅本地/单测）；出口策略解码与 EXIT 流（实验） | **进共识 `Running`**；self-test / 可达性电路；真网当中间跳；对外 DirCache=2（含 consdiff、`/tor/keys`、BEGIN_DIR 完整）；HSDir=2 / HSIntro=4-5 / HSRend=2 中继角色；LinkAuth=3 服务端；relay 侧 CGO；官方级 DoS；完整 extra-info |
+| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；EXTEND2→CREATE2→EXTENDED2 剥层转发（仅本地/单测）；出口策略解码与 EXIT 流（实验） | **进共识 `Running`**；真网当中间跳；对外 DirCache=2（含 consdiff、`/tor/keys`、BEGIN_DIR 完整）；HSDir=2 / HSIntro=4-5 / HSRend=2 中继角色；LinkAuth=3 服务端；relay 侧 CGO；官方级 DoS；完整 extra-info |
 | **洋葱托管** | 无（未上线） | ESTABLISH_INTRO；ntor `rend_circ_nonce`；BEGIN_DIR 上传；type-8 致盲证书 + 双层加密密封；torrc `HiddenService*` | **真网发布后被客户端找到并完成 INTRODUCE2→RENDEZVOUS**；官方 intro/rend 生命周期与限速；vanguards |
 | **网桥 / PT** | 无 | `pkg/pt` 子进程框架、obfs4 配置解析、本地 integration 桩 | 向 BridgeAuth 生产发布；客户端经官方 PT 进网；网桥描述符/统计与 C Tor 对齐 |
 | **控制端口** | AUTHENTICATE；**AUTHCHALLENGE SAFECOOKIE**；COOKIE / HASHEDPASSWORD；GETINFO/GETCONF/SETCONF 子集；SETEVENTS（CIRC/STREAM/BW/NOTICE 等）；SIGNAL；MAPADDRESS | GETINFO 键远少于 control-spec；`version` 仍回 `go-tor 0.1.0`（CLI `--version` 已报 `0.4.9.11 (gotor)`） | ADD_ONION / DEL_ONION；EXTENDCIRCUIT / ATTACHSTREAM；HSFETCH / HSPOST；USEFEATURE；完整 `circuit-status` / `ns/id` / `desc/id` 等 |
@@ -70,7 +70,7 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 
 ### 实验中继现状（2026-08-19）
 
-实验中继：权威已收描述符，投票可见 **Valid / V2Dir**，**缺 Running**，**未进共识**。ORPort 通 ≠ 上线。
+实验中继：权威已收描述符，投票可见 **Valid / V2Dir**，**缺 Running**，**未进共识**。入站握手与本端 self-test 已有实现；self-test 成功 ≠ 权威 Running。ORPort 通 ≠ 上线。
 
 ---
 
@@ -109,10 +109,10 @@ proto Link=3-5 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ### 1. 中继进共识（Running / self-test）
 
-- [ ] **状态**：PARTIAL（描述符可上传；入站 VERSIONS 后已发 CERTS type 1/2/4/5/7 + AUTH_CHALLENGE + NETINFO，CircID 协商后切 4 字节；权威作为发起方时跳过其 CERTS/AUTHENTICATE。实验中继有 Valid/V2Dir、无 Running，self-test 未做）
-- **现有代码**：`pkg/relay/or_handler.go`、`pkg/relay/or_certs.go`、`pkg/relay/descriptor.go`、`pkg/relay/publisher.go`、`pkg/relay/server.go`（`startPublisher`）、`pkg/relay/descriptor_verify.go`
-- **要做**：对照 C Tor `router.c` / `routerkeys.c` 的 reachability self-test（经电路连回自己的 ORPort）；修复 `proto` 只宣告已实现能力；确认权威投票出现 `Running` 且进入共识 `r` 行。
-- **禁止**：把权威 200 或 Valid 写成「已进共识」；伪造 Running；全零 identity / ntor key。
+- [ ] **状态**：PARTIAL（入站握手已修：VERSIONS 后 CERTS type 1/2/4/5/7 + AUTH_CHALLENGE + NETINFO，CircID 协商后切 4 字节。self-test 已接到发布门闩：未成功且未 `AssumeReachable` 则不 POST；成功经已有客户端电路 EXTEND2 到本 ORPort。实验中继仍仅 Valid/V2Dir，**缺真网 Running**，未进共识）
+- **现有代码**：`pkg/relay/selftest.go`、`pkg/client/selftest.go`、`pkg/relay/or_handler.go`、`pkg/relay/or_certs.go`、`pkg/relay/descriptor.go`、`pkg/relay/publisher.go`、`pkg/relay/server.go`（`startPublisher`）、`pkg/relay/descriptor_verify.go`
+- **要做**：观察权威投票是否出现 `Running` 并进入共识 `r` 行；修复 `proto` 只宣告已实现能力。self-test 成功或权威 200 **仍不等于** Running。
+- **禁止**：把权威 200、Valid 或本端 self-test 成功写成「已进共识」；伪造 Running；全零 identity / ntor key。
 
 ### 2. 真网当中间跳
 
