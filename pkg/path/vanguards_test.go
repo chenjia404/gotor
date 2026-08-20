@@ -222,14 +222,16 @@ func TestVanguardSetAvoidDisk(t *testing.T) {
 }
 
 func TestVanguardSetExpiresAndRefills(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, datadir.StateFileName)
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{StatePath: state, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	v.nowFn = func() time.Time { return now }
 	pool := vgPool()
 	if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
 		t.Fatal(err)
 	}
-	before := append([]string{}, v.Fingerprints()...)
+	oldUntil := now.Add(time.Hour).Unix()
 	now = now.Add(2 * time.Hour)
 	if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
 		t.Fatal(err)
@@ -238,14 +240,26 @@ func TestVanguardSetExpiresAndRefills(t *testing.T) {
 	if len(after) != 4 {
 		t.Fatalf("过期后应补满 4，got %v", after)
 	}
-	same := 0
-	for _, fp := range before {
-		if containsFP(after, fp) {
-			same++
-		}
+	sf, err := datadir.LoadState(state)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if same == 4 {
-		t.Fatal("全部过期后不应原样保留")
+	raw, ok := sf.Get(hsLayer2GuardsStateKey)
+	if !ok || raw == "" {
+		t.Fatal("过期重填后应落盘新寿命")
+	}
+	for _, tok := range strings.Split(raw, ",") {
+		_, exp, found := strings.Cut(tok, "=")
+		if !found {
+			t.Fatalf("坏条目 %q", tok)
+		}
+		sec, err := parseUnixSeconds(exp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sec <= oldUntil {
+			t.Fatalf("过期条目未换新寿命: %s", tok)
+		}
 	}
 }
 
