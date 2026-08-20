@@ -610,7 +610,7 @@ func (m *ExitStreamManager) pumpRemoteToClient(ctx context.Context, circ *Server
 			m.teardown(es)
 		}
 	}()
-	buf := make([]byte, 498)
+	buf := make([]byte, exitRelayDataChunk(circ))
 	for {
 		select {
 		case <-ctx.Done():
@@ -682,6 +682,13 @@ func (m *ExitStreamManager) consumeOutWindow(circID uint32, streamID uint16) {
 	}
 }
 
+func exitRelayDataChunk(circ *ServerCircuit) int {
+	if circ != nil && circ.crypto != nil && circ.crypto.usesCGO() {
+		return cell.RelayCellMaxDataV1(cell.RelayData)
+	}
+	return cell.PayloadLen - cell.RelayCellHeaderLen
+}
+
 func (m *ExitStreamManager) sendEnd(circ *ServerCircuit, clientConn net.Conn, streamID uint16, reason byte) error {
 	return m.sendRelay(circ, clientConn, streamID, cell.RelayEnd, []byte{reason})
 }
@@ -691,21 +698,12 @@ func (m *ExitStreamManager) sendRelay(circ *ServerCircuit, clientConn net.Conn, 
 	if err != nil {
 		return err
 	}
-	plain, err := rc.Encode()
-	if err != nil {
-		return err
-	}
-	if len(plain) != 509 {
-		out := make([]byte, 509)
-		copy(out, plain)
-		plain = out
-	}
 	circ.mu.Lock()
 	defer circ.mu.Unlock()
 	if circ.crypto == nil {
 		return fmt.Errorf("circuit crypto gone")
 	}
-	enc, err := circ.crypto.encryptOutbound(plain)
+	enc, err := circ.crypto.originateRelay(rc)
 	if err != nil {
 		return err
 	}

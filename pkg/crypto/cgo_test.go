@@ -257,6 +257,17 @@ func TestCGOKeyMaterialLen(t *testing.T) {
 	if _, err := NewCGOPairFromKeyMaterial(make([]byte, 72)); err == nil {
 		t.Fatal("must reject tor1 72-byte material")
 	}
+	if _, err := NewCGORelayPairFromKeyMaterial(make([]byte, 72)); err == nil {
+		t.Fatal("relay pair must reject tor1 72-byte material")
+	}
+	keys := bytes.Repeat([]byte{0x66}, CGOKeyMaterialLen)
+	relay, err := NewCGORelayPairFromKeyMaterial(keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relay.Fwd.decrypt || relay.Back.decrypt {
+		t.Fatal("中继对必须是 ENC_UIV")
+	}
 }
 
 func etDirFromKeys(t *testing.T, keys []byte) *CGODir {

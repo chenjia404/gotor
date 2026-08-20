@@ -154,7 +154,7 @@ func (h *ForwardingHandler) forwardExtendedFromClient(ctx context.Context, ext *
 	if !ok || circ == nil || circ.crypto == nil {
 		return h.forwardOpaqueToNextHop(ext, c)
 	}
-	peeled, forUs, digest, err := circ.crypto.peelInbound(c.Payload)
+	peeled, forUs, digest, err := circ.crypto.peelInboundWithAD(c.Payload, cgoAD(c.Command))
 	if err != nil {
 		return err
 	}
@@ -162,7 +162,7 @@ func (h *ForwardingHandler) forwardExtendedFromClient(ctx context.Context, ext *
 		if h.circuits.exits != nil {
 			h.circuits.exits.NoteFwdDigest(circuitID, digest)
 		}
-		relayCell, err := cell.DecodeRelayCell(peeled)
+		relayCell, err := circ.crypto.decodeRelay(peeled)
 		if err != nil {
 			return fmt.Errorf("invalid local relay cell: %w", err)
 		}
@@ -242,7 +242,7 @@ func (h *ForwardingHandler) forwardCellToClient(ext *ExtendedCircuit, c *cell.Ce
 		if len(payload) != 509 {
 			return fmt.Errorf("invalid relay payload len %d", len(payload))
 		}
-		enc, err := circ.crypto.encryptOutbound(payload)
+		enc, err := circ.crypto.wrapOutbound(payload, cgoAD(c.Command))
 		if err != nil {
 			return err
 		}

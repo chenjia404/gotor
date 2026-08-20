@@ -68,6 +68,23 @@ func NewCGOPairFromKeyMaterial(keys []byte) (*CGOPair, error) {
 	return &CGOPair{Fwd: fwd, Back: back}, nil
 }
 
+// NewCGORelayPairFromKeyMaterial 从同一 160 字节建立中继 CGO（ENC_UIV）。
+// 布局与客户端相同；decrypt=false。二者不可对调。
+func NewCGORelayPairFromKeyMaterial(keys []byte) (*CGOPair, error) {
+	if len(keys) != CGOKeyMaterialLen {
+		return nil, fmt.Errorf("CGO key material length %d, want %d", len(keys), CGOKeyMaterialLen)
+	}
+	fwd, err := newCGODir(keys[:CGODirKeyLen], false)
+	if err != nil {
+		return nil, err
+	}
+	back, err := newCGODir(keys[CGODirKeyLen:], false)
+	if err != nil {
+		return nil, err
+	}
+	return &CGOPair{Fwd: fwd, Back: back}, nil
+}
+
 func newCGODir(keys []byte, decrypt bool) (*CGODir, error) {
 	if len(keys) != CGODirKeyLen {
 		return nil, fmt.Errorf("CGO direction key length %d, want %d", len(keys), CGODirKeyLen)

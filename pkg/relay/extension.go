@@ -572,18 +572,16 @@ func (h *ExtensionHandler) sendExtended2(circuitID uint32, handshakeResponse []b
 		StreamID: 0,
 		Data:     data,
 	}
-	plain, err := relayCell.Encode()
-	if err != nil {
-		return fmt.Errorf("failed to encode relay cell: %w", err)
-	}
-
 	circ, ok := h.circuits.GetCircuit(circuitID)
 	if !ok || circ == nil || circ.crypto == nil {
 		// 单元测试/无加密状态：仅验证可编码
+		if _, err := relayCell.Encode(); err != nil {
+			return fmt.Errorf("failed to encode relay cell: %w", err)
+		}
 		h.logger.Debug("EXTENDED2 prepared without crypto", "circuit_id", circuitID)
 		return nil
 	}
-	encrypted, err := circ.crypto.encryptOutbound(plain)
+	encrypted, err := circ.crypto.originateRelay(relayCell)
 	if err != nil {
 		return fmt.Errorf("encrypt EXTENDED2: %w", err)
 	}

@@ -68,18 +68,9 @@ func sendRelayToClient(circ *ServerCircuit, clientConn net.Conn, streamID uint16
 	if err != nil {
 		return err
 	}
-	plain, err := rc.Encode()
-	if err != nil {
-		return err
-	}
-	if len(plain) != 509 {
-		out := make([]byte, 509)
-		copy(out, plain)
-		plain = out
-	}
 	circ.mu.Lock()
 	defer circ.mu.Unlock()
-	enc, err := circ.crypto.encryptOutbound(plain)
+	enc, err := circ.crypto.originateRelay(rc)
 	if err != nil {
 		return err
 	}

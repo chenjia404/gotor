@@ -17,7 +17,7 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 	if !ok || circ == nil || circ.crypto == nil {
 		return fmt.Errorf("circuit %d crypto unavailable", circuitID)
 	}
-	plain, digest, err := circ.crypto.decryptInbound(c.Payload)
+	plain, digest, err := circ.crypto.decryptInboundWithAD(c.Payload, cgoAD(c.Command))
 	if err != nil {
 		if strings.Contains(err.Error(), "digest mismatch") {
 			h.logger.Warn("relay digest mismatch, destroying circuit", "circuit_id", circuitID)
@@ -33,7 +33,7 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 	if h.circuits.exits != nil {
 		h.circuits.exits.NoteFwdDigest(circuitID, digest)
 	}
-	relayCell, err := cell.DecodeRelayCell(plain)
+	relayCell, err := circ.crypto.decodeRelay(plain)
 	if err != nil {
 		return fmt.Errorf("invalid relay cell: %w", err)
 	}
@@ -118,18 +118,9 @@ func (h *ForwardingHandler) rejectExitAttempt(circ *ServerCircuit, clientConn ne
 	if err != nil {
 		return err
 	}
-	plain, err := rc.Encode()
-	if err != nil {
-		return err
-	}
-	if len(plain) < 509 {
-		pad := make([]byte, 509)
-		copy(pad, plain)
-		plain = pad
-	}
 	circ.mu.Lock()
 	defer circ.mu.Unlock()
-	enc, err := circ.crypto.encryptOutbound(plain[:509])
+	enc, err := circ.crypto.originateRelay(rc)
 	if err != nil {
 		return err
 	}

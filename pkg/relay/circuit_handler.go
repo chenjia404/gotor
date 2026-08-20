@@ -204,7 +204,8 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 	h.logger.Info("Circuit created",
 		"circuit_id", c.CircID,
 		"handshake", htype,
-		"key_material_len", len(keyMaterial))
+		"key_material_len", len(keyMaterial),
+		"cgo", cc.usesCGO())
 
 	// Send CREATED2 response
 	return h.sendCreated2(conn, c.CircID, response)

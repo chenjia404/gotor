@@ -82,9 +82,17 @@ func ntorV3ServerHandshakeCore(clientSkin, edID, onionPriv, verification, server
 		return nil, nil, nil, fmt.Errorf("ntor-v3 client MSG MAC mismatch")
 	}
 
-	// 解密 CM（本实现暂不强制解析扩展）
-	if _, err := ntorV3AESCTR(encK1, encCM); err != nil {
+	cmPlain, err := ntorV3AESCTR(encK1, encCM)
+	if err != nil {
 		return nil, nil, nil, fmt.Errorf("ntor-v3 decrypt CM: %w", err)
+	}
+	wantCGO, err := NtorV3ClientRequestedCGO(cmPlain)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("ntor-v3 client extensions: %w", err)
+	}
+	keyLen := NtorV3KeyMaterialLen
+	if wantCGO {
+		keyLen = CGOKeyMaterialLen
 	}
 
 	yKP, err := GenerateNtorKeyPair()
@@ -117,10 +125,10 @@ func ntorV3ServerHandshakeCore(clientSkin, edID, onionPriv, verification, server
 	if serverMsgPlain == nil {
 		serverMsgPlain = EncodeNtorV3Extensions(nil)
 	}
-	rawFinal := ntorV3KDF(ntorV3TFinal, keySeed, NtorV3EncKeyLen+NtorV3KeyMaterialLen+NtorCircNonceLen)
+	rawFinal := ntorV3KDF(ntorV3TFinal, keySeed, NtorV3EncKeyLen+keyLen+NtorCircNonceLen)
 	encKey := rawFinal[:NtorV3EncKeyLen]
-	keyMaterial = append([]byte(nil), rawFinal[NtorV3EncKeyLen:NtorV3EncKeyLen+NtorV3KeyMaterialLen]...)
-	circNonce = append([]byte(nil), rawFinal[NtorV3EncKeyLen+NtorV3KeyMaterialLen:]...)
+	keyMaterial = append([]byte(nil), rawFinal[NtorV3EncKeyLen:NtorV3EncKeyLen+keyLen]...)
+	circNonce = append([]byte(nil), rawFinal[NtorV3EncKeyLen+keyLen:]...)
 
 	encSM, err := ntorV3AESCTR(encKey, serverMsgPlain)
 	if err != nil {
