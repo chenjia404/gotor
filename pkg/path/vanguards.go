@@ -210,8 +210,19 @@ func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay, persistL1 
 	old := encodeLayer2(v.layer2)
 	kept := make([]layer2Entry, 0, v.count)
 	seen := make(map[string]bool)
+	persist := make(map[string]bool)
+	for _, raw := range persistL1 {
+		if fp := strings.ToUpper(strings.TrimSpace(raw)); fp != "" {
+			persist[fp] = true
+			seen[fp] = true
+		}
+	}
 	for _, e := range v.layer2 {
 		if !now.Before(e.Until) {
+			continue
+		}
+		// 已升为持久 L1 的节点必须离开 L2，否则 pickL1 的 !inL2 会永远跳过该入口。
+		if persist[e.FP] {
 			continue
 		}
 		r := byFP[e.FP]
@@ -224,12 +235,6 @@ func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay, persistL1 
 		}
 		seen[e.FP] = true
 		kept = append(kept, e)
-	}
-	// 新填的 L2 避开已持久入口，避免 L1 与 L2 重叠。
-	for _, raw := range persistL1 {
-		if fp := strings.ToUpper(strings.TrimSpace(raw)); fp != "" {
-			seen[fp] = true
-		}
 	}
 	cands := l2Candidates(byFP, seen)
 	for len(kept) < v.count && len(cands) > 0 {

@@ -298,6 +298,33 @@ func TestVanguardSetKeepsL2WhenTargetMatches(t *testing.T) {
 	}
 }
 
+func TestVanguardSetEvictsPersistL1FromL2(t *testing.T) {
+	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	pool := vgPool()
+	if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
+		t.Fatal(err)
+	}
+	l2 := append([]string{}, v.Fingerprints()...)
+	if len(l2) != 4 {
+		t.Fatalf("%v", l2)
+	}
+	promoted := l2[0]
+	p, err := v.SelectHSPath(pool, pool[6], []string{promoted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Guard.Fingerprint != promoted {
+		t.Fatalf("升为 L1 后应使用持久入口，got %s", p.Guard.Nickname)
+	}
+	after := v.Fingerprints()
+	if containsFP(after, promoted) {
+		t.Fatal("已升为持久 L1 的节点不得留在 L2")
+	}
+	if len(after) != 4 {
+		t.Fatalf("踢出后应补满 4，got %v", after)
+	}
+}
+
 func TestVanguardSetRejectsL1SameFamilyAsTarget(t *testing.T) {
 	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	pool := vgPool()
