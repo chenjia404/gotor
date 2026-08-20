@@ -11,6 +11,13 @@ import (
 	"github.com/opd-ai/go-tor/pkg/autoconfig"
 )
 
+// DoS* Enabled 取值对齐 C Tor（0|1|auto）。auto 且无共识 DoS* 参数时视为关。
+const (
+	DoSEnabledAuto = -1
+	DoSEnabledOff  = 0
+	DoSEnabledOn   = 1
+)
+
 // Config represents the Tor client configuration
 type Config struct {
 	// Network settings
@@ -80,6 +87,17 @@ type Config struct {
 	// Network behavior
 	ConnLimit      int           // Max concurrent connections (default: 1000)
 	DormantTimeout time.Duration // Time before entering dormant mode (default: 24h)
+
+	// DoS* 官方键（C Tor dos.c）。Enabled：-1=auto（无共识参数则关）、0=关、1=开。
+	// 不改 ConnLimit 语义：全局仍由 OR 监听的 maxConnections 管。
+	DoSCircuitCreationEnabled        int           // auto/0/1
+	DoSCircuitCreationMinConnections int           // 默认 3
+	DoSCircuitCreationRate           int           // 电路/秒，默认 3
+	DoSCircuitCreationBurst          int           // 默认 90
+	DoSCircuitCreationDefenseTime    time.Duration // 默认 1h
+	DoSConnectionEnabled             int           // auto/0/1
+	DoSConnectionMaxConcurrentCount  int           // 每 IP 并发 OR，默认 100
+	DoSRefuseSingleHopClient         bool          // 默认 false
 
 	// Relay / OR（中继）设置；ORPort>0 时 gotor 以中继模式启动 OR 监听
 	ORPort                  int    // OR 监听端口（0=不启用中继）
@@ -299,6 +317,14 @@ func DefaultConfig() *Config {
 		EntryNodes:                      []string{},
 		StrictNodes:                     false,
 		ConnLimit:                       1000,
+		DoSCircuitCreationEnabled:        DoSEnabledAuto,
+		DoSCircuitCreationMinConnections: 3,
+		DoSCircuitCreationRate:           3,
+		DoSCircuitCreationBurst:          90,
+		DoSCircuitCreationDefenseTime:    time.Hour,
+		DoSConnectionEnabled:             DoSEnabledAuto,
+		DoSConnectionMaxConcurrentCount:  100,
+		DoSRefuseSingleHopClient:         false,
 		DormantTimeout:                  24 * time.Hour,
 		ORPort:                          0,
 		ORListenAddr:                    "0.0.0.0",
@@ -455,6 +481,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ConnLimit < 1 {
 		return fmt.Errorf("ConnLimit must be at least 1")
+	}
+	if err := validateDoSFields(c); err != nil {
+		return err
 	}
 	if c.ORPort < 0 || c.ORPort > 65535 {
 		return fmt.Errorf("invalid ORPort: %d", c.ORPort)
@@ -710,6 +739,50 @@ func defaultTorDataDir() string {
 		return filepath.Join(home, ".tor")
 	}
 	return filepath.Join(".", ".tor")
+}
+
+func validateDoSFields(c *Config) error {
+	if c.DoSCircuitCreationEnabled != DoSEnabledAuto &&
+		c.DoSCircuitCreationEnabled != DoSEnabledOff &&
+		c.DoSCircuitCreationEnabled != DoSEnabledOn {
+		return fmt.Errorf("DoSCircuitCreationEnabled must be auto, 0, or 1")
+	}
+	if c.DoSConnectionEnabled != DoSEnabledAuto &&
+		c.DoSConnectionEnabled != DoSEnabledOff &&
+		c.DoSConnectionEnabled != DoSEnabledOn {
+		return fmt.Errorf("DoSConnectionEnabled must be auto, 0, or 1")
+	}
+	if c.DoSCircuitCreationMinConnections < 1 {
+		return fmt.Errorf("DoSCircuitCreationMinConnections must be at least 1")
+	}
+	if c.DoSCircuitCreationRate < 1 {
+		return fmt.Errorf("DoSCircuitCreationRate must be at least 1")
+	}
+	if c.DoSCircuitCreationBurst < 1 {
+		return fmt.Errorf("DoSCircuitCreationBurst must be at least 1")
+	}
+	if c.DoSCircuitCreationBurst < c.DoSCircuitCreationRate {
+		return fmt.Errorf("DoSCircuitCreationBurst must be >= DoSCircuitCreationRate")
+	}
+	if c.DoSCircuitCreationDefenseTime < 0 {
+		return fmt.Errorf("DoSCircuitCreationDefenseTimePeriod must be non-negative")
+	}
+	if c.DoSConnectionMaxConcurrentCount < 1 {
+		return fmt.Errorf("DoSConnectionMaxConcurrentCount must be at least 1")
+	}
+	return nil
+}
+
+// FormatDoSEnabled 把 auto/0/1 写成官方 torrc 词。
+func FormatDoSEnabled(v int) string {
+	switch v {
+	case DoSEnabledOn:
+		return "1"
+	case DoSEnabledOff:
+		return "0"
+	default:
+		return "auto"
+	}
 }
 
 // GetCheckpointPath returns the resolved checkpoint file path.

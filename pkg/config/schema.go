@@ -156,6 +156,41 @@ func GenerateJSONSchema() (*JSONSchema, error) {
 				Minimum:     &minConnLimit,
 				Examples:    []interface{}{1000, 500, 2000},
 			},
+			"DoSCircuitCreationEnabled": {
+				Type:        "integer",
+				Description: "DoS circuit-creation defense: -1=auto (off without consensus), 0=off, 1=on",
+				Default:     -1,
+			},
+			"DoSCircuitCreationMinConnections": {
+				Type:        "integer",
+				Description: "Apply CREATE2 token bucket only if this IP has at least this many OR connections",
+				Default:     3,
+			},
+			"DoSCircuitCreationRate": {
+				Type:        "integer",
+				Description: "CREATE2 tokens per second per IP (C Tor DoSCircuitCreationRate)",
+				Default:     3,
+			},
+			"DoSCircuitCreationBurst": {
+				Type:        "integer",
+				Description: "CREATE2 token bucket burst per IP",
+				Default:     90,
+			},
+			"DoSConnectionEnabled": {
+				Type:        "integer",
+				Description: "DoS per-IP concurrent OR connection defense: -1=auto, 0=off, 1=on",
+				Default:     -1,
+			},
+			"DoSConnectionMaxConcurrentCount": {
+				Type:        "integer",
+				Description: "Max concurrent OR connections per client IP when DoSConnection is on",
+				Default:     100,
+			},
+			"DoSRefuseSingleHopClient": {
+				Type:        "boolean",
+				Description: "DESTROY circuits that send BEGIN/BEGIN_DIR/RESOLVE without ever EXTEND",
+				Default:     false,
+			},
 			"DormantTimeout": {
 				Type:        "string",
 				Description: "Time before entering dormant mode (duration string)",

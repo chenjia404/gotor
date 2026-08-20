@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadTorrcRelayOptions(t *testing.T) {
@@ -84,6 +85,44 @@ func TestLoadTorrcExitRelayExtendedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := cfg.CheckDropInConstraints(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadTorrcDoSOfficialKeys(t *testing.T) {
+	dir := t.TempDir()
+	torrc := filepath.Join(dir, "torrc")
+	body := "DoSCircuitCreationEnabled 1\nDoSCircuitCreationMinConnections 4\n" +
+		"DoSCircuitCreationRate 5\nDoSCircuitCreationBurst 10\n" +
+		"DoSCircuitCreationDefenseTimePeriod 3600 seconds\n" +
+		"DoSConnectionEnabled auto\nDoSConnectionMaxConcurrentCount 50\n" +
+		"DoSRefuseSingleHopClient 1\nConnLimit 2000\n"
+	if err := os.WriteFile(torrc, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultConfig()
+	if err := LoadFromFile(torrc, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DoSCircuitCreationEnabled != DoSEnabledOn {
+		t.Fatalf("circ enabled %d", cfg.DoSCircuitCreationEnabled)
+	}
+	if cfg.DoSCircuitCreationMinConnections != 4 || cfg.DoSCircuitCreationRate != 5 || cfg.DoSCircuitCreationBurst != 10 {
+		t.Fatalf("circ params %+v", cfg)
+	}
+	if cfg.DoSCircuitCreationDefenseTime != time.Hour {
+		t.Fatalf("defense %s", cfg.DoSCircuitCreationDefenseTime)
+	}
+	if cfg.DoSConnectionEnabled != DoSEnabledAuto {
+		t.Fatalf("conn enabled %d", cfg.DoSConnectionEnabled)
+	}
+	if cfg.DoSConnectionMaxConcurrentCount != 50 || !cfg.DoSRefuseSingleHopClient {
+		t.Fatal("conn/refuse")
+	}
+	if cfg.ConnLimit != 2000 {
+		t.Fatalf("ConnLimit 语义被改写: %d", cfg.ConnLimit)
+	}
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -214,6 +214,11 @@ func (h *ExtensionHandler) SetForwarder(f *ForwardingHandler) {
 //	  HDATA (HLEN bytes) - handshake data
 func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, relayCell *cell.RelayCell, clientConn net.Conn) error {
 	h.logger.Info("Processing EXTEND2", "circuit_id", circuitID)
+	if circ, ok := h.circuits.GetCircuit(circuitID); ok && circ != nil {
+		circ.mu.Lock()
+		circ.didExtend = true
+		circ.mu.Unlock()
+	}
 
 	data := relayCell.Data
 

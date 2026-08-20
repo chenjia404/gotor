@@ -29,6 +29,7 @@ type ServerCircuit struct {
 	circNonce    []byte // rend_circ_nonce，ESTABLISH_INTRO MAC
 	introAuth    []byte // 已建立引言点的 AUTH_KEY（32 字节）
 	rendCookie   []byte // ESTABLISH_RENDEZVOUS cookie（20 字节）
+	didExtend    bool   // 本电路处理过 EXTEND2（单跳拒绝用）
 	mu           sync.RWMutex
 }
 
@@ -43,6 +44,7 @@ type CircuitHandler struct {
 	extender  *ExtensionHandler
 	policy    *ExitPolicy
 	exits     *ExitStreamManager
+	dos       *DoSGuard
 }
 
 // NewCircuitHandler creates a new circuit handler
@@ -88,6 +90,11 @@ func (h *CircuitHandler) HandleCellFromConnection(conn net.Conn, c *cell.Cell) e
 	}
 }
 
+// SetDoS 注入官方 DoS 守卫（nil 则关闭）。
+func (h *CircuitHandler) SetDoS(g *DoSGuard) {
+	h.dos = g
+}
+
 // handleCreate2 processes a CREATE2 cell and sends CREATED2 response
 // Per tor-spec.txt §5.1:
 //
@@ -103,6 +110,13 @@ func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
 	h.logger.Info("Received CREATE2",
 		"circuit_id", c.CircID,
 		"data_len", len(c.Payload))
+
+	if h.dos != nil {
+		if err := h.dos.AllowCreate2(clientIP(conn.RemoteAddr())); err != nil {
+			h.logger.Warn("CREATE2 refused by DoS", "circuit_id", c.CircID, "error", err)
+			return h.sendDestroyCell(conn, c.CircID, cell.DestroyReasonResourceLimit)
+		}
+	}
 
 	// Check if circuit already exists
 	h.mu.RLock()
