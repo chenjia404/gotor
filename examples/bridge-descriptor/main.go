@@ -44,11 +44,11 @@ func main() {
 		config.BandwidthAvg/1024, config.BandwidthBurst/1024)
 	fmt.Println()
 
-	// Step 3: Generate signed server descriptor
-	fmt.Println("Step 3: Generating signed server descriptor...")
-	descriptor, err := relay.GenerateServerDescriptor(keys, config)
+	// Step 3: 先 extra-info 再描述符，写入 extra-info-digest。无观测不编造 history。
+	fmt.Println("Step 3: Generating signed descriptor pair...")
+	descriptor, extraInfo, err := relay.GenerateDescriptorPair(keys, config, nil)
 	if err != nil {
-		log.Fatalf("Failed to generate descriptor: %v", err)
+		log.Fatalf("Failed to generate descriptor pair: %v", err)
 	}
 	fmt.Printf("✓ Server descriptor generated\n")
 	fmt.Printf("  - Published: %s\n", descriptor.PublishedTime.Format("2006-01-02 15:04:05"))
@@ -73,21 +73,11 @@ func main() {
 	fmt.Println("---")
 	fmt.Println()
 
-	// Step 6: Generate extra-info descriptor with statistics
-	fmt.Println("Step 6: Generating extra-info descriptor...")
-	stats := map[string]string{
-		"read-history":  "2024-01-25 00:00:00 (900 s) 1024000,2048000,1536000",
-		"write-history": "2024-01-25 00:00:00 (900 s) 512000,1024000,768000",
-		"uptime":        "86400",
-	}
-	extraInfo, err := relay.GenerateExtraInfo(keys, descriptor, stats)
-	if err != nil {
-		log.Fatalf("Failed to generate extra-info: %v", err)
-	}
-	fmt.Printf("✓ Extra-info descriptor generated\n")
+	fmt.Println("Step 6: Extra-info (no invented write-history / read-history)...")
+	fmt.Printf("✓ Extra-info generated with extra-info-digest cross-ref\n")
 	fmt.Printf("  - Nickname: %s\n", extraInfo.Nickname)
 	fmt.Printf("  - Fingerprint: %s\n", extraInfo.Fingerprint[:16]+"...")
-	fmt.Printf("  - Statistics: %d entries\n", len(extraInfo.Statistics))
+	fmt.Printf("  - History lines: %d (0 unless observed)\n", len(extraInfo.Statistics))
 	fmt.Println()
 
 	// Step 7: Save keys to disk (optional)

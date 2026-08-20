@@ -86,6 +86,25 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStateFileGetSet(t *testing.T) {
+	sf := &StateFile{}
+	if _, ok := sf.Get("BWHistoryReadValues"); ok {
+		t.Fatal("empty get")
+	}
+	sf.Set("BWHistoryReadValues", "1,2,3")
+	sf.Set("GuardDummy", "keep")
+	if v, ok := sf.Get("BWHistoryReadValues"); !ok || v != "1,2,3" {
+		t.Fatalf("get %q %v", v, ok)
+	}
+	sf.Set("BWHistoryReadValues", "9")
+	if v, _ := sf.Get("BWHistoryReadValues"); v != "9" {
+		t.Fatalf("replace %q", v)
+	}
+	if v, _ := sf.Get("GuardDummy"); v != "keep" {
+		t.Fatal("set 不得改其它键")
+	}
+}
+
 func TestLoadStateMissing(t *testing.T) {
 	sf, err := LoadState(filepath.Join(t.TempDir(), "nope"))
 	if err != nil || sf == nil {

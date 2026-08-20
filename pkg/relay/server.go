@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/config"
+	"github.com/opd-ai/go-tor/pkg/datadir"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
@@ -22,6 +23,7 @@ type Server struct {
 	reach     *Reachability
 	dirCache  *DirCacheServer
 	policy    *ExitPolicy
+	bwHist    *BandwidthHistory
 	startedAt time.Time
 	logger    *logger.Logger
 }
@@ -81,7 +83,15 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 		}
 	}
 
-	s := &Server{cfg: cfg, keys: keys, listener: ln, policy: policy, logger: log.Component("relay")}
+	bwHist := NewBandwidthHistory()
+	if cfg.DataDirectory != "" && !cfg.AvoidDiskWrites {
+		bwHist.SetStatePath(filepath.Join(cfg.DataDirectory, datadir.StateFileName))
+		if err := bwHist.Load(); err != nil {
+			log.Warn("bandwidth history load failed", "error", err)
+		}
+	}
+	ln.SetBandwidthHistory(bwHist)
+	s := &Server{cfg: cfg, keys: keys, listener: ln, policy: policy, bwHist: bwHist, logger: log.Component("relay")}
 	s.reach = NewReachability(ReachabilityConfig{
 		AssumeReachable: cfg.AssumeReachable,
 		DisableNetwork:  cfg.DisableNetwork,
@@ -158,14 +168,14 @@ func (s *Server) startPublisher(ctx context.Context) error {
 			ExitPolicyLines: s.policy.DescriptorLines(),
 			IPv6Policy:      s.policy.IPv6PolicyLine(),
 		}
-		desc, err := GenerateServerDescriptor(s.keys, dcfg)
+		var stats map[string]string
+		if s.bwHist != nil {
+			_ = s.bwHist.Persist()
+			stats = s.bwHist.StatsMap()
+		}
+		desc, extra, err := GenerateDescriptorPair(s.keys, dcfg, stats)
 		if err != nil {
 			return nil, nil, err
-		}
-		extra, err := GenerateExtraInfo(s.keys, desc, nil)
-		if err != nil {
-			s.logger.Warn("extra-info generation failed", "error", err)
-			return desc, nil, nil
 		}
 		return desc, extra, nil
 	}, s.logger)
@@ -222,6 +232,9 @@ func (s *Server) Stop() error {
 	}
 	if s.reach != nil {
 		s.reach.Stop()
+	}
+	if s.bwHist != nil {
+		_ = s.bwHist.Persist()
 	}
 	if s.publisher != nil {
 		s.publisher.Stop()

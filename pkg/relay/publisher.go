@@ -114,51 +114,13 @@ func NewDescriptorPublisher(config PublisherConfig, log *logger.Logger) *Descrip
 // PublishDescriptor publishes a server descriptor to bridge authorities
 // Returns the number of successful publications
 func (p *DescriptorPublisher) PublishDescriptor(ctx context.Context, descriptor *ServerDescriptor) (int, error) {
-	p.publishMu.Lock()
-	defer p.publishMu.Unlock()
-
 	if descriptor == nil {
 		return 0, fmt.Errorf("descriptor is nil")
 	}
-
 	if len(descriptor.RawDescriptor) == 0 {
 		return 0, fmt.Errorf("descriptor.RawDescriptor is empty")
 	}
-
-	p.logger.Info("publishing server descriptor to bridge authorities",
-		"nickname", descriptor.Nickname,
-		"address", descriptor.Address,
-		"authorities", len(p.authorities))
-
-	successCount := 0
-	var lastErr error
-
-	for _, auth := range p.authorities {
-		err := p.publishToAuthority(ctx, auth, descriptor.RawDescriptor)
-		if err != nil {
-			p.logger.Warn("failed to publish to authority",
-				"authority", auth.Address,
-				"error", err)
-			lastErr = err
-			continue
-		}
-		successCount++
-		p.logger.Info("successfully published descriptor",
-			"authority", auth.Address)
-	}
-
-	p.lastPublish = time.Now()
-	p.publishCount++
-
-	if successCount == 0 {
-		return 0, fmt.Errorf("failed to publish to any authority: %w", lastErr)
-	}
-
-	p.logger.Info("descriptor published",
-		"successful", successCount,
-		"total", len(p.authorities))
-
-	return successCount, nil
+	return p.publishRaw(ctx, descriptor.RawDescriptor, descriptor.Nickname)
 }
 
 // publishToAuthority publishes to a single authority with retries
@@ -250,6 +212,52 @@ func (p *DescriptorPublisher) postDescriptor(ctx context.Context, url string, de
 		return fmt.Errorf("upload failed: status %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+// PublishDescriptorPair 按 C Tor 把 server descriptor 与 extra-info 拼成一次 POST。
+// 权威曾对单独 extra-info（且描述符无 extra-info-digest）回 400。
+func (p *DescriptorPublisher) PublishDescriptorPair(ctx context.Context, descriptor *ServerDescriptor, extraInfo *ExtraInfoDescriptor) (int, error) {
+	if descriptor == nil {
+		return 0, fmt.Errorf("descriptor is nil")
+	}
+	if len(descriptor.RawDescriptor) == 0 {
+		return 0, fmt.Errorf("descriptor.RawDescriptor is empty")
+	}
+	body := append([]byte(nil), descriptor.RawDescriptor...)
+	if extraInfo != nil && len(extraInfo.RawDescriptor) > 0 {
+		body = append(body, extraInfo.RawDescriptor...)
+	}
+	return p.publishRaw(ctx, body, descriptor.Nickname)
+}
+
+func (p *DescriptorPublisher) publishRaw(ctx context.Context, body []byte, nickname string) (int, error) {
+	p.publishMu.Lock()
+	defer p.publishMu.Unlock()
+
+	p.logger.Info("publishing descriptors to directory authorities",
+		"nickname", nickname,
+		"bytes", len(body),
+		"authorities", len(p.authorities))
+
+	successCount := 0
+	var lastErr error
+	for _, auth := range p.authorities {
+		err := p.publishToAuthority(ctx, auth, body)
+		if err != nil {
+			p.logger.Warn("failed to publish to authority",
+				"authority", auth.Address,
+				"error", err)
+			lastErr = err
+			continue
+		}
+		successCount++
+	}
+	p.lastPublish = time.Now()
+	p.publishCount++
+	if successCount == 0 {
+		return 0, fmt.Errorf("failed to publish to any authority: %w", lastErr)
+	}
+	return successCount, nil
 }
 
 // PublishExtraInfo publishes extra-info descriptor to bridge authorities
@@ -401,23 +409,12 @@ func (s *ScheduledPublisher) publishOnce(ctx context.Context) {
 		return
 	}
 
-	// Publish server descriptor
-	count, err := s.publisher.PublishDescriptor(ctx, descriptor)
+	count, err := s.publisher.PublishDescriptorPair(ctx, descriptor, extraInfo)
 	if err != nil {
-		s.logger.Error("failed to publish descriptor", "error", err)
-	} else {
-		s.logger.Info("descriptor published successfully", "authorities", count)
+		s.logger.Error("failed to publish descriptor pair", "error", err)
+		return
 	}
-
-	// Publish extra-info if available
-	if extraInfo != nil {
-		count, err := s.publisher.PublishExtraInfo(ctx, extraInfo)
-		if err != nil {
-			s.logger.Warn("failed to publish extra-info", "error", err)
-		} else {
-			s.logger.Info("extra-info published successfully", "authorities", count)
-		}
-	}
+	s.logger.Info("descriptor pair published", "authorities", count, "has_extrainfo", extraInfo != nil)
 }
 
 // Stop halts the scheduled publishing

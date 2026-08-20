@@ -155,6 +155,33 @@ type StatePair struct {
 	Value string
 }
 
+// Get 返回第一个匹配的非 Guard 键。
+func (s *StateFile) Get(key string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	for _, p := range s.Pairs {
+		if p.Key == key {
+			return p.Value, true
+		}
+	}
+	return "", false
+}
+
+// Set 写入或替换非 Guard 键，保留其它行（含 Guard）。
+func (s *StateFile) Set(key, value string) {
+	if s == nil || key == "" {
+		return
+	}
+	for i := range s.Pairs {
+		if s.Pairs[i].Key == key {
+			s.Pairs[i].Value = value
+			return
+		}
+	}
+	s.Pairs = append(s.Pairs, StatePair{Key: key, Value: value})
+}
+
 // ParseState 解析 C Tor state 文件。
 func ParseState(data []byte) *StateFile {
 	sf := &StateFile{}

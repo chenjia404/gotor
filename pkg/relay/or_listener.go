@@ -14,10 +14,12 @@ import (
 
 // ORListener listens for incoming OR (Onion Router) connections
 type ORListener struct {
-	address  string
-	keys     *RelayKeys
-	listener net.Listener
-	logger   *logger.Logger
+	address   string
+	keys      *RelayKeys
+	listener  net.Listener
+	tlsConfig *tls.Config
+	bwHist    *BandwidthHistory
+	logger    *logger.Logger
 
 	// Connection management
 	connsMu     sync.RWMutex
@@ -97,14 +99,13 @@ func (l *ORListener) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create TLS config: %w", err)
 	}
 
-	// Start TCP listener
 	listener, err := net.Listen("tcp", l.address)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", l.address, err)
 	}
-
-	// Wrap with TLS
-	l.listener = tls.NewListener(listener, tlsConfig)
+	// 明文 TCP 上计数后再做 TLS，贴近 C Tor 的 socket 字节观测。
+	l.tlsConfig = tlsConfig
+	l.listener = listener
 	l.logger.Info("OR listener started", "address", l.address, "fingerprint", l.keys.Fingerprint())
 
 	// Accept connections in goroutine
@@ -191,7 +192,12 @@ func (l *ORListener) acceptLoop(ctx context.Context) {
 			}
 		}
 
-		// Handle connection
+		if l.bwHist != nil {
+			conn = &countingConn{Conn: conn, hist: l.bwHist}
+		}
+		if l.tlsConfig != nil {
+			conn = tls.Server(conn, l.tlsConfig)
+		}
 		l.wg.Add(1)
 		go l.handleConnection(ctx, conn)
 	}
@@ -359,6 +365,37 @@ func (l *ORListener) Address() string {
 type ORListenerStats struct {
 	TotalConnections  uint64
 	ActiveConnections int
+}
+
+// SetBandwidthHistory 注入 OR 读写字节观测（nil 则不计）。
+// SetBandwidthHistory 注入 OR 读写字节观测（nil 则不计）。
+func (l *ORListener) SetBandwidthHistory(h *BandwidthHistory) {
+	if l == nil {
+		return
+	}
+	l.bwHist = h
+}
+
+// countingConn 在 TLS 之下统计 socket 读写。
+type countingConn struct {
+	net.Conn
+	hist *BandwidthHistory
+}
+
+func (c *countingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 && c.hist != nil {
+		c.hist.AddRead(uint64(n))
+	}
+	return n, err
+}
+
+func (c *countingConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n > 0 && c.hist != nil {
+		c.hist.AddWrite(uint64(n))
+	}
+	return n, err
 }
 
 // GetStats returns current listener statistics
