@@ -396,6 +396,23 @@ func TestDirCacheFPRLISTFiltersSignatures(t *testing.T) {
 	if lzRec.Header().Get("Content-Encoding") != "x-zstd" {
 		t.Fatalf("FPRLIST 过滤体应回退 zstd, got %q", lzRec.Header().Get("Content-Encoding"))
 	}
+
+	// 过滤请求不得为每个 FPRLIST 实时 GenerateConsensusDiff（未鉴权 CPU 放大）。
+	prev := strings.Replace(curr, "01:00:00", "00:00:00", 1)
+	prev = strings.Replace(prev, "\nA\n", "\nOLD\n", 1)
+	if err := os.WriteFile(filepath.Join(dir, cachedConsensusPrevName), []byte(prev), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	diffReq := httptest.NewRequest(http.MethodGet, okURL, http.NoBody)
+	diffReq.Header.Set("X-Or-Diff-From-Consensus", directory.ConsensusDiffFromDigest(prev))
+	diffRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(diffRec, diffReq)
+	if strings.HasPrefix(diffRec.Body.String(), "network-status-diff-version") {
+		t.Fatal("FPRLIST 不得回 limited-ed")
+	}
+	if !strings.Contains(diffRec.Body.String(), strings.ToUpper(a)) || strings.Contains(diffRec.Body.String(), strings.ToUpper(c)) {
+		t.Fatal("FPRLIST+Diff 头应回过滤后的整份共识")
+	}
 }
 
 func TestDirCacheConsensusDiffViaBeginDir(t *testing.T) {

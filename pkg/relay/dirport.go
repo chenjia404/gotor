@@ -47,7 +47,8 @@ type DirCacheServer struct {
 	hs *hsDirStore
 }
 
-const dirDiffCacheSlots = 8
+// 只缓存「未过滤」历史→当前 diff。槽数对齐 hist 上限，避免 72 个已知 FromDigest 反复 LCS。
+const dirDiffCacheSlots = 72
 
 type dirDiffSlot struct {
 	from, to, fpr, diff string
@@ -262,6 +263,11 @@ func (d *DirCacheServer) diffFromHashes(hashes []string, curr, fprKey string) (s
 	to := strings.ToLower(directory.ConsensusDiffFromDigest(curr))
 	from = strings.ToLower(from)
 	if from == to {
+		return "", false
+	}
+	// FPRLIST 过滤体会让 (from,fpr) 组合爆炸；未鉴权 DirPort 不得为其实时 LCS。
+	// 过滤请求改走整份过滤共识（header）或 /diff/ 404，仍禁止写 DirCache=2。
+	if fprKey != "" {
 		return "", false
 	}
 
