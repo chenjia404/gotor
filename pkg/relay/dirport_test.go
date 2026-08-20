@@ -289,6 +289,15 @@ func TestDirCacheFPRLISTFiltersSignatures(t *testing.T) {
 	if plain.Code != http.StatusOK || !strings.Contains(plain.Body.String(), strings.ToUpper(c)) {
 		t.Fatal("无 FPRLIST 必须回全部签名")
 	}
+
+	// 过滤后的共识不实时 LZMA（避免无鉴权 DirPort 被滚动 FPRLIST 拖垮）。
+	lz := httptest.NewRequest(http.MethodGet, okURL, http.NoBody)
+	lz.Header.Set("Accept-Encoding", "x-tor-lzma, x-zstd")
+	lzRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(lzRec, lz)
+	if lzRec.Header().Get("Content-Encoding") != "x-zstd" {
+		t.Fatalf("FPRLIST 过滤体应回退 zstd, got %q", lzRec.Header().Get("Content-Encoding"))
+	}
 }
 
 func TestDirCacheConsensusDiffViaBeginDir(t *testing.T) {
@@ -636,5 +645,29 @@ func TestDirCacheZstdAndLzma(t *testing.T) {
 	s.handler().ServeHTTP(rec4, req4)
 	if rec4.Header().Get("Content-Encoding") != "x-zstd" {
 		t.Fatalf("非共识应跳过 lzma 用 zstd, got %q", rec4.Header().Get("Content-Encoding"))
+	}
+
+	// FPRLIST 过滤体不得实时 LZMA，应退回 x-zstd。
+	a := "aaaaaaaaaa1111111111aaaaaaaaaa1111111111"
+	b := "bbbbbbbbbb2222222222bbbbbbbbbb2222222222"
+	filtered := "" +
+		"network-status-version 3\n" +
+		"vote-status consensus\n" +
+		"valid-after 2024-01-01 01:00:00\n" +
+		"directory-footer\n" +
+		"directory-signature sha256 " + strings.ToUpper(a) + " SA\n-----BEGIN SIGNATURE-----\nA\n-----END SIGNATURE-----\n" +
+		"directory-signature sha256 " + strings.ToUpper(b) + " SB\n-----BEGIN SIGNATURE-----\nB\n-----END SIGNATURE-----\n"
+	if err := os.WriteFile(filepath.Join(dir, "cached-microdesc-consensus"), []byte(filtered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req5 := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc/"+a[:6]+"+"+b[:6], http.NoBody)
+	req5.Header.Set("Accept-Encoding", "x-tor-lzma, x-zstd")
+	rec5 := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec5, req5)
+	if rec5.Code != http.StatusOK {
+		t.Fatalf("FPRLIST+lzma status %d", rec5.Code)
+	}
+	if rec5.Header().Get("Content-Encoding") != "x-zstd" {
+		t.Fatalf("过滤体不得实时 x-tor-lzma, got %q", rec5.Header().Get("Content-Encoding"))
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net"
@@ -113,7 +114,7 @@ func (d *DirCacheServer) serveFile(name string) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		writeDirBody(w, r, data, st.ModTime())
+		writeDirBody(w, r, data, st.ModTime(), false)
 	}
 }
 
@@ -152,11 +153,11 @@ func (d *DirCacheServer) serveConsensus(w http.ResponseWriter, r *http.Request) 
 	mod := consensusLastModified(curr, d.cachedModTime(cachedConsensusName))
 	if len(hashes) > 0 {
 		if diff, ok := d.diffFromHashes(hashes, curr, fprKey); ok {
-			writeDirBody(w, r, []byte(diff), mod)
+			writeDirBody(w, r, []byte(diff), mod, !filter)
 			return
 		}
 	}
-	writeDirBody(w, r, []byte(curr), mod)
+	writeDirBody(w, r, []byte(curr), mod, !filter)
 }
 
 func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +195,7 @@ func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.R
 		http.NotFound(w, r)
 		return
 	}
-	writeDirBody(w, r, []byte(diff), consensusLastModified(curr, d.cachedModTime(cachedConsensusName)))
+	writeDirBody(w, r, []byte(diff), consensusLastModified(curr, d.cachedModTime(cachedConsensusName)), !filter)
 }
 
 func parseConsensusDiffPath(path string) (hash, fprlist string, ok bool) {
@@ -327,7 +328,7 @@ func consensusLastModified(doc string, fallback time.Time) time.Time {
 	return fallback
 }
 
-func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte, mod time.Time) {
+func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte, mod time.Time, allowLzma bool) {
 	if !mod.IsZero() {
 		lm := mod.UTC().Truncate(time.Second)
 		w.Header().Set("Last-Modified", lm.Format(http.TimeFormat))
@@ -339,7 +340,20 @@ func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte, mod time.
 		}
 	}
 	enc, hideCE := negotiateDirEncoding(r)
-	payload, used := compressDirBody(enc, body)
+	if enc == "x-tor-lzma" && !allowLzma {
+		enc = fallbackDirEncoding(r, "x-tor-lzma")
+	}
+	var payload []byte
+	var used string
+	if enc == "x-tor-lzma" {
+		payload, used = compressDirLzmaCached(body)
+		if used == "" {
+			enc = fallbackDirEncoding(r, "x-tor-lzma")
+			payload, used = compressDirBody(enc, body)
+		}
+	} else {
+		payload, used = compressDirBody(enc, body)
+	}
 	if used != "" && !hideCE {
 		w.Header().Set("Content-Encoding", used)
 	}
@@ -411,6 +425,49 @@ func negotiateDirEncoding(r *http.Request) (enc string, hideCE bool) {
 		return "deflate", false
 	}
 	return "", false
+}
+
+func fallbackDirEncoding(r *http.Request, skip string) string {
+	toks := acceptEncodingTokens(r.Header.Get("Accept-Encoding"))
+	order := []string{"x-zstd", "gzip", "deflate"}
+	for _, name := range order {
+		if name == skip {
+			continue
+		}
+		if hasAcceptToken(toks, name) {
+			return name
+		}
+	}
+	return ""
+}
+
+// dirLzmaCache 只缓存整份共识 / limited-ed 的 x-tor-lzma（最多 2 份）。
+// FPRLIST 过滤体与其它文档不走实时 LZMA，避免无鉴权 DirPort 被滚动请求拖垮。
+var dirLzmaCache struct {
+	mu    sync.Mutex
+	slots [2]struct {
+		hash    [32]byte
+		payload []byte
+	}
+}
+
+func compressDirLzmaCached(body []byte) (payload []byte, used string) {
+	sum := sha256.Sum256(body)
+	dirLzmaCache.mu.Lock()
+	defer dirLzmaCache.mu.Unlock()
+	for i := range dirLzmaCache.slots {
+		if dirLzmaCache.slots[i].payload != nil && dirLzmaCache.slots[i].hash == sum {
+			return dirLzmaCache.slots[i].payload, "x-tor-lzma"
+		}
+	}
+	raw, used := compressDirBody("x-tor-lzma", body)
+	if used == "" {
+		return body, ""
+	}
+	dirLzmaCache.slots[0] = dirLzmaCache.slots[1]
+	dirLzmaCache.slots[1].hash = sum
+	dirLzmaCache.slots[1].payload = raw
+	return raw, "x-tor-lzma"
 }
 
 func compressDirBody(enc string, body []byte) (payload []byte, used string) {
@@ -488,7 +545,7 @@ func (d *DirCacheServer) serveKeysFP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	writeDirBody(w, r, body, d.cachedModTime("cached-certs"))
+	writeDirBody(w, r, body, d.cachedModTime("cached-certs"), false)
 }
 
 func parseKeyFingerprints(raw string) ([]string, bool) {

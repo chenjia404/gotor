@@ -141,5 +141,5 @@ func (d *DirCacheServer) serveHSFetch(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	writeDirBody(w, r, body, mod)
+	writeDirBody(w, r, body, mod, false)
 }
