@@ -25,9 +25,13 @@
 
 ## 本切片已做（2026-08-20 压缩 / 304）
 
-- `Accept-Encoding: gzip` → `Content-Encoding: gzip`
-- `Accept-Encoding: deflate` 或路径 `.z` → zlib（`Content-Encoding: deflate`）
-- `If-Modified-Since` 与落盘 `Last-Modified` 对齐则 **304**（无正文）
+对照 dir-spec [standards-compliance](https://spec.torproject.org/dir-spec/standards-compliance.html)。
+
+- `Accept-Encoding: gzip` / `deflate` → 对应 `Content-Encoding`（优先 gzip）
+- 路径 `.z` **且无** `Accept-Encoding`：zlib deflate，**不**带 `Content-Encoding`（旧客户端）
+- 路径 `.z` **且有** `Accept-Encoding`：按无 `.z` 协商（须在 advertised 集合内编码一次）
+- 共识 `Last-Modified` 用 `valid-after`（UTC）；`If-Modified-Since` ≥ 该时刻则 **304** 无正文。坏 IMS 忽略。
+- 其它落盘文档用文件 mtime。
 - **仍禁止** 在 `proto` 写 `DirCache=2`
 
 ## 明确未做（因此禁止 `DirCache=2`）

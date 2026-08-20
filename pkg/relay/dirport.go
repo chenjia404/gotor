@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,8 @@ import (
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
+type dirZKey struct{}
+
 const maxDirServeBytes = 8 << 20
 
 const (
@@ -27,7 +30,7 @@ const (
 )
 
 // DirCacheServer 用 CacheDirectory 的落盘共识/microdesc 应答 BEGIN_DIR / DirPort。
-// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/ 提供 limited-ed；不宣告 DirCache=2。
+// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/ 提供 limited-ed，并协商 gzip/deflate/.z 与 304；不宣告 DirCache=2。
 type DirCacheServer struct {
 	cacheDir string
 	logger   *logger.Logger
@@ -58,11 +61,10 @@ func (d *DirCacheServer) handler() http.Handler {
 	mux.HandleFunc("/tor/keys/fp/", d.serveKeysFP)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".z") {
-			clone := r.Clone(r.Context())
+			clone := r.Clone(context.WithValue(r.Context(), dirZKey{}, true))
 			u := *r.URL
 			u.Path = strings.TrimSuffix(r.URL.Path, ".z")
 			clone.URL = &u
-			clone.Header.Set("Accept-Encoding", "deflate")
 			mux.ServeHTTP(w, clone)
 			return
 		}
@@ -123,7 +125,7 @@ func (d *DirCacheServer) serveConsensus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	hashes := directory.ParseOrDiffFromConsensusHeader(r.Header.Get("X-Or-Diff-From-Consensus"))
-	mod := d.cachedModTime(cachedConsensusName)
+	mod := consensusLastModified(curr, d.cachedModTime(cachedConsensusName))
 	if len(hashes) > 0 {
 		if diff, ok := d.diffFromHashes(hashes, curr); ok {
 			writeDirBody(w, r, []byte(diff), mod)
@@ -153,7 +155,7 @@ func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.R
 		http.NotFound(w, r)
 		return
 	}
-	writeDirBody(w, r, []byte(diff), d.cachedModTime(cachedConsensusName))
+	writeDirBody(w, r, []byte(diff), consensusLastModified(curr, d.cachedModTime(cachedConsensusName)))
 }
 
 func parseConsensusDiffPath(path string) (hash string, ok bool) {
@@ -251,6 +253,20 @@ func (d *DirCacheServer) cachedModTime(name string) time.Time {
 	return st.ModTime()
 }
 
+func consensusLastModified(doc string, fallback time.Time) time.Time {
+	for _, line := range strings.Split(doc, "\n") {
+		if !strings.HasPrefix(line, "valid-after ") {
+			continue
+		}
+		t, err := time.ParseInLocation("2006-01-02 15:04:05", strings.TrimSpace(line[len("valid-after "):]), time.UTC)
+		if err == nil {
+			return t
+		}
+		break
+	}
+	return fallback
+}
+
 func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte, mod time.Time) {
 	if !mod.IsZero() {
 		lm := mod.UTC().Truncate(time.Second)
@@ -262,8 +278,8 @@ func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte, mod time.
 			}
 		}
 	}
-	enc, payload := encodeDirBody(r, body)
-	if enc != "" {
+	enc, hideCE, payload := encodeDirBody(r, body)
+	if enc != "" && !hideCE {
 		w.Header().Set("Content-Encoding", enc)
 	}
 	w.Header().Set("Content-Type", "text/plain")
@@ -274,31 +290,75 @@ func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte, mod time.
 	_, _ = w.Write(payload)
 }
 
-func encodeDirBody(r *http.Request, body []byte) (string, []byte) {
-	ae := strings.ToLower(r.Header.Get("Accept-Encoding"))
-	switch {
-	case strings.Contains(ae, "gzip"):
+func acceptEncodingTokens(h string) []string {
+	if h == "" {
+		return nil
+	}
+	parts := strings.Split(h, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p, _, _ = strings.Cut(p, ";")
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func hasAcceptToken(toks []string, name string) bool {
+	for _, t := range toks {
+		if t == name {
+			return true
+		}
+	}
+	return false
+}
+
+func negotiateDirEncoding(r *http.Request) (enc string, hideCE bool) {
+	_, isZ := r.Context().Value(dirZKey{}).(bool)
+	raw := r.Header.Get("Accept-Encoding")
+	if raw == "" {
+		if isZ {
+			return "deflate", true
+		}
+		return "", false
+	}
+	toks := acceptEncodingTokens(raw)
+	if hasAcceptToken(toks, "gzip") {
+		return "gzip", false
+	}
+	if hasAcceptToken(toks, "deflate") {
+		return "deflate", false
+	}
+	return "", false
+}
+
+func encodeDirBody(r *http.Request, body []byte) (enc string, hideCE bool, payload []byte) {
+	enc, hideCE = negotiateDirEncoding(r)
+	switch enc {
+	case "gzip":
 		var buf bytes.Buffer
 		zw := gzip.NewWriter(&buf)
 		if _, err := zw.Write(body); err != nil {
-			return "", body
+			return "", false, body
 		}
 		if err := zw.Close(); err != nil {
-			return "", body
+			return "", false, body
 		}
-		return "gzip", buf.Bytes()
-	case strings.Contains(ae, "deflate"):
+		return enc, hideCE, buf.Bytes()
+	case "deflate":
 		var buf bytes.Buffer
 		zw := zlib.NewWriter(&buf)
 		if _, err := zw.Write(body); err != nil {
-			return "", body
+			return "", false, body
 		}
 		if err := zw.Close(); err != nil {
-			return "", body
+			return "", false, body
 		}
-		return "deflate", buf.Bytes()
+		return enc, hideCE, buf.Bytes()
 	default:
-		return "", body
+		return "", false, body
 	}
 }
 
