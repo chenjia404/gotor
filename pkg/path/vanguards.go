@@ -23,6 +23,9 @@ const (
 	hsLayer2GuardsStateKey = "GotorHSLayer2Guards"
 )
 
+// torStateFileMu 串行化对 DataDirectory/state 的读改写，避免与 GuardManager 互相覆盖。
+var torStateFileMu sync.Mutex
+
 // VanguardConfig 控制 L2 集合与落盘。
 type VanguardConfig struct {
 	StatePath string
@@ -86,11 +89,16 @@ func (v *VanguardSet) now() time.Time {
 }
 
 // Load 从 state 恢复 L2（缺键则空集合）。
+// 锁顺序必须与 persistLocked 一致：先 v.mu 再 torStateFileMu，避免死锁或用过期快照覆盖内存。
 func (v *VanguardSet) Load() error {
 	if v == nil || v.statePath == "" {
 		return nil
 	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	torStateFileMu.Lock()
 	sf, err := datadir.LoadState(v.statePath)
+	torStateFileMu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -115,9 +123,7 @@ func (v *VanguardSet) Load() error {
 		}
 		out = append(out, layer2Entry{FP: fp, Until: time.Unix(sec, 0).UTC()})
 	}
-	v.mu.Lock()
 	v.layer2 = out
-	v.mu.Unlock()
 	return nil
 }
 
@@ -140,16 +146,13 @@ func (v *VanguardSet) persistLocked() error {
 	if v.avoidDisk || v.statePath == "" {
 		return nil
 	}
-	sf, err := datadir.LoadState(v.statePath)
-	if err != nil {
-		return err
-	}
-	parts := make([]string, 0, len(v.layer2))
-	for _, e := range v.layer2 {
-		parts = append(parts, fmt.Sprintf("%s=%d", e.FP, e.Until.UTC().Unix()))
-	}
-	sf.Set(hsLayer2GuardsStateKey, strings.Join(parts, ","))
-	return datadir.SaveState(v.statePath, sf, "")
+	val := encodeLayer2(v.layer2)
+	torStateFileMu.Lock()
+	defer torStateFileMu.Unlock()
+	return datadir.WithStateFile(v.statePath, "", func(sf *datadir.StateFile) error {
+		sf.Set(hsLayer2GuardsStateKey, val)
+		return nil
+	})
 }
 
 // Fingerprints 返回当前未过期的 L2 指纹（大写 hex）。
@@ -179,7 +182,7 @@ func (v *VanguardSet) SelectHSPath(relays []*directory.Relay, target *directory.
 	}
 	byFP := indexRelays(relays)
 	v.mu.Lock()
-	changed := v.refreshLocked(byFP, target)
+	changed := v.refreshLocked(byFP)
 	if changed {
 		if err := v.persistLocked(); err != nil && v.logger != nil {
 			v.logger.Warn("vanguards-lite persist failed", "error", err)
@@ -199,7 +202,7 @@ func (v *VanguardSet) SelectHSPath(relays []*directory.Relay, target *directory.
 	return &Path{Guard: l1, Middle: l2, Exit: target}, nil
 }
 
-func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay, target *directory.Relay) bool {
+func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay) bool {
 	now := v.now()
 	old := encodeLayer2(v.layer2)
 	kept := make([]layer2Entry, 0, v.count)
@@ -209,7 +212,8 @@ func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay, target *di
 			continue
 		}
 		r := byFP[e.FP]
-		if !usableL2(r) || sameRelayFP(r, target) {
+		// 当前电路目标碰巧是某 L2 时只在本条选路避开，不得从全局集合剔除。
+		if !usableL2(r) {
 			continue
 		}
 		if seen[e.FP] {
@@ -218,7 +222,7 @@ func (v *VanguardSet) refreshLocked(byFP map[string]*directory.Relay, target *di
 		seen[e.FP] = true
 		kept = append(kept, e)
 	}
-	cands := l2Candidates(byFP, target, seen)
+	cands := l2Candidates(byFP, seen)
 	for len(kept) < v.count && len(cands) > 0 {
 		i := secureIntn(len(cands))
 		r := cands[i]
@@ -290,10 +294,10 @@ func sameRelayFP(a, b *directory.Relay) bool {
 	return fa != "" && fa == fb
 }
 
-func l2Candidates(byFP map[string]*directory.Relay, target *directory.Relay, exclude map[string]bool) []*directory.Relay {
+func l2Candidates(byFP map[string]*directory.Relay, exclude map[string]bool) []*directory.Relay {
 	out := make([]*directory.Relay, 0, len(byFP))
 	for fp, r := range byFP {
-		if exclude[fp] || !usableL2(r) || sameRelayFP(r, target) {
+		if exclude[fp] || !usableL2(r) {
 			continue
 		}
 		out = append(out, r)

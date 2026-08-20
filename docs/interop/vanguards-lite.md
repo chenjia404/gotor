@@ -11,6 +11,9 @@
 - L2 默认 4 个，从 `UsableAsGuard` 节点选取；寿命均匀随机 1–12 天。
 - 重启后从 `DataDirectory/state` 的自有键 `GotorHSLayer2Guards` 恢复。**不改**官方 `Guard` 行语义。
 - L1 优先用已持久化的入口 Guard（`GuardManager`）。
+- 已注入 `VanguardSet` 时选路失败则关闭，**不**退回随机中间跳。
+- 当前电路目标碰巧是某 L2 时只在本条避开，不从全局集合剔除。
+- `DataDirectory/state` 与入口 Guard 落盘共用进程内锁，并经 `state.lock` flock 读改写。
 - `AvoidDiskWrites` 时不落盘。
 
 ## 明确未做

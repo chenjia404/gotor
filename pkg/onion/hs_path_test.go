@@ -42,3 +42,14 @@ func TestSelectOnionPathUsesFixedL2(t *testing.T) {
 		t.Fatal("末跳必须是目标")
 	}
 }
+
+func TestSelectOnionPathFailsClosedWhenVanguardsCannotPick(t *testing.T) {
+	v := path.NewVanguardSet(path.VanguardConfig{Count: 4}, nil)
+	only := []*directory.Relay{
+		{Nickname: "T", Fingerprint: "1111111111111111111111111111111111111111", Flags: []string{"Running", "Valid", "Guard", "Fast", "Stable"}},
+	}
+	_, err := selectOnionPath(v, nil, only, only[0])
+	if err == nil {
+		t.Fatal("已配置 vanguards 时不得退回随机中间跳")
+	}
+}

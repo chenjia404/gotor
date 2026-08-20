@@ -110,6 +110,101 @@ func TestVanguardSetPersistsAndReloads(t *testing.T) {
 	}
 }
 
+func TestVanguardAndGuardConcurrentState(t *testing.T) {
+	dir := t.TempDir()
+	gm, err := NewGuardManager(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := vgPool()
+	v := NewVanguardSet(VanguardConfig{
+		StatePath: filepath.Join(dir, datadir.StateFileName),
+		Count:     4,
+		MinLife:   time.Hour,
+		MaxLife:   time.Hour,
+	}, nil)
+	done := make(chan error, 2)
+	go func() {
+		for i := 0; i < 20; i++ {
+			if err := gm.AddGuard(pool[i%3]); err != nil {
+				done <- err
+				return
+			}
+			if err := gm.Save(); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	go func() {
+		for i := 0; i < 20; i++ {
+			if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, datadir.StateFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	txt := string(raw)
+	if !strings.Contains(txt, hsLayer2GuardsStateKey) {
+		t.Fatal("并发写后丢掉 L2 键")
+	}
+	if !strings.Contains(txt, "Guard") {
+		t.Fatal("并发写后丢掉官方 Guard 行")
+	}
+}
+
+func TestVanguardAndGuardShareStateFile(t *testing.T) {
+	dir := t.TempDir()
+	gm, err := NewGuardManager(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := vgPool()
+	if err := gm.AddGuard(pool[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := gm.Save(); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(dir, datadir.StateFileName)
+	v := NewVanguardSet(VanguardConfig{StatePath: state, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := gm.Save(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	txt := string(raw)
+	if !strings.Contains(txt, hsLayer2GuardsStateKey) {
+		t.Fatal("Guard 再写后不得丢掉 L2 键")
+	}
+	if !strings.Contains(txt, strings.ToUpper(pool[0].Fingerprint)) {
+		t.Fatal("L2 写入后不得丢掉 Guard 行")
+	}
+	again := NewVanguardSet(VanguardConfig{StatePath: state, Count: 4}, nil)
+	if err := again.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Fingerprints()) != 4 {
+		t.Fatalf("reload L2 %v", again.Fingerprints())
+	}
+}
+
 func TestVanguardSetAvoidDisk(t *testing.T) {
 	dir := t.TempDir()
 	state := filepath.Join(dir, datadir.StateFileName)
@@ -148,6 +243,41 @@ func TestVanguardSetExpiresAndRefills(t *testing.T) {
 	}
 	if same == 4 {
 		t.Fatal("全部过期后不应原样保留")
+	}
+}
+
+func TestVanguardSetKeepsL2WhenTargetMatches(t *testing.T) {
+	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	pool := vgPool()
+	if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
+		t.Fatal(err)
+	}
+	before := append([]string{}, v.Fingerprints()...)
+	if len(before) != 4 {
+		t.Fatalf("%v", before)
+	}
+	// 把某个已固定 L2 当作本条电路目标，不得从全局集合剔除。
+	var hit *directory.Relay
+	for _, r := range pool {
+		if containsFP(before, r.Fingerprint) {
+			hit = r
+			break
+		}
+	}
+	if hit == nil {
+		t.Fatal("no L2 in pool")
+	}
+	if _, err := v.SelectHSPath(pool, hit, nil); err != nil {
+		t.Fatal(err)
+	}
+	after := v.Fingerprints()
+	if len(after) != 4 {
+		t.Fatalf("target=L2 后集合被收缩: %v → %v", before, after)
+	}
+	for _, fp := range before {
+		if !containsFP(after, fp) {
+			t.Fatalf("L2 %s 因当前目标被踢出集合", fp)
+		}
 	}
 }
 

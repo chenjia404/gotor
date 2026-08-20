@@ -9,16 +9,14 @@ import (
 	"github.com/opd-ai/go-tor/pkg/path"
 )
 
-// selectOnionPath 优先走 vanguards-lite（固定 L2）；未配置时退回随机 Guard/Middle。
+// selectOnionPath 已注入 VanguardSet 时必须走固定 L2，失败则关闭（不得随机中间跳冒充）。
+// 未配置 vanguards 时才退回随机 Guard/Middle。
 func selectOnionPath(v *path.VanguardSet, gm *path.GuardManager, relays []*directory.Relay, target *directory.Relay) (*path.Path, error) {
 	if target == nil {
 		return nil, fmt.Errorf("onion path: nil target")
 	}
 	if v != nil {
-		p, err := v.SelectHSPath(relays, target, path.PersistL1Fingerprints(gm))
-		if err == nil {
-			return p, nil
-		}
+		return v.SelectHSPath(relays, target, path.PersistL1Fingerprints(gm))
 	}
 	return randomAnonPath(relays, target)
 }
