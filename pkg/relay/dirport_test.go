@@ -2,6 +2,8 @@ package relay
 
 import (
 	"bufio"
+	"compress/gzip"
+	"compress/zlib"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -293,5 +295,77 @@ func TestDirCacheKeysFPViaBeginDir(t *testing.T) {
 	}
 	if !strings.Contains(string(body), testAuthFP2) {
 		t.Fatalf("BEGIN_DIR body missing fp2: %q", body)
+	}
+}
+
+func TestDirCacheGzipAndNotModified(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("network-status-version 3\nconsensus-gzip-test\n")
+	path := filepath.Join(dir, "cached-microdesc-consensus")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(dir, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gzip status %d", rec.Code)
+	}
+	if rec.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("encoding %q", rec.Header().Get("Content-Encoding"))
+	}
+	zr, err := gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(zr)
+	_ = zr.Close()
+	if err != nil || string(got) != string(body) {
+		t.Fatalf("gzip body %q %v", got, err)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+	req2.Header.Set("If-Modified-Since", st.ModTime().UTC().Format(http.TimeFormat))
+	rec2 := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("IMS status %d", rec2.Code)
+	}
+	if rec2.Body.Len() != 0 {
+		t.Fatal("304 不得带正文")
+	}
+}
+
+func TestDirCacheDotZIsDeflate(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("network-status-version 3\ndot-z\n")
+	if err := os.WriteFile(filepath.Join(dir, "cached-microdesc-consensus"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(dir, nil)
+	req := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc.z", http.NoBody)
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if rec.Header().Get("Content-Encoding") != "deflate" {
+		t.Fatalf("encoding %q", rec.Header().Get("Content-Encoding"))
+	}
+	zr, err := zlib.NewReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(zr)
+	_ = zr.Close()
+	if err != nil || string(got) != string(body) {
+		t.Fatalf("deflate body %q %v", got, err)
 	}
 }
