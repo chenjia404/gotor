@@ -391,6 +391,58 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 		}
 		cfg.ConnLimit = limit
 
+	case "DoSCircuitCreationEnabled":
+		n, err := parseDoSEnabled(value)
+		if err != nil {
+			return fmt.Errorf("invalid DoSCircuitCreationEnabled: %w", err)
+		}
+		cfg.DoSCircuitCreationEnabled = n
+
+	case "DoSCircuitCreationMinConnections":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("invalid DoSCircuitCreationMinConnections value: %s", value)
+		}
+		cfg.DoSCircuitCreationMinConnections = n
+
+	case "DoSCircuitCreationRate":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("invalid DoSCircuitCreationRate value: %s", value)
+		}
+		cfg.DoSCircuitCreationRate = n
+
+	case "DoSCircuitCreationBurst":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("invalid DoSCircuitCreationBurst value: %s", value)
+		}
+		cfg.DoSCircuitCreationBurst = n
+
+	case "DoSCircuitCreationDefenseTimePeriod":
+		d, err := parseDoSInterval(value)
+		if err != nil {
+			return fmt.Errorf("invalid DoSCircuitCreationDefenseTimePeriod: %w", err)
+		}
+		cfg.DoSCircuitCreationDefenseTime = d
+
+	case "DoSConnectionEnabled":
+		n, err := parseDoSEnabled(value)
+		if err != nil {
+			return fmt.Errorf("invalid DoSConnectionEnabled: %w", err)
+		}
+		cfg.DoSConnectionEnabled = n
+
+	case "DoSConnectionMaxConcurrentCount":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("invalid DoSConnectionMaxConcurrentCount value: %s", value)
+		}
+		cfg.DoSConnectionMaxConcurrentCount = n
+
+	case "DoSRefuseSingleHopClient":
+		cfg.DoSRefuseSingleHopClient = parseBool(value)
+
 	case "DormantTimeout":
 		timeout, err := parseDuration(value)
 		if err != nil {
@@ -1028,6 +1080,55 @@ func parseBridges(cfg *Config) error {
 
 // parseBool parses a boolean value from various string formats.
 // Accepts: 1/0, true/false, yes/no, on/off (case-insensitive)
+func parseDoSEnabled(s string) (int, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "auto":
+		return DoSEnabledAuto, nil
+	case "1", "true", "yes", "on":
+		return DoSEnabledOn, nil
+	case "0", "false", "no", "off":
+		return DoSEnabledOff, nil
+	default:
+		return 0, fmt.Errorf("must be auto, 0, or 1 (got %q)", s)
+	}
+}
+
+// parseDoSInterval 接受 C Tor INTERVAL：整数秒、Go duration、或 "3600 seconds" / "1 hour"。
+func parseDoSInterval(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty interval")
+	}
+	if n, err := strconv.Atoi(s); err == nil {
+		if n < 0 {
+			return 0, fmt.Errorf("negative interval")
+		}
+		return time.Duration(n) * time.Second, nil
+	}
+	if d, err := parseDuration(s); err == nil {
+		return d, nil
+	}
+	parts := strings.Fields(strings.ToLower(s))
+	if len(parts) == 2 {
+		n, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("invalid interval: %s", s)
+		}
+		switch parts[1] {
+		case "s", "sec", "second", "seconds":
+			return time.Duration(n) * time.Second, nil
+		case "m", "min", "minute", "minutes":
+			return time.Duration(n) * time.Minute, nil
+		case "h", "hour", "hours":
+			return time.Duration(n) * time.Hour, nil
+		case "d", "day", "days":
+			return time.Duration(n) * 24 * time.Hour, nil
+		}
+	}
+	return 0, fmt.Errorf("invalid interval: %s", s)
+}
+
 func parseBool(s string) bool {
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch s {
@@ -1124,6 +1225,14 @@ func SaveToFile(path string, cfg *Config) error {
 	// Network behavior
 	fmt.Fprintf(writer, "# Network Behavior\n")
 	fmt.Fprintf(writer, "ConnLimit %d\n", cfg.ConnLimit)
+	fmt.Fprintf(writer, "DoSCircuitCreationEnabled %s\n", FormatDoSEnabled(cfg.DoSCircuitCreationEnabled))
+	fmt.Fprintf(writer, "DoSCircuitCreationMinConnections %d\n", cfg.DoSCircuitCreationMinConnections)
+	fmt.Fprintf(writer, "DoSCircuitCreationRate %d\n", cfg.DoSCircuitCreationRate)
+	fmt.Fprintf(writer, "DoSCircuitCreationBurst %d\n", cfg.DoSCircuitCreationBurst)
+	fmt.Fprintf(writer, "DoSCircuitCreationDefenseTimePeriod %s\n", formatDuration(cfg.DoSCircuitCreationDefenseTime))
+	fmt.Fprintf(writer, "DoSConnectionEnabled %s\n", FormatDoSEnabled(cfg.DoSConnectionEnabled))
+	fmt.Fprintf(writer, "DoSConnectionMaxConcurrentCount %d\n", cfg.DoSConnectionMaxConcurrentCount)
+	fmt.Fprintf(writer, "DoSRefuseSingleHopClient %s\n", formatBool(cfg.DoSRefuseSingleHopClient))
 	fmt.Fprintf(writer, "DormantTimeout %s\n\n", formatDuration(cfg.DormantTimeout))
 
 	// Logging

@@ -45,18 +45,27 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 
 	switch relayCell.Command {
 	case cell.RelayBegin:
+		if err := h.refuseSingleHopIfNeeded(circ, clientConn); err != nil {
+			return err
+		}
 		if h.circuits.exits == nil {
 			return h.rejectExitAttempt(circ, clientConn, relayCell.StreamID)
 		}
 		return h.circuits.exits.HandleBegin(ctx, circ, clientConn, relayCell.StreamID, relayCell.Data)
 
 	case cell.RelayBeginDir:
+		if err := h.refuseSingleHopIfNeeded(circ, clientConn); err != nil {
+			return err
+		}
 		if h.circuits.exits == nil {
 			return h.rejectExitAttempt(circ, clientConn, relayCell.StreamID)
 		}
 		return h.circuits.exits.HandleBeginDir(ctx, circ, clientConn, relayCell.StreamID)
 
 	case cell.RelayResolve:
+		if err := h.refuseSingleHopIfNeeded(circ, clientConn); err != nil {
+			return err
+		}
 		if h.circuits.exits == nil {
 			return h.rejectExitAttempt(circ, clientConn, relayCell.StreamID)
 		}
@@ -104,6 +113,24 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 	default:
 		return nil
 	}
+}
+
+func (h *ForwardingHandler) refuseSingleHopIfNeeded(circ *ServerCircuit, clientConn net.Conn) error {
+	if h.circuits == nil || h.circuits.dos == nil || !h.circuits.dos.RefuseSingleHop() {
+		return nil
+	}
+	circ.mu.RLock()
+	extended := circ.didExtend
+	circ.mu.RUnlock()
+	if extended {
+		return nil
+	}
+	h.logger.Warn("DoSRefuseSingleHopClient: DESTROY", "circuit_id", circ.CircuitID)
+	if clientConn != nil {
+		_ = h.circuits.sendDestroyCell(clientConn, circ.CircuitID, cell.DestroyReasonProtocol)
+	}
+	h.circuits.CloseCircuit(circ.CircuitID)
+	return fmt.Errorf("single-hop client refused")
 }
 
 // rejectExitAttempt sends RELAY_END with EXITPOLICY reason

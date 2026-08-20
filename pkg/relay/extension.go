@@ -293,6 +293,12 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 		h.logger.Error("Failed to register extended circuit", "error", err)
 		return fmt.Errorf("registration failed: %w", err)
 	}
+	// 仅在下一跳已登记后打标：无效/失败的 EXTEND2 不得绕过 DoSRefuseSingleHopClient。
+	if circ, ok := h.circuits.GetCircuit(circuitID); ok && circ != nil {
+		circ.mu.Lock()
+		circ.didExtend = true
+		circ.mu.Unlock()
+	}
 
 	if clientConn != nil {
 		h.clientMu.Lock()

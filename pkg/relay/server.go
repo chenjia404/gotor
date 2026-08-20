@@ -91,6 +91,7 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 		}
 	}
 	ln.SetBandwidthHistory(bwHist)
+	ln.SetDoS(NewDoSGuardFromConfig(cfg))
 	s := &Server{cfg: cfg, keys: keys, listener: ln, policy: policy, bwHist: bwHist, logger: log.Component("relay")}
 	s.reach = NewReachability(ReachabilityConfig{
 		AssumeReachable: cfg.AssumeReachable,

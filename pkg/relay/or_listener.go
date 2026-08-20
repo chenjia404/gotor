@@ -29,6 +29,7 @@ type ORListener struct {
 
 	// Circuit handling
 	circuitHandler *CircuitHandler
+	dos            *DoSGuard
 
 	// Configuration
 	maxConnections int
@@ -192,6 +193,14 @@ func (l *ORListener) acceptLoop(ctx context.Context) {
 			}
 		}
 
+		if l.dos != nil {
+			if err := l.dos.OnConnect(clientIP(conn.RemoteAddr())); err != nil {
+				l.logger.Warn("DoS connection refused", "remote", conn.RemoteAddr(), "error", err)
+				conn.Close()
+				continue
+			}
+		}
+
 		if l.bwHist != nil {
 			conn = &countingConn{Conn: conn, hist: l.bwHist}
 		}
@@ -208,11 +217,15 @@ func (l *ORListener) handleConnection(ctx context.Context, rawConn net.Conn) {
 	defer l.wg.Done()
 
 	remoteAddr := rawConn.RemoteAddr().String()
+	ip := clientIP(rawConn.RemoteAddr())
 	l.logger.Info("New OR connection", "remote", remoteAddr)
 
 	// Ensure cleanup
 	defer func() {
 		rawConn.Close()
+		if l.dos != nil {
+			l.dos.OnDisconnect(ip)
+		}
 		l.logger.Info("OR connection closed", "remote", remoteAddr)
 	}()
 
@@ -367,7 +380,14 @@ type ORListenerStats struct {
 	ActiveConnections int
 }
 
-// SetBandwidthHistory 注入 OR 读写字节观测（nil 则不计）。
+// SetDoS 注入官方 DoS 守卫（同时接到 CircuitHandler）。
+func (l *ORListener) SetDoS(g *DoSGuard) {
+	l.dos = g
+	if l.circuitHandler != nil {
+		l.circuitHandler.SetDoS(g)
+	}
+}
+
 // SetBandwidthHistory 注入 OR 读写字节观测（nil 则不计）。
 func (l *ORListener) SetBandwidthHistory(h *BandwidthHistory) {
 	if l == nil {
