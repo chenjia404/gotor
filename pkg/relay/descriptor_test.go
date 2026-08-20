@@ -219,6 +219,9 @@ func TestDescriptorDoesNotAdvertiseDirCache2(t *testing.T) {
 			t.Fatalf("未达对外验收前禁止在 proto 宣告 %s，得到:\n%s", tok, protoLineOf(raw))
 		}
 	}
+	if !strings.Contains(raw, "LinkAuth=3") {
+		t.Fatalf("已校验 AUTHENTICATE type 3 时应宣告 LinkAuth=3，得到:\n%s", protoLineOf(raw))
+	}
 }
 
 func protoLineOf(raw string) string {

@@ -198,7 +198,8 @@ func (d *ServerDescriptor) build() error {
 	// diff / 压缩 / If-Modified-Since / 真网被当缓存的证据，禁止写 DirCache=2。
 	// HS 中继角色本切片仅受理 ESTABLISH_INTRO / ESTABLISH_RENDEZVOUS，
 	// 尚未对外服务 HSDir / INTRODUCE1 / RENDEZVOUS1，禁止写 HSDir= / HSIntro= / HSRend=。
-	fmt.Fprintf(&buf, "proto Link=3-5 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1\n")
+	// LinkAuth=3：入站已校验 AUTHENTICATE type 3（SLOG/CLOG/SCERT/TLSSECRETS/SIG）。
+	fmt.Fprintf(&buf, "proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1\n")
 	fmt.Fprintf(&buf, "published %s\n",
 		d.PublishedTime.Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(&buf, "fingerprint %s\n", formatFingerprintGroups(d.Fingerprint()))

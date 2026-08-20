@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"hash"
 	"net"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/protocol"
 	"github.com/opd-ai/go-tor/pkg/security"
 )
 
@@ -36,7 +39,10 @@ type ServerORConnection struct {
 type LinkProtocolHandler struct {
 	keys      *RelayKeys
 	logger    *logger.Logger
-	circIDLen int // 协商前为 2（CIRCID_LEN(v_in=0)=2）；VERSIONS 后再切 4
+	circIDLen int       // 协商前为 2（CIRCID_LEN(v_in=0)=2）；VERSIONS 后再切 4
+	outLog    hash.Hash // 本端写出的握手抄本（SLOG）
+	inLog     hash.Hash // 对端写入的握手抄本（CLOG）
+	slog      []byte    // AUTH_CHALLENGE 写完后的 SLOG 快照
 }
 
 // NewLinkProtocolHandler creates a new link protocol handler
@@ -48,14 +54,16 @@ func NewLinkProtocolHandler(keys *RelayKeys, log *logger.Logger) *LinkProtocolHa
 		keys:      keys,
 		logger:    log,
 		circIDLen: 2, // VERSIONS 按 v=0，必须用 2 字节 CircID
+		outLog:    sha256.New(),
+		inLog:     sha256.New(),
 	}
 }
 
 // HandleConnection 做应答方 link 握手（tor-spec negotiating-channels）。
 //
 // 顺序：收 VERSIONS（CircID=2）→ 发 VERSIONS（仍 2）→ 协商后切 4 字节
-// → 发 CERTS → 发 AUTH_CHALLENGE → 发 NETINFO → 收发起方 NETINFO
-// （权威作为中继发起时还会先发 CERTS+AUTHENTICATE，读时跳过）。
+// → 发 CERTS → 发 AUTH_CHALLENGE → 发 NETINFO → 收发起方
+// CERTS+AUTHENTICATE（可选）+ NETINFO。有 AUTHENTICATE 则按 LinkAuth=3 校验。
 func (h *LinkProtocolHandler) HandleConnection(ctx context.Context, conn net.Conn) (*ServerORConnection, error) {
 	orConn := &ServerORConnection{
 		conn:       conn,
@@ -101,12 +109,13 @@ func (h *LinkProtocolHandler) HandleConnection(ctx context.Context, conn net.Con
 	if err := h.sendAuthChallenge(conn); err != nil {
 		return nil, fmt.Errorf("failed to send AUTH_CHALLENGE: %w", err)
 	}
+	h.slog = h.outLog.Sum(nil)
 
 	if err := h.sendNetinfo(conn); err != nil {
 		return nil, fmt.Errorf("failed to send NETINFO: %w", err)
 	}
 
-	if err := h.receiveNetinfo(ctx, conn); err != nil {
+	if err := h.receiveInitiatorFinish(ctx, conn, orConn); err != nil {
 		return nil, fmt.Errorf("failed to receive client NETINFO: %w", err)
 	}
 
@@ -140,6 +149,7 @@ func (h *LinkProtocolHandler) receiveVersions(ctx context.Context, conn net.Conn
 		versions = append(versions, version)
 	}
 
+	h.noteInbound(cellData)
 	h.logger.Debug("Received VERSIONS cell", "versions", versions)
 	return versions, nil
 }
@@ -187,7 +197,6 @@ func (h *LinkProtocolHandler) sendCerts(conn net.Conn) error {
 }
 
 // sendAuthChallenge 发应答方 AUTH_CHALLENGE。权威作为中继发起时必须能选方法 3。
-// 本轮只发挑战，不校验 AUTHENTICATE（清单 LinkAuth=3 另做）。
 func (h *LinkProtocolHandler) sendAuthChallenge(conn net.Conn) error {
 	challenge := make([]byte, authChallengeLen)
 	if _, err := rand.Read(challenge); err != nil {
@@ -268,13 +277,18 @@ func encodeLinkAddress(ip net.IP) []byte {
 	return []byte{0x04, 4, 0, 0, 0, 0}
 }
 
-// receiveNetinfo 等到发起方 NETINFO。NETINFO 是握手结束标记。
-// 客户端只发 NETINFO；权威作为中继发起时会先发 CERTS+AUTHENTICATE。
+// receiveInitiatorFinish 等到发起方 NETINFO。NETINFO 是握手结束标记。
+// 客户端只发 NETINFO；中继/权威发起时会先发 CERTS+AUTHENTICATE（必须通过 LinkAuth=3）。
 // VPADDING 在 VERSIONS 之后任意数量、任意位置都允许。
-func (h *LinkProtocolHandler) receiveNetinfo(ctx context.Context, conn net.Conn) error {
+func (h *LinkProtocolHandler) receiveInitiatorFinish(ctx context.Context, conn net.Conn, orConn *ServerORConnection) error {
+	return h.receiveInitiatorFinishWithSecrets(ctx, conn, orConn, nil)
+}
+
+func (h *LinkProtocolHandler) receiveInitiatorFinishWithSecrets(ctx context.Context, conn net.Conn, orConn *ServerORConnection, tlsSecrets []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	var initiatorCERTS *protocol.CERTSCell
 	for {
 		cellData, err := h.readCellWithContext(ctx, conn)
 		if err != nil {
@@ -284,13 +298,54 @@ func (h *LinkProtocolHandler) receiveNetinfo(ctx context.Context, conn net.Conn)
 		case cell.CmdNetinfo:
 			h.logger.Debug("Received NETINFO cell")
 			return nil
-		case cell.CmdPadding, cell.CmdVPadding, cell.CmdCerts, cell.CmdAuthenticate, cell.CmdAuthChallenge:
-			h.logger.Debug("Skipping cell while waiting for NETINFO", "command", cellData.Command)
+		case cell.CmdPadding, cell.CmdVPadding:
+			h.noteInbound(cellData)
 			continue
+		case cell.CmdCerts:
+			h.noteInbound(cellData)
+			parsed, err := protocol.ParseCERTSCell(cellData)
+			if err != nil {
+				return fmt.Errorf("initiator CERTS: %w", err)
+			}
+			initiatorCERTS = parsed
+		case cell.CmdAuthenticate:
+			clog := h.inLog.Sum(nil)
+			if initiatorCERTS == nil {
+				return fmt.Errorf("AUTHENTICATE before CERTS")
+			}
+			secrets := tlsSecrets
+			if secrets == nil {
+				cid, err := initiatorCIDFromCERTS(initiatorCERTS)
+				if err != nil {
+					return err
+				}
+				secrets, err = exportLinkAuthTLSSecrets(conn, cid)
+				if err != nil {
+					return err
+				}
+			}
+			if err := verifyAuthenticateCell(cellData.Payload, initiatorCERTS, h.keys, h.slog, clog, secrets); err != nil {
+				return err
+			}
+			if orConn != nil {
+				orConn.authenticated = true
+			}
+			h.logger.Info("Initiator authenticated", "linkauth", 3)
 		default:
 			return fmt.Errorf("expected NETINFO cell, got %s", cellData.Command)
 		}
 	}
+}
+
+func (h *LinkProtocolHandler) noteInbound(c *cell.Cell) {
+	if h.inLog == nil || c == nil {
+		return
+	}
+	raw, err := encodeCellBytes(c, h.circIDWidth())
+	if err != nil {
+		return
+	}
+	_, _ = h.inLog.Write(raw)
 }
 
 func (h *LinkProtocolHandler) circIDWidth() int {
@@ -343,6 +398,9 @@ func (h *LinkProtocolHandler) writeCell(conn net.Conn, c *cell.Cell) error {
 		return fmt.Errorf("failed to encode cell: %w", err)
 	}
 
+	if h.outLog != nil {
+		_, _ = h.outLog.Write(buf.Bytes())
+	}
 	_, err := conn.Write(buf.Bytes())
 	return err
 }
