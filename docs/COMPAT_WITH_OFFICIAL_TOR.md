@@ -61,7 +61,7 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 | 角色 | 已对齐（含真网证据） | PARTIAL | 官方有我们没有 |
 |------|----------------------|---------|----------------|
 | **客户端** | 共识 9/9 验签、`cached-certs` 重启 0 次 `/tor/keys/fp`、DirCache=2 consdiff、microdesc、Link TLS+CERTS type 7、默认 ntor-v3 CREATE2/EXTEND2、3-hop SOCKS5 `IsTor=true`、RESOLVE、FlowCtrl=2 Vegas soak、Relay=5/6 CGO、Conflux=1、EXTEND2 IPv6、`p`/`p6` 出口策略、Desc=4 family-ids、Padding=2 协商 ACK、v3 `.onion` 客户端 HTTP 200 | Guard 选路与官方指纹仍可能有差异；Fast/MiddleOnly/BadExit 已强制但未单独真网标 WORKING；circpad token-removal | Vanguards-lite；完整 PT/网桥客户端生产路径；与 Tor Browser 同级的隔离/反指纹 |
-| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 consensus-microdesc、micro/all、`/tor/keys`、**上一份→当前 limited-ed**（未宣告 DirCache=2）；末端跳可回 `INTRO_ESTABLISHED` / `RENDEZVOUS_ESTABLISHED`（未宣告 HS*） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（多小时历史 diff / 压缩 / 304 / 真网被当缓存）；HSDir 收/服务、INTRODUCE1、RENDEZVOUS1；LinkAuth=3 服务端；relay 侧 CGO；官方级 DoS；完整 extra-info |
+| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 consensus-microdesc、micro/all、`/tor/keys`、**上一份→当前 limited-ed**（未宣告 DirCache=2）；末端跳可回 `INTRO_ESTABLISHED` / `RENDEZVOUS_ESTABLISHED`（未宣告 HS*） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（多小时历史 diff / 压缩 / 304 / 真网被当缓存）；HSDir 收/服务、INTRODUCE1、RENDEZVOUS1；relay 侧 CGO；官方级 DoS；完整 extra-info |
 | **洋葱托管** | 无（未上线） | ESTABLISH_INTRO；ntor `rend_circ_nonce`；BEGIN_DIR 上传；type-8 致盲证书 + 双层加密密封；torrc `HiddenService*` | **真网发布后被客户端找到并完成 INTRODUCE2→RENDEZVOUS**；官方 intro/rend 生命周期与限速；vanguards |
 | **网桥 / PT** | 无 | `pkg/pt` 子进程框架、obfs4 配置解析、本地 integration 桩 | 向 BridgeAuth 生产发布；客户端经官方 PT 进网；网桥描述符/统计与 C Tor 对齐 |
 | **控制端口** | AUTHENTICATE；**AUTHCHALLENGE SAFECOOKIE**；COOKIE / HASHEDPASSWORD；GETINFO/GETCONF/SETCONF 子集；SETEVENTS（CIRC/STREAM/BW/NOTICE 等）；SIGNAL；MAPADDRESS | GETINFO 键远少于 control-spec；`version` 仍回 `go-tor 0.1.0`（CLI `--version` 已报 `0.4.9.11 (gotor)`） | ADD_ONION / DEL_ONION；EXTENDCIRCUIT / ATTACHSTREAM；HSFETCH / HSPOST；USEFEATURE；完整 `circuit-status` / `ns/id` / `desc/id` 等 |
@@ -96,10 +96,10 @@ required-relay-protocols      Cons=2 Desc=2 DirCache=2 FlowCtrl=1-2 HSDir=2 HSIn
 当前描述符写的是：
 
 ```
-proto Link=3-5 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
+proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 ```
 
-问题：缺 DirCache/HSDir/HSIntro/HSRend/LinkAuth/Cons/Desc/Microdesc；`Circuit=` 不是现行 proto 名；Link 从 3 起、Conflux=1（mainnet 常见只写 2）。**禁止**在未实现时把 required 行写进 `proto` 骗权威。
+问题：缺 DirCache/HSDir/HSIntro/HSRend/Cons/Desc/Microdesc；`Circuit=` 不是现行 proto 名；Link 从 3 起、Conflux=1（mainnet 常见只写 2）。**禁止**在未实现时把 required 行写进 `proto` 骗权威。
 
 ---
 
@@ -140,10 +140,11 @@ proto Link=3-5 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ### 5. LinkAuth=3 服务端
 
-- [ ] **状态**：官方有我们没有
-- **现有代码**：客户端跳过 AUTH_CHALLENGE（符合普通客户端）。服务端已发 AUTH_CHALLENGE（方法 1+3）与 CERTS type 1/2/4/5/7；**尚未校验**发起方 AUTHENTICATE。
-- **要做**：验 AUTHENTICATE（Ed25519 LinkAuth=3：SLOG/CLOG/TLSSECRETS/SIG）。中继互连需要这条才能宣告 `LinkAuth=3`。
-- **禁止**：宣告 `LinkAuth=3` 却不验对端 AUTHENTICATE；把 TLS 客户端证书当成 LinkAuth。
+- [ ] **状态**：PARTIAL（应答方已校验 AUTHENTICATE AuthType 3：SLOG/CLOG/SCERT/TLSSECRETS/SIG；描述符已宣告 `LinkAuth=3`。普通客户端仍可不认证。**无**真网权威/中继作为发起方完成认证的观察证据；AuthType 1 不验）
+- **现有代码**：`pkg/relay/or_auth.go`、`pkg/relay/or_handler.go`、`pkg/relay/or_certs.go`（type 6）。互操作 `docs/interop/linkauth3.md`。
+- **已做（协议切片，2026-08-20）**：抄本截到 AUTH_CHALLENGE / AUTH 之前；CERTS type 2/4/6/7 + AUTH0003 字段与 Ed25519 SIG；TLS exporter context=CID。伪造 AUTH 则握手失败。
+- **要做**：AuthType 1（过时）可拒绝；真网中继互连观察。不要把 TLS 客户端证书当成 LinkAuth。
+- **禁止**：宣告 `LinkAuth=3` 却跳过 AUTHENTICATE；无 TLS exporter 时接受伪造 AUTH。
 
 ### 6. relay 侧 CGO
 
