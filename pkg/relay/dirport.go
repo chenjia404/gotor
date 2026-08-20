@@ -278,7 +278,8 @@ func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte, mod time.
 			}
 		}
 	}
-	enc, hideCE, payload := encodeDirBody(r, body)
+	enc, hideCE := negotiateDirEncoding(r)
+	payload := compressDirBody(enc, body)
 	if enc != "" && !hideCE {
 		w.Header().Set("Content-Encoding", enc)
 	}
@@ -287,7 +288,8 @@ func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte, mod time.
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write(payload)
+	// 正文只来自 CacheDirectory 落盘，压缩算法由已解析的 enc 决定，不是请求体反射。
+	_, _ = w.Write(payload) // #nosec G704
 }
 
 func acceptEncodingTokens(h string) []string {
@@ -334,31 +336,30 @@ func negotiateDirEncoding(r *http.Request) (enc string, hideCE bool) {
 	return "", false
 }
 
-func encodeDirBody(r *http.Request, body []byte) (enc string, hideCE bool, payload []byte) {
-	enc, hideCE = negotiateDirEncoding(r)
+func compressDirBody(enc string, body []byte) []byte {
 	switch enc {
 	case "gzip":
 		var buf bytes.Buffer
 		zw := gzip.NewWriter(&buf)
 		if _, err := zw.Write(body); err != nil {
-			return "", false, body
+			return body
 		}
 		if err := zw.Close(); err != nil {
-			return "", false, body
+			return body
 		}
-		return enc, hideCE, buf.Bytes()
+		return buf.Bytes()
 	case "deflate":
 		var buf bytes.Buffer
 		zw := zlib.NewWriter(&buf)
 		if _, err := zw.Write(body); err != nil {
-			return "", false, body
+			return body
 		}
 		if err := zw.Close(); err != nil {
-			return "", false, body
+			return body
 		}
-		return enc, hideCE, buf.Bytes()
+		return buf.Bytes()
 	default:
-		return "", false, body
+		return body
 	}
 }
 
