@@ -57,7 +57,7 @@
 | Circuit padding (Padding=2) | WORKING | 协商+HS setup+直方图 DROP；**真实验收** `TestRealCircpadNegotiate`：PADDING_NEGOTIATE→PADDING_NEGOTIATED OK（middle Padding=2） |
 | Onion Service v3 | WORKING | 客户端路径真实验收：描述符→会合→hs-ntor→BEGIN→**HTTP 200**（Tor Project onion，~14KB） |
 | Onion Service v3（托管） | PARTIAL | ESTABLISH_INTRO；ntor rend_circ_nonce；BEGIN_DIR 上传；**type-8 致盲证书 + 双层加密密封**；torrc HiddenService*。剩余：真网发布/INTRODUCE2 回路验收 |
-| Relay / Bridge | PARTIAL | ORPort；入站握手 VERSIONS(2)→CERTS 1/2/4/5/7→AUTH_CHALLENGE→NETINFO（协商后 CircID=4）；ORPort self-test 门闩（未测活不发布，`AssumeReachable` 跳过）；DirCache 可提供 consensus-microdesc / micro/all / `/tor/keys/fp`（未宣告 DirCache=2，仍缺 consdiff）；**ExitRelay 1 出口流**；CREATE2 ntor/ntor-v3；EXTEND2 剥层转发；描述符交叉证书与 Ed25519 摘要签名。未做：真网 Running / 进共识、AUTHENTICATE 校验、网桥、真网多跳中继/出口收录验收 |
+| Relay / Bridge | PARTIAL | ORPort；入站握手 VERSIONS(2)→CERTS 1/2/4/5/7→AUTH_CHALLENGE→NETINFO（协商后 CircID=4）；ORPort self-test 门闩（未测活不发布，`AssumeReachable` 跳过）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池 + 剥层/回程（离线单测，无官方客户端经 middle 出网证据）；DirCache 可提供 consensus-microdesc / micro/all / `/tor/keys/fp`（未宣告 DirCache=2，仍缺 consdiff）；**ExitRelay 1 出口流**；CREATE2 ntor/ntor-v3；描述符交叉证书与 Ed25519 摘要签名。未做：真网 Running / 进共识、AUTHENTICATE 校验、网桥、真网多跳中继/出口收录验收 |
 | Control Protocol | WORKING | GETINFO/SETCONF/SETEVENTS/SIGNAL/MAPADDRESS；**AUTHCHALLENGE SAFECOOKIE**；COOKIE/HASHEDPASSWORD；事件 CIRC/STREAM/BW/…/NOTICE |
 | Pluggable Transport | PARTIAL | 框架，非本轮验收 |
 
