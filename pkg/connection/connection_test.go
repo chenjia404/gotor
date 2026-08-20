@@ -3,6 +3,7 @@ package connection
 import (
 	"context"
 	"crypto/tls"
+	"net"
 	"testing"
 	"time"
 
@@ -496,6 +497,39 @@ func TestCertificatePinningInfrastructure(t *testing.T) {
 			t.Errorf("Expected no error when pinning disabled, got: %v", err)
 		}
 	})
+}
+
+func TestAttachOpenConnCellRoundTrip(t *testing.T) {
+	a, b := net.Pipe()
+	t.Cleanup(func() {
+		a.Close()
+		b.Close()
+	})
+	ca := New(DefaultConfig("192.0.2.1:1"), logger.NewDefault())
+	cb := New(DefaultConfig("192.0.2.1:2"), logger.NewDefault())
+	ca.AttachOpenConn(a)
+	cb.AttachOpenConn(b)
+	ca.SetCircIDLen(4)
+	cb.SetCircIDLen(4)
+
+	out := &cell.Cell{CircID: 0x80000001, Command: cell.CmdCreate2, Payload: []byte{0, 2, 0, 1, 0}}
+	gotCh := make(chan *cell.Cell, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		got, err := cb.ReceiveCell()
+		gotCh <- got
+		errCh <- err
+	}()
+	if err := ca.SendCell(out); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	got := <-gotCh
+	if got.CircID != out.CircID || got.Command != out.Command {
+		t.Fatalf("got circ=%#x cmd=%s", got.CircID, got.Command)
+	}
 }
 
 func TestWriteBlockedHeuristic(t *testing.T) {

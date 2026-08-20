@@ -371,8 +371,13 @@ func (c *Connection) SendCell(cell *cell.Cell) error {
 	default:
 	}
 
+	rw := c.stream()
+	if rw == nil {
+		return fmt.Errorf("connection has no stream")
+	}
+
 	start := time.Now()
-	if err := cell.EncodeLink(c.tlsConn, c.circIDWidth()); err != nil {
+	if err := cell.EncodeLink(rw, c.circIDWidth()); err != nil {
 		c.lastWriteNs.Store(time.Since(start).Nanoseconds())
 		c.logger.Error("Failed to send cell", "error", err, "command", cell.Command)
 		return fmt.Errorf("failed to send cell: %w", err)
@@ -421,15 +426,20 @@ func (c *Connection) ReceiveCellWithContext(ctx context.Context) (*cell.Cell, er
 	}
 	resultCh := make(chan result, 1)
 
+	rw := c.stream()
+	if rw == nil {
+		return nil, fmt.Errorf("connection has no stream")
+	}
+
 	go func() {
-		receivedCell, err := cell.DecodeCellLink(c.tlsConn, c.circIDWidth())
+		receivedCell, err := cell.DecodeCellLink(rw, c.circIDWidth())
 		resultCh <- result{cell: receivedCell, err: err}
 	}()
 
 	select {
 	case <-ctx.Done():
 		// Context cancelled - close connection to unblock the read
-		c.tlsConn.Close()
+		_ = rw.Close()
 		return nil, ctx.Err()
 	case res := <-resultCh:
 		if res.err != nil {
@@ -487,6 +497,26 @@ func (c *Connection) NetConn() net.Conn {
 		return c.tlsConn
 	}
 	return c.conn
+}
+
+// stream 返回实际用于信元读写的底层连接。生产路径是 TLS；测试可 AttachOpenConn。
+func (c *Connection) stream() net.Conn {
+	if c == nil {
+		return nil
+	}
+	if c.tlsConn != nil {
+		return c.tlsConn
+	}
+	return c.conn
+}
+
+// AttachOpenConn 把已建立的底层连接交给 Connection（测试或 TLS 已完成时）。
+func (c *Connection) AttachOpenConn(nc net.Conn) {
+	if c == nil || nc == nil {
+		return
+	}
+	c.conn = nc
+	c.setState(StateOpen)
 }
 
 func (c *Connection) circIDWidth() int {

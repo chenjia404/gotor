@@ -113,6 +113,15 @@ func (h *ForwardingHandler) DeliverFromNextHop(nextHopAddr string, c *cell.Cell)
 	if err := h.forwardCellToClient(ext, c); err != nil {
 		h.logger.Debug("forward to client failed", "error", err, "circuit_id", ext.ClientCircuitID)
 	}
+	if c.Command == cell.CmdDestroy {
+		// 下一跳已拆除：先摘映射再关入站电路，避免再向下一跳发 DESTROY。
+		h.extendedMu.Lock()
+		delete(h.extended, ext.ClientCircuitID)
+		h.extendedMu.Unlock()
+		if h.circuits != nil {
+			h.circuits.CloseCircuit(ext.ClientCircuitID)
+		}
+	}
 }
 
 // ForwardRelayCell forwards a relay cell from client to next hop

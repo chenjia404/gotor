@@ -290,14 +290,17 @@ func TestHandleExtend2_UnsupportedHandshake(t *testing.T) {
 	circuitID := uint32(123)
 
 	// Build EXTEND2 data with TAP handshake (unsupported)
-	data := make([]byte, 0, 128)
+	data := make([]byte, 0, 160)
 
-	// Link specifier
-	data = append(data, 1)            // NSPEC = 1
+	// Link specifiers: IPv4 + RSA identity（缺身份会先被拒，盖不住 TAP 分支）
+	data = append(data, 2)            // NSPEC = 2
 	data = append(data, 0)            // Type = IPv4
 	data = append(data, 6)            // Length = 6
 	data = append(data, 127, 0, 0, 1) // IP
 	data = append(data, 0x1F, 0x90)   // Port 8080
+	data = append(data, 2)            // Type = Legacy ID
+	data = append(data, 20)
+	data = append(data, make([]byte, 20)...)
 
 	// Handshake (TAP type 0x0000)
 	data = append(data, 0x00, 0x00)             // HTYPE = TAP

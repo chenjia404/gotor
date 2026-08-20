@@ -4,6 +4,7 @@ package relay
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/connection"
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/protocol"
 )
 
 // LinkSpecifier represents a way to reach the next relay
@@ -92,6 +94,48 @@ func extractAddressFromLinkSpecs(specs []LinkSpecifier) (string, error) {
 	return "", fmt.Errorf("no usable address in link specifiers")
 }
 
+// nextHopIdentity 来自 EXTEND2 的身份 specifier，供出站 CERTS 校验。
+type nextHopIdentity struct {
+	rsaFingerprint string // 40 字符大写 hex（type 2）
+	ed25519        []byte // 32 字节（type 3）
+}
+
+func (id nextHopIdentity) hasIdentity() bool {
+	return id.rsaFingerprint != "" || len(id.ed25519) == 32
+}
+
+// identitiesFromLinkSpecs 抽取 type 2 RSA 指纹与 type 3 Ed25519。
+func identitiesFromLinkSpecs(specs []LinkSpecifier) nextHopIdentity {
+	var id nextHopIdentity
+	for _, spec := range specs {
+		switch spec.Type {
+		case 2:
+			if len(spec.Data) == 20 {
+				id.rsaFingerprint = fmt.Sprintf("%X", spec.Data)
+			}
+		case 3:
+			if len(spec.Data) == 32 {
+				id.ed25519 = append([]byte(nil), spec.Data...)
+			}
+		}
+	}
+	return id
+}
+
+// newOutboundCircID 为出站 CREATE2 分配 CircID。
+// tor-spec create-created-cells：link protocol v4+ 发起方 MUST set MSB to 1。
+func newOutboundCircID() uint32 {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0x80000001
+	}
+	id := binary.BigEndian.Uint32(b[:]) | 0x80000000
+	if id == 0x80000000 {
+		return 0x80000001
+	}
+	return id
+}
+
 // ExtensionHandler handles circuit extension for relay servers
 type ExtensionHandler struct {
 	keys          *RelayKeys
@@ -154,6 +198,11 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 		return fmt.Errorf("no usable address: %w", err)
 	}
 
+	ident := identitiesFromLinkSpecs(specs)
+	if !ident.hasIdentity() {
+		return fmt.Errorf("EXTEND2 missing identity link specifier")
+	}
+
 	h.logger.Debug("Extracted next hop address", "address", address)
 
 	if offset+4 > len(data) {
@@ -176,13 +225,13 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 		return fmt.Errorf("unsupported handshake type: %d", htype)
 	}
 
-	nextConn, err := h.connectToNextHop(ctx, address)
+	nextConn, err := h.connectToNextHop(ctx, address, ident)
 	if err != nil {
 		h.logger.Error("Failed to connect to next hop", "address", address, "error", err)
 		return fmt.Errorf("connection failed: %w", err)
 	}
 
-	nextCircuitID := uint32(time.Now().UnixNano() & 0x7FFFFFFF)
+	nextCircuitID := newOutboundCircID()
 
 	if err := h.sendCreate2ToNextHop(nextConn, nextCircuitID, htype, handshakeData); err != nil {
 		h.logger.Error("Failed to send CREATE2 to next hop", "error", err)
@@ -230,7 +279,7 @@ func (h *ExtensionHandler) HandleExtend2(ctx context.Context, circuitID uint32, 
 	return nil
 }
 
-func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string) (*connection.Connection, error) {
+func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string, ident nextHopIdentity) (*connection.Connection, error) {
 	// Check if we already have a connection to this relay
 	h.connMutex.Lock()
 	if conn, exists := h.connPool[address]; exists {
@@ -245,6 +294,15 @@ func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string)
 	// Create connection config
 	cfg := connection.DefaultConfig(address)
 	cfg.Timeout = 10 * time.Second
+	if len(ident.ed25519) == 32 {
+		cfg.ExpectedIdentity = append([]byte(nil), ident.ed25519...)
+	}
+	if ident.rsaFingerprint != "" {
+		cfg.ExpectedFingerprint = ident.rsaFingerprint
+	}
+	if ident.hasIdentity() {
+		cfg.RequireCERTS = true
+	}
 
 	// Connect to next hop
 	conn := connection.New(cfg, h.logger)
@@ -267,51 +325,14 @@ func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string)
 	return conn, nil
 }
 
-// performLinkHandshake performs the link protocol handshake with next hop
+// performLinkHandshake 复用客户端出站握手：VERSIONS → 收 CERTS → 发 NETINFO → 收 NETINFO
+// （跳过 AUTH_CHALLENGE）。官方下一跳在 CREATE2 之前会先发完这组 cell。
 func (h *ExtensionHandler) performLinkHandshake(ctx context.Context, conn *connection.Connection) error {
-	// Send VERSIONS cell
-	versions := []uint16{3, 4, 5}
-	versionsPayload := make([]byte, len(versions)*2)
-	for i, v := range versions {
-		binary.BigEndian.PutUint16(versionsPayload[i*2:], v)
+	hs := protocol.NewHandshake(conn, h.logger)
+	if err := hs.PerformHandshake(ctx); err != nil {
+		return err
 	}
-
-	versionsCell := &cell.Cell{
-		CircID:  0,
-		Command: cell.CmdVersions,
-		Payload: versionsPayload,
-	}
-
-	if err := conn.SendCell(versionsCell); err != nil {
-		return fmt.Errorf("failed to send VERSIONS: %w", err)
-	}
-
-	// Receive VERSIONS response
-	respCell, err := conn.ReceiveCellWithContext(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to receive VERSIONS: %w", err)
-	}
-
-	if respCell.Command != cell.CmdVersions {
-		return fmt.Errorf("expected VERSIONS, got %d", respCell.Command)
-	}
-
-	// 协商到 v≥4 时使用 4 字节 CircID（与后续 CREATE2/RELAY 一致）
-	negotiated := uint16(3)
-	for i := 0; i+1 < len(respCell.Payload); i += 2 {
-		v := binary.BigEndian.Uint16(respCell.Payload[i : i+2])
-		if v >= 4 && v > negotiated {
-			negotiated = v
-		}
-	}
-	if negotiated >= 4 {
-		conn.SetCircIDLen(4)
-	} else {
-		conn.SetCircIDLen(2)
-	}
-
-	// CERTS/AUTH/NETINFO 完整交换后续补齐；CircID 宽度已对齐
-	h.logger.Debug("Link handshake completed (simplified)", "link_version", negotiated)
+	h.logger.Debug("Link handshake completed", "link_version", hs.NegotiatedVersion())
 	return nil
 }
 
@@ -346,30 +367,39 @@ func (h *ExtensionHandler) receiveCreated2FromNextHop(ctx context.Context, conn 
 	readerActive := h.linkReaders[addr]
 	h.connMutex.Unlock()
 
-	var respCell *cell.Cell
-	var err error
-	if readerActive {
-		ch := h.registerPending(addr, expectedCircuitID)
-		defer h.unregisterPending(addr, expectedCircuitID)
-		select {
-		case respCell = <-ch:
-		case <-ctx.Done():
-			return nil, fmt.Errorf("timeout waiting CREATED2: %w", ctx.Err())
+	for {
+		var respCell *cell.Cell
+		var err error
+		if readerActive {
+			ch := h.registerPending(addr, expectedCircuitID)
+			select {
+			case respCell = <-ch:
+				h.unregisterPending(addr, expectedCircuitID)
+			case <-ctx.Done():
+				h.unregisterPending(addr, expectedCircuitID)
+				return nil, fmt.Errorf("timeout waiting CREATED2: %w", ctx.Err())
+			}
+		} else {
+			respCell, err = conn.ReceiveCellWithContext(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("failed to receive cell: %w", err)
+			}
 		}
-	} else {
-		respCell, err = conn.ReceiveCellWithContext(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to receive cell: %w", err)
-		}
-	}
 
-	if respCell.Command != cell.CmdCreated2 {
-		return nil, fmt.Errorf("expected CREATED2, got %d", respCell.Command)
+		if respCell.Command == cell.CmdPadding || respCell.Command == cell.CmdVPadding {
+			continue
+		}
+		if respCell.Command == cell.CmdDestroy {
+			return nil, fmt.Errorf("next hop DESTROY while waiting CREATED2")
+		}
+		if respCell.Command != cell.CmdCreated2 {
+			return nil, fmt.Errorf("expected CREATED2, got %d", respCell.Command)
+		}
+		if respCell.CircID != expectedCircuitID {
+			return nil, fmt.Errorf("circuit ID mismatch: expected %d, got %d", expectedCircuitID, respCell.CircID)
+		}
+		return respCell, nil
 	}
-	if respCell.CircID != expectedCircuitID {
-		return nil, fmt.Errorf("circuit ID mismatch: expected %d, got %d", expectedCircuitID, respCell.CircID)
-	}
-	return respCell, nil
 }
 
 // registerExtendedCircuit registers the extended circuit mapping
