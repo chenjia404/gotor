@@ -691,21 +691,12 @@ func (m *ExitStreamManager) sendRelay(circ *ServerCircuit, clientConn net.Conn, 
 	if err != nil {
 		return err
 	}
-	plain, err := rc.Encode()
-	if err != nil {
-		return err
-	}
-	if len(plain) != 509 {
-		out := make([]byte, 509)
-		copy(out, plain)
-		plain = out
-	}
 	circ.mu.Lock()
 	defer circ.mu.Unlock()
 	if circ.crypto == nil {
 		return fmt.Errorf("circuit crypto gone")
 	}
-	enc, err := circ.crypto.encryptOutbound(plain)
+	enc, err := circ.crypto.originateRelay(rc)
 	if err != nil {
 		return err
 	}

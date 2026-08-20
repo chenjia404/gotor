@@ -173,6 +173,33 @@ func ParseNtorV3Extensions(msg []byte) ([]NtorV3Extension, error) {
 	return out, nil
 }
 
+// NtorV3ClientRequestedCGO 检查解密后的 CM 是否含 type 3 `[02 06]`。
+// 出现畸形 type 3 时返回 error，调用方必须失败握手，不得静默回退 tor1。
+func NtorV3ClientRequestedCGO(cm []byte) (bool, error) {
+	if len(cm) == 0 {
+		return false, nil
+	}
+	exts, err := ParseNtorV3Extensions(cm)
+	if err != nil {
+		return false, err
+	}
+	for _, ext := range exts {
+		if ext.Type != NtorV3ExtSubprotoRequest {
+			continue
+		}
+		caps, err := ParseSubprotoRequest(ext.Data)
+		if err != nil {
+			return false, fmt.Errorf("subproto_request: %w", err)
+		}
+		for _, c := range caps {
+			if c.ProtocolID == ProtoRelay && c.Cap == CapRelayCGO {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // EncodeCCRequest 是最新 C Tor 客户端在 FlowCtrl=2 时发送的 CM。
 func EncodeCCRequest() []byte {
 	return EncodeNtorV3Extensions([]NtorV3Extension{{Type: NtorV3ExtCCRequest}})

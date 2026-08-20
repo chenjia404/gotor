@@ -214,7 +214,7 @@ func TestDescriptorDoesNotAdvertiseDirCache2(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := string(desc.RawDescriptor)
-	for _, tok := range []string{"DirCache=", "HSDir=", "HSIntro=", "HSRend="} {
+	for _, tok := range []string{"DirCache=", "HSDir=", "HSIntro=", "HSRend=", "Relay=5", "Relay=6"} {
 		if strings.Contains(raw, tok) {
 			t.Fatalf("未达对外验收前禁止在 proto 宣告 %s，得到:\n%s", tok, protoLineOf(raw))
 		}
