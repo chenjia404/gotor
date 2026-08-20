@@ -53,3 +53,17 @@ func TestMatchHSDirDescriptor(t *testing.T) {
 		t.Fatal("改正文必须验签失败")
 	}
 }
+
+func TestParseLinkSpecifiersCapsUserLength(t *testing.T) {
+	intro := &IntroductionPoint{}
+	// nspec=255、LSLEN=255，正文只有 3 字节，不得按声明长度分配。
+	parseLinkSpecifiers([]byte{255, 0, 255, 1, 2}, intro)
+	if len(intro.LinkSpecifiers) != 0 {
+		t.Fatalf("超长 link specifier 不得入库, got %d", len(intro.LinkSpecifiers))
+	}
+	ok := &IntroductionPoint{}
+	parseLinkSpecifiers([]byte{1, 0, 6, 192, 0, 2, 1, 0, 80}, ok)
+	if len(ok.LinkSpecifiers) != 1 || len(ok.LinkSpecifiers[0].Data) != 6 {
+		t.Fatalf("合法 IPv4 specifier 应解析, got %+v", ok.LinkSpecifiers)
+	}
+}

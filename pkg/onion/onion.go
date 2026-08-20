@@ -963,7 +963,11 @@ func parseLinkSpecifiers(data []byte, intro *IntroductionPoint) {
 		return
 	}
 
+	const maxLinkSpecs = 16
 	nspec := int(data[0])
+	if nspec > maxLinkSpecs {
+		nspec = maxLinkSpecs
+	}
 	offset := 1
 
 	for i := 0; i < nspec && offset < len(data); i++ {
@@ -974,13 +978,13 @@ func parseLinkSpecifiers(data []byte, intro *IntroductionPoint) {
 		lstype := data[offset]
 		lslen := int(data[offset+1])
 		offset += 2
-
-		if offset+lslen > len(data) {
+		rest := len(data) - offset
+		if lslen < 0 || lslen > rest {
 			break
 		}
 
-		lsdata := make([]byte, lslen)
-		copy(lsdata, data[offset:offset+lslen])
+		// 从已夹紧的 rest 切片拷贝，避免按未校验长度 make。
+		lsdata := append([]byte(nil), data[offset:offset+lslen]...)
 		offset += lslen
 
 		intro.LinkSpecifiers = append(intro.LinkSpecifiers, LinkSpecifier{
