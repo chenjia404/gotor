@@ -153,7 +153,11 @@ func parseEdRange(s string, op byte) (n1, n2 int, endToEOF bool, err error) {
 		return 0, 0, false, fmt.Errorf("invalid ed start line %q", s)
 	}
 	n1, err = strconv.Atoi(left)
-	if err != nil || n1 < 1 {
+	if err != nil || n1 < 0 {
+		return 0, 0, false, fmt.Errorf("invalid ed start line %q", s)
+	}
+	// C Tor gen_ed_diff 对文件开头插入用 0a；d/c 的行号仍从 1 起。
+	if n1 == 0 && op != 'a' {
 		return 0, 0, false, fmt.Errorf("invalid ed start line %q", s)
 	}
 	if !hasComma {
@@ -237,7 +241,8 @@ func applyEdCommand(lines []string, cmd edCommand) ([]string, error) {
 		}
 		return spliceLines(lines, n1, n2, cmd.block), nil
 	case 'a':
-		if n1 < 1 || n1 > len(lines) {
+		// n1==0：插到文件开头（C Tor apply_ed_diff 允许 0a）。
+		if n1 < 0 || n1 > len(lines) {
 			return nil, fmt.Errorf("ed append line out of range")
 		}
 		out := make([]string, 0, len(lines)+len(cmd.block))
@@ -299,8 +304,12 @@ func checkEdReverseOrder(commands []edCommand, origLen int) error {
 	return nil
 }
 
-// consensusDiffFromDigest 计算 X-Or-Diff-From-Consensus / FromDigest。
+// ConsensusDiffFromDigest 计算 X-Or-Diff-From-Consensus / FromDigest。
 // 有签名边界时用 signed part；否则（仅单测无签名文档）哈希整份原文。
+func ConsensusDiffFromDigest(oldDoc string) string {
+	return consensusDiffFromDigest(oldDoc)
+}
+
 func consensusDiffFromDigest(oldDoc string) string {
 	if signed, err := extractConsensusSignedBody(oldDoc); err == nil {
 		return sha3_256Hex(signed)

@@ -32,6 +32,43 @@ func TestEnableConsensusDiskCache(t *testing.T) {
 	}
 }
 
+func TestPersistConsensusDiskKeepsPrevious(t *testing.T) {
+	dir := t.TempDir()
+	c := NewClient(nil)
+	if err := c.EnableConsensusDiskCache(dir); err != nil {
+		t.Fatal(err)
+	}
+	first := "network-status-version 3\nfirst\ndirectory-signature sha256 AA BB\n-----BEGIN SIGNATURE-----\nA\n-----END SIGNATURE-----\n"
+	second := "network-status-version 3\nsecond\ndirectory-signature sha256 CC DD\n-----BEGIN SIGNATURE-----\nB\n-----END SIGNATURE-----\n"
+	c.persistConsensusDisk(first)
+	c.persistConsensusDisk(second)
+
+	prev := filepath.Join(dir, cachedMicrodescConsensusPrevName)
+	got, err := os.ReadFile(prev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != first {
+		t.Fatalf("prev = %q", got)
+	}
+	curr, err := os.ReadFile(filepath.Join(dir, cachedMicrodescConsensusName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(curr) != second {
+		t.Fatalf("curr = %q", curr)
+	}
+
+	c.persistConsensusDisk(second)
+	got, err = os.ReadFile(prev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != first {
+		t.Fatal("相同共识不得覆盖 .prev")
+	}
+}
+
 func TestTryLoadConsensusDiskRejectsGarbage(t *testing.T) {
 	dir := t.TempDir()
 	c := NewClient(nil)

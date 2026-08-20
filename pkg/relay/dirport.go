@@ -9,19 +9,32 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
 const maxDirServeBytes = 8 << 20
 
+const (
+	cachedConsensusName     = "cached-microdesc-consensus"
+	cachedConsensusPrevName = "cached-microdesc-consensus.prev"
+)
+
 // DirCacheServer 用 CacheDirectory 的落盘共识/microdesc 应答 BEGIN_DIR / DirPort。
+// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/ 提供 limited-ed；不宣告 DirCache=2。
 type DirCacheServer struct {
 	cacheDir string
 	logger   *logger.Logger
 	srv      *http.Server
 	ln       net.Listener
+
+	diffMu     sync.Mutex
+	diffFrom   string
+	diffTo     string
+	diffCached string
 }
 
 func NewDirCacheServer(cacheDir string, log *logger.Logger) *DirCacheServer {
@@ -33,8 +46,10 @@ func NewDirCacheServer(cacheDir string, log *logger.Logger) *DirCacheServer {
 
 func (d *DirCacheServer) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/tor/status-vote/current/consensus-microdesc", d.serveFile("cached-microdesc-consensus"))
-	mux.HandleFunc("/tor/status-vote/current/consensus", d.serveFile("cached-microdesc-consensus"))
+	mux.HandleFunc("/tor/status-vote/current/consensus-microdesc/diff/", d.serveConsensusDiffPath)
+	mux.HandleFunc("/tor/status-vote/current/consensus/diff/", d.serveConsensusDiffPath)
+	mux.HandleFunc("/tor/status-vote/current/consensus-microdesc", d.serveConsensus)
+	mux.HandleFunc("/tor/status-vote/current/consensus", d.serveConsensus)
 	mux.HandleFunc("/tor/micro/all", d.serveFile("cached-microdescs"))
 	mux.HandleFunc("/tor/keys/all", d.serveFile("cached-certs"))
 	mux.HandleFunc("/tor/keys/fp/", d.serveKeysFP)
@@ -83,8 +98,144 @@ const (
 	maxCachedCertsLen = 2 << 20
 )
 
+func (d *DirCacheServer) serveConsensus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	curr, ok := d.readCachedFile(cachedConsensusName)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	hashes := directory.ParseOrDiffFromConsensusHeader(r.Header.Get("X-Or-Diff-From-Consensus"))
+	if len(hashes) > 0 {
+		if diff, ok := d.diffFromHashes(hashes, curr); ok {
+			writeDirBody(w, r, []byte(diff))
+			return
+		}
+	}
+	writeDirBody(w, r, []byte(curr))
+}
+
+func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	hash, ok := parseConsensusDiffPath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	curr, ok := d.readCachedFile(cachedConsensusName)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	diff, ok := d.diffFromHashes([]string{hash}, curr)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeDirBody(w, r, []byte(diff))
+}
+
+func parseConsensusDiffPath(path string) (hash string, ok bool) {
+	const (
+		micro = "/tor/status-vote/current/consensus-microdesc/diff/"
+		ns    = "/tor/status-vote/current/consensus/diff/"
+	)
+	rest := ""
+	switch {
+	case strings.HasPrefix(path, micro):
+		rest = strings.TrimPrefix(path, micro)
+	case strings.HasPrefix(path, ns):
+		rest = strings.TrimPrefix(path, ns)
+	default:
+		return "", false
+	}
+	rest = strings.Trim(rest, "/")
+	if rest == "" || strings.Contains(rest, "..") {
+		return "", false
+	}
+	hash, _, _ = strings.Cut(rest, "/")
+	hash = strings.ToLower(hash)
+	if len(hash) != 64 {
+		return "", false
+	}
+	for i := 0; i < len(hash); i++ {
+		c := hash[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", false
+		}
+	}
+	return hash, true
+}
+
+func (d *DirCacheServer) diffFromHashes(hashes []string, curr string) (string, bool) {
+	prev, ok := d.readCachedFile(cachedConsensusPrevName)
+	if !ok {
+		return "", false
+	}
+	from := strings.ToLower(directory.ConsensusDiffFromDigest(prev))
+	to := strings.ToLower(directory.ConsensusDiffFromDigest(curr))
+	matched := false
+	for _, h := range hashes {
+		if strings.EqualFold(h, from) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return "", false
+	}
+
+	d.diffMu.Lock()
+	defer d.diffMu.Unlock()
+	if d.diffCached != "" && d.diffFrom == from && d.diffTo == to {
+		return d.diffCached, true
+	}
+	diff, err := directory.GenerateConsensusDiff(prev, curr)
+	if err != nil {
+		if d.logger != nil {
+			d.logger.Warn("consdiff generate failed; serving full consensus instead", "error", err)
+		}
+		return "", false
+	}
+	d.diffFrom = from
+	d.diffTo = to
+	d.diffCached = diff
+	return diff, true
+}
+
+func (d *DirCacheServer) readCachedFile(name string) (string, bool) {
+	if d.cacheDir == "" {
+		return "", false
+	}
+	base := filepath.Clean(d.cacheDir)
+	path := filepath.Join(base, name)
+	if !strings.HasPrefix(path, base+string(os.PathSeparator)) && path != base {
+		return "", false
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- 仅允许 CacheDirectory 固定文件名
+	if err != nil || len(data) == 0 || len(data) > maxDirServeBytes {
+		return "", false
+	}
+	return string(data), true
+}
+
+func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(body)
+}
+
 // serveKeysFP 按 dir-spec 提供 /tor/keys/fp/<F>[+<F>…]，从 CacheDirectory/cached-certs 抽取。
-// 未实现 consdiff；本切片不宣告 DirCache=2。
+// consdiff 已接线；在缺多小时历史 diff / 压缩 / If-Modified-Since / 真网被当缓存之前，禁止宣告 DirCache=2。
 func (d *DirCacheServer) serveKeysFP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

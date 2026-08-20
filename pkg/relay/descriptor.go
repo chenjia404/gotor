@@ -193,6 +193,9 @@ func (d *ServerDescriptor) build() error {
 	fmt.Fprintf(&buf, "master-key-ed25519 %s\n",
 		base64.RawStdEncoding.EncodeToString(d.Ed25519Identity))
 	fmt.Fprintf(&buf, "platform %s\n", d.Platform)
+	// proto 只写已实现能力。DirCache 已能对外提供上一份→当前的 limited-ed，
+	// 但仍缺多小时历史 diff / 压缩 / If-Modified-Since / 真网被当缓存的证据，
+	// 禁止写 DirCache=2。
 	fmt.Fprintf(&buf, "proto Link=3-5 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1\n")
 	fmt.Fprintf(&buf, "published %s\n",
 		d.PublishedTime.Format("2006-01-02 15:04:05"))
