@@ -1,8 +1,9 @@
 package onion
 
 import (
+	"crypto/rand"
 	"fmt"
-	"math/rand"
+	"math/big"
 
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/path"
@@ -41,8 +42,8 @@ func randomAnonPath(relays []*directory.Relay, exit *directory.Relay) (*path.Pat
 		return nil, fmt.Errorf("insufficient path relays")
 	}
 	for try := 0; try < 48; try++ {
-		g := guards[rand.Intn(len(guards))]
-		m := middles[rand.Intn(len(middles))]
+		g := guards[cryptoIntn(len(guards))]
+		m := middles[cryptoIntn(len(middles))]
 		if sameRelay(g, m) || sameRelay(m, exit) {
 			continue
 		}
@@ -52,4 +53,15 @@ func randomAnonPath(relays []*directory.Relay, exit *directory.Relay) (*path.Pat
 		return &path.Path{Guard: g, Middle: m, Exit: exit}, nil
 	}
 	return &path.Path{Guard: guards[0], Middle: middles[0], Exit: exit}, nil
+}
+
+func cryptoIntn(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	v, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+	if err != nil {
+		return 0
+	}
+	return int(v.Int64())
 }
