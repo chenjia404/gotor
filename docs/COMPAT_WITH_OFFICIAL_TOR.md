@@ -61,7 +61,7 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 | 角色 | 已对齐（含真网证据） | PARTIAL | 官方有我们没有 |
 |------|----------------------|---------|----------------|
 | **客户端** | 共识 9/9 验签、`cached-certs` 重启 0 次 `/tor/keys/fp`、DirCache=2 consdiff、microdesc、Link TLS+CERTS type 7、默认 ntor-v3 CREATE2/EXTEND2、3-hop SOCKS5 `IsTor=true`、RESOLVE、FlowCtrl=2 Vegas soak、Relay=5/6 CGO、Conflux=1、EXTEND2 IPv6、`p`/`p6` 出口策略、Desc=4 family-ids、Padding=2 协商 ACK、v3 `.onion` 客户端 HTTP 200 | Guard 选路与官方指纹仍可能有差异；Fast/MiddleOnly/BadExit 已强制但未单独真网标 WORKING；circpad token-removal | Vanguards-lite；完整 PT/网桥客户端生产路径；与 Tor Browser 同级的隔离/反指纹 |
-| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；**ntor-v3 type 3 `[02 06]` 则 CGO 剥层/回程**（未宣告 Relay=5-6）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 consensus-microdesc、micro/all、`/tor/keys`、**上一份→当前 limited-ed**（未宣告 DirCache=2）；末端跳可回 `INTRO_ESTABLISHED` / `RENDEZVOUS_ESTABLISHED`（未宣告 HS*）；**extra-info-digest 交叉引用 + 观测带宽历史**（无观测不写 history） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（多小时历史 diff / 压缩 / 304 / 真网被当缓存）；HSDir 收/服务、INTRODUCE1、RENDEZVOUS1；真网被请求 CGO 的证据；官方级 DoS；完整 extra-info（dirreq/exit/conn-bi-direct 与真网归档） |
+| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；**ntor-v3 type 3 `[02 06]` 则 CGO 剥层/回程**（未宣告 Relay=5-6）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 consensus-microdesc、micro/all、`/tor/keys`、**上一份→当前 limited-ed**（未宣告 DirCache=2）；末端跳可回 `INTRO_ESTABLISHED` / `RENDEZVOUS_ESTABLISHED`（未宣告 HS*）；**extra-info-digest 交叉引用 + 观测带宽历史**（无观测不写 history）；**官方 DoS* 键 + CREATE2/每 IP 接线**（默认 auto 关） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（多小时历史 diff / 压缩 / 304 / 真网被当缓存）；HSDir 收/服务、INTRODUCE1、RENDEZVOUS1；真网被请求 CGO 的证据；共识驱动的完整 dos.c；完整 extra-info（dirreq/exit/conn-bi-direct 与真网归档） |
 | **洋葱托管** | 无（未上线） | ESTABLISH_INTRO；ntor `rend_circ_nonce`；BEGIN_DIR 上传；type-8 致盲证书 + 双层加密密封；torrc `HiddenService*` | **真网发布后被客户端找到并完成 INTRODUCE2→RENDEZVOUS**；官方 intro/rend 生命周期与限速；vanguards |
 | **网桥 / PT** | 无 | `pkg/pt` 子进程框架、obfs4 配置解析、本地 integration 桩 | 向 BridgeAuth 生产发布；客户端经官方 PT 进网；网桥描述符/统计与 C Tor 对齐 |
 | **控制端口** | AUTHENTICATE；**AUTHCHALLENGE SAFECOOKIE**；COOKIE / HASHEDPASSWORD；GETINFO/GETCONF/SETCONF 子集；SETEVENTS（CIRC/STREAM/BW/NOTICE 等）；SIGNAL；MAPADDRESS | GETINFO 键远少于 control-spec；`version` 仍回 `go-tor 0.1.0`（CLI `--version` 已报 `0.4.9.11 (gotor)`） | ADD_ONION / DEL_ONION；EXTENDCIRCUIT / ATTACHSTREAM；HSFETCH / HSPOST；USEFEATURE；完整 `circuit-status` / `ns/id` / `desc/id` 等 |
@@ -171,10 +171,11 @@ proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ### 9. 官方级 DoS
 
-- [ ] **状态**：PARTIAL（有连接/电路计数器，不是 C Tor DoS 子系统）
-- **现有代码**：`pkg/relay/protection.go`、`pkg/relay/ratelimit.go`。审计曾指出 CREATE2 路径未完全接入。
-- **要做**：对照 C Tor `dos.c` / torrc `DoSCircuitCreation*` `DoSConnection*` `DoSRefuseSingleHopClient` 等：按 IP 的电路创建令牌桶、连接上限、单跳拒绝、共识 `DoS*` 参数。
-- **禁止**：只加全局 `MaxConnections` 就写「官方级 DoS」；用审计文档里的「100% DoS」自评。
+- [ ] **状态**：PARTIAL（官方 `DoS*` 键 + CREATE2/每 IP 已接线；**无**共识参数、**无**连接速率桶）
+- **现有代码**：`DoSGuard`（`pkg/relay/dos.go`）接到 OR 监听与 `handleCreate2`。`ProtectionManager` 仍未接入，不要当官方 DoS。互操作 `docs/interop/dos-relay.md`。
+- **已做（协议切片，2026-08-20）**：解析 `DoSCircuitCreation*` / `DoSConnectionEnabled` / `MaxConcurrentCount` / `DoSRefuseSingleHopClient`；默认 auto 且无共识则关。显式 1 时每 IP 并发 OR 上限 + CREATE2 令牌桶（达 MinConnections 后）；桶空进入 DefenseTimePeriod。`RefuseSingleHop`：仅成功 EXTEND（下一跳已登记）后才放行 BEGIN/BEGIN_DIR/RESOLVE。**不改** `ConnLimit` 语义。
+- **要做**：共识 `DoS*` auto；`DoSConnectionConnectRate` / Burst；`DoSStreamCreation*`；按 AUTHENTICATE 区分中继单跳。
+- **禁止**：只加全局 `MaxConnections` 就写「官方级 DoS」；用审计文档里的「100% DoS」自评；默认 auto 却按已开启宣传。
 
 ### 10. vanguards
 

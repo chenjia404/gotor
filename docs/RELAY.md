@@ -55,5 +55,6 @@ gotor ORPort 9001 ExitRelay 1 ReduceExitPolicy 1 SocksPort 0 \
 - 入站可校验 AUTHENTICATE type 3（LinkAuth=3）；普通客户端不认证。无 AuthType 1。
 - ntor-v3 客户端请求 type 3 `[02 06]` 时走 CGO（AES-128 UIV+ / v1）；未请求则仍 tor1。描述符不写 `Relay=5-6`。
 - extra-info：描述符写 `extra-info-digest`，与 extra-info 一次 POST；只写已完成 900s 观测格。无观测不写 history。仍缺 dirreq/exit/conn-bi-direct 与真网归档。
+- 官方 `DoS*`：默认 auto 关闭。显式 1 时每 IP 并发 OR 上限 + CREATE2 令牌桶；`DoSRefuseSingleHopClient` 仅在成功 EXTEND 后放行 BEGIN。不改 `ConnLimit`。仍缺共识参数与连接速率桶。见 `docs/interop/dos-relay.md`。
 - FlowCtrl=2 出口侧使用 `sendme_inc=31` 与初始 cwnd=124，未实现完整 Vegas 自适应
 - 客户端 SOCKS 流量不会被当成出口

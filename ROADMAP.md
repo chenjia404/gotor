@@ -10,7 +10,7 @@
 > 清单第 3 项（DirCache 对外）：上一份→当前 limited-ed 已接线（#53），**仍 PARTIAL**，未宣告 DirCache=2，无真网被当缓存证据。  
 > 清单第 4 项（HS 中继角色）：ESTABLISH_INTRO / ESTABLISH_RENDEZVOUS 已回 ACK（#55），**仍 PARTIAL**，未宣告 HS*，无 HSDir / INTRODUCE1 / RENDEZVOUS1。  
 > 清单第 5 项（LinkAuth=3）：应答方已校验 AUTHENTICATE type 3（#57），描述符已宣告 `LinkAuth=3`，**仍 PARTIAL**（无真网中继互连观察）。  
-> 清单第 8 项（extra-info）：digest 交叉引用 + 观测带宽历史（#61），**仍 PARTIAL**。第 7 项洋葱托管 INTRODUCE2 是观察/超大项，不要空 PR。下一项代码缺口：第 9 项官方级 DoS。
+> 清单第 9 项（官方级 DoS）：官方 `DoS*` 键 + CREATE2/每 IP 接线（#63），**仍 PARTIAL**（无共识参数）。第 7 项洋葱托管 INTRODUCE2 是观察/超大项，不要空 PR。下一项代码缺口：第 10 项 vanguards。
 
 ## Current Status (January 2026)
 
