@@ -8,7 +8,8 @@
 > 中继清单第 1 项（进共识 Running）：入站握手与 ORPort self-test 门闩见 [`docs/COMPAT_WITH_OFFICIAL_TOR.md`](docs/COMPAT_WITH_OFFICIAL_TOR.md)，**仍 PARTIAL**，缺真网 Running。  
 > 清单第 2 项（真网当中间跳）：出站握手 / CircID MSB / 按身份入池已接线，**仍 PARTIAL**，无官方客户端经 gotor middle 出网证据。  
 > 清单第 3 项（DirCache 对外）：上一份→当前 limited-ed 已接线（#53），**仍 PARTIAL**，未宣告 DirCache=2，无真网被当缓存证据。  
-> 清单第 4 项（HS 中继角色）：ESTABLISH_INTRO / ESTABLISH_RENDEZVOUS 已回 ACK（#55），**仍 PARTIAL**，未宣告 HS*，无 HSDir / INTRODUCE1 / RENDEZVOUS1。下一项代码缺口：第 5 项 LinkAuth=3 服务端。
+> 清单第 4 项（HS 中继角色）：ESTABLISH_INTRO / ESTABLISH_RENDEZVOUS 已回 ACK（#55），**仍 PARTIAL**，未宣告 HS*，无 HSDir / INTRODUCE1 / RENDEZVOUS1。  
+> 清单第 5 项（LinkAuth=3）：应答方已校验 AUTHENTICATE type 3（#57），描述符已宣告 `LinkAuth=3`，**仍 PARTIAL**（无真网中继互连观察）。下一项代码缺口：第 6 项 relay 侧 CGO。
 
 ## Current Status (January 2026)
 
