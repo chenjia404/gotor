@@ -24,6 +24,8 @@ type ORListener struct {
 	// Connection management
 	connsMu     sync.RWMutex
 	connections map[string]*ORConnection
+	// activeConns 含握手中与已登记连接，用于 ConnLimit；不得只数 map。
+	activeConns int
 	stopCh      chan struct{}
 	wg          sync.WaitGroup
 
@@ -39,6 +41,7 @@ type ORListener struct {
 	// Statistics
 	statsMu          sync.RWMutex
 	totalConnections uint64
+	rejectedConns    uint64
 }
 
 // ORListenerConfig holds configuration for the OR listener
@@ -180,21 +183,30 @@ func (l *ORListener) acceptLoop(ctx context.Context) {
 			continue
 		}
 
-		// Check connection limit
-		if l.maxConnections > 0 {
-			l.connsMu.RLock()
-			connCount := len(l.connections)
-			l.connsMu.RUnlock()
-
-			if connCount >= l.maxConnections {
-				l.logger.Warn("Connection limit reached, rejecting", "remote", conn.RemoteAddr())
-				conn.Close()
-				continue
+		// ConnLimit：握手中也占名额，避免只数已完成链路时放行过多半开连接。
+		l.connsMu.Lock()
+		if l.maxConnections > 0 && l.activeConns >= l.maxConnections {
+			l.rejectedConns++
+			rejected := l.rejectedConns
+			active := l.activeConns
+			l.connsMu.Unlock()
+			// 拒连日志降频，避免打满磁盘（每 1000 次记一条）
+			if rejected == 1 || rejected%1000 == 0 {
+				l.logger.Warn("Connection limit reached, rejecting",
+					"remote", conn.RemoteAddr(),
+					"active", active,
+					"limit", l.maxConnections,
+					"rejected_total", rejected)
 			}
+			conn.Close()
+			continue
 		}
+		l.activeConns++
+		l.connsMu.Unlock()
 
 		if l.dos != nil {
 			if err := l.dos.OnConnect(clientIP(conn.RemoteAddr())); err != nil {
+				l.releaseActiveSlot()
 				l.logger.Warn("DoS connection refused", "remote", conn.RemoteAddr(), "error", err)
 				conn.Close()
 				continue
@@ -212,9 +224,19 @@ func (l *ORListener) acceptLoop(ctx context.Context) {
 	}
 }
 
+// releaseActiveSlot 归还 accept 时预占的 ConnLimit 名额。
+func (l *ORListener) releaseActiveSlot() {
+	l.connsMu.Lock()
+	if l.activeConns > 0 {
+		l.activeConns--
+	}
+	l.connsMu.Unlock()
+}
+
 // handleConnection handles a single OR connection
 func (l *ORListener) handleConnection(ctx context.Context, rawConn net.Conn) {
 	defer l.wg.Done()
+	defer l.releaseActiveSlot()
 
 	remoteAddr := rawConn.RemoteAddr().String()
 	ip := clientIP(rawConn.RemoteAddr())
@@ -252,7 +274,7 @@ func (l *ORListener) handleConnection(ctx context.Context, rawConn net.Conn) {
 		logger:     l.logger,
 	}
 
-	// Register connection
+	// Register connection（activeConns 已在 accept 时计入）
 	l.connsMu.Lock()
 	l.connections[remoteAddr] = orConn
 	l.connsMu.Unlock()
@@ -333,11 +355,25 @@ func (l *ORListener) Stop() error {
 	return nil
 }
 
-// ConnectionCount returns the number of active connections
+// ConnectionCount returns post-handshake OR connections.
 func (l *ORListener) ConnectionCount() int {
 	l.connsMu.RLock()
 	defer l.connsMu.RUnlock()
 	return len(l.connections)
+}
+
+// ActiveConnectionCount returns in-flight + established slots held against ConnLimit.
+func (l *ORListener) ActiveConnectionCount() int {
+	l.connsMu.RLock()
+	defer l.connsMu.RUnlock()
+	return l.activeConns
+}
+
+// RejectedConnectionCount returns how many accepts were refused by ConnLimit.
+func (l *ORListener) RejectedConnectionCount() uint64 {
+	l.connsMu.RLock()
+	defer l.connsMu.RUnlock()
+	return l.rejectedConns
 }
 
 // ORConnection represents a single OR connection

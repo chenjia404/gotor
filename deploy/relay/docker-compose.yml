@@ -1,0 +1,60 @@
+# de5-ssd 等公网中继测试编排（数据挂载 data/，不用 named volume）
+# 公网只暴露 ORPort；SOCKS/Control/Metrics 不映射主机。
+services:
+  gotor:
+    image: chenjia404/gotor:latest
+    container_name: gotor-relay
+    restart: unless-stopped
+    command:
+      - -f
+      - /home/nonroot/torrc
+      - -metrics-port
+      - "9052"
+    ports:
+      - "9001:9001"
+    volumes:
+      - ./data:/home/nonroot/.tor
+      - ./torrc:/home/nonroot/torrc:ro
+    environment:
+      - TZ=UTC
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    # 1Gbps middle：Tor 社区建议 ≥1GiB RAM、≥7000 并发连接
+    mem_limit: 2g
+    cpus: "2.0"
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # 必须与 gotor 共享 network namespace（SOCKS/metrics 绑 127.0.0.1）。
+  # 注意：gotor 单独 restart 后 loadgen 会留在旧 netns，部署/巡检需 recreate loadgen。
+  loadgen:
+    build:
+      context: ./loadgen
+      dockerfile: Dockerfile
+    image: gotor-loadgen:local
+    container_name: gotor-loadgen
+    restart: unless-stopped
+    network_mode: service:gotor
+    depends_on:
+      - gotor
+    volumes:
+      - ./logs:/logs
+      - ./loadgen/run.sh:/run.sh:ro
+    environment:
+      - TZ=UTC
+      - INTERVAL=45
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -330,6 +330,65 @@ func BenchmarkORConnectionAccept(b *testing.B) {
 	}
 }
 
+// 握手未完成也必须占用 ConnLimit，否则半开连接可绕过限额。
+func TestORListenerInFlightCountsTowardLimit(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatalf("Failed to generate keys: %v", err)
+	}
+	defer keys.Destroy()
+
+	cfg := DefaultORListenerConfig("127.0.0.1:0", keys)
+	cfg.MaxConnections = 2
+	listener, err := NewORListener(cfg, nil)
+	if err != nil {
+		t.Fatalf("Failed to create listener: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := listener.Start(ctx); err != nil {
+		t.Fatalf("Failed to start listener: %v", err)
+	}
+	defer listener.Stop()
+
+	addr := listener.listener.Addr().String()
+
+	// 明文 TCP 占住 accept 后的名额（不完成 TLS，连接会一直卡在握手）
+	hold1, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("hold1: %v", err)
+	}
+	defer hold1.Close()
+	hold2, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("hold2: %v", err)
+	}
+	defer hold2.Close()
+
+	if err := waitFor(2*time.Second, func() bool {
+		return listener.ActiveConnectionCount() >= 2
+	}); err != nil {
+		t.Fatalf("active slots not filled: %v (active=%d)", err, listener.ActiveConnectionCount())
+	}
+
+	hold3, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("hold3 dial: %v", err)
+	}
+	defer hold3.Close()
+
+	if err := waitFor(2*time.Second, func() bool {
+		return listener.RejectedConnectionCount() >= 1
+	}); err != nil {
+		t.Fatalf("expected reject for 3rd connection: %v rejected=%d active=%d",
+			err, listener.RejectedConnectionCount(), listener.ActiveConnectionCount())
+	}
+	if listener.ActiveConnectionCount() > 2 {
+		t.Fatalf("active=%d want <=2", listener.ActiveConnectionCount())
+	}
+}
+
 // Helper to wait for condition with timeout
 func waitFor(timeout time.Duration, condition func() bool) error {
 	deadline := time.Now().Add(timeout)

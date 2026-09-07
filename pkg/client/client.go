@@ -156,8 +156,12 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 		listenAddr = "127.0.0.1"
 	}
 	socksAddr := net.JoinHostPort(listenAddr, strconv.Itoa(cfg.SocksPort))
+	socksMaxConns := cfg.ConnLimit
+	if socksMaxConns < 1 {
+		socksMaxConns = 1000
+	}
 	socksConfig := &socks.Config{
-		MaxConnections:      1000,
+		MaxConnections:      socksMaxConns,
 		IsolationLevel:      parseIsolationLevel(cfg.IsolationLevel),
 		IsolateDestinations: cfg.IsolateDestinations,
 		IsolateSOCKSAuth:    cfg.IsolateSOCKSAuth,

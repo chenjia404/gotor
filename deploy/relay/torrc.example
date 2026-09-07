@@ -1,0 +1,20 @@
+# gotor 公网非出口中继示例（de5-ssd：1Gbps）
+DataDirectory /home/nonroot/.tor
+SocksPort 127.0.0.1:9050
+ControlPort 9051
+CookieAuthentication 1
+LogLevel info
+
+ORPort 0.0.0.0:9001
+Nickname gotorDe5
+Address 65.109.87.89
+ExitRelay 0
+PublishServerDescriptor 1
+AssumeReachable 1
+
+# middle 建议可扛 ≥7000 并发；过小会大量 Connection limit reached
+ConnLimit 10000
+
+RelayBandwidthRate 125 MBytes
+RelayBandwidthBurst 250 MBytes
+ContactInfo gotor-de5@invalid.example

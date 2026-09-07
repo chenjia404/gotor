@@ -114,6 +114,7 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 	s.logger.Info("relay configured",
 		"nickname", cfg.Nickname,
 		"or_listen", listen,
+		"conn_limit", orCfg.MaxConnections,
 		"exit", cfg.ExitRelay,
 		"exit_announce", policy.WouldAnnounceExit(),
 		"fingerprint", keys.Fingerprint(),
