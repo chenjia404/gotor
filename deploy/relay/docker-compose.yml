@@ -10,20 +10,25 @@ services:
       - /home/nonroot/torrc
       - -metrics-port
       - "9052"
+      - -metrics-addr
+      - "0.0.0.0"
     ports:
+      # 只映射 ORPort。SOCKS/metrics 绑在 compose 网络内，不发布到宿主机。
       - "9001:9001"
     volumes:
       - ./data:/home/nonroot/.tor
       - ./torrc:/home/nonroot/torrc:ro
     environment:
       - TZ=UTC
+      # 软限制低于 mem_limit，让 GC 在顶满 cgroup 之前归还堆。
+      - GOMEMLIMIT=3GiB
     read_only: true
     tmpfs:
       - /tmp:size=64M,mode=1777
     security_opt:
       - no-new-privileges:true
-    # 1Gbps middle：Tor 社区建议 ≥1GiB RAM、≥7000 并发连接
-    mem_limit: 2g
+    # 1Gbps middle：进程 RSS 会到 2GiB 以上，2g 上限会顶满。
+    mem_limit: 4g
     cpus: "2.0"
     ulimits:
       nofile:
@@ -35,8 +40,8 @@ services:
         max-size: "20m"
         max-file: "5"
 
-  # 必须与 gotor 共享 network namespace（SOCKS/metrics 绑 127.0.0.1）。
-  # 注意：gotor 单独 restart 后 loadgen 会留在旧 netns，部署/巡检需 recreate loadgen。
+  # 与 gotor 走同一 compose 网络，用服务名访问 SOCKS/metrics。
+  # 不要用 network_mode: service:gotor：中继重启后 loadgen 会留在旧 netns，探测全部假失败。
   loadgen:
     build:
       context: ./loadgen
@@ -44,7 +49,6 @@ services:
     image: gotor-loadgen:local
     container_name: gotor-loadgen
     restart: unless-stopped
-    network_mode: service:gotor
     depends_on:
       - gotor
     volumes:
@@ -53,6 +57,9 @@ services:
     environment:
       - TZ=UTC
       - INTERVAL=45
+      - SOCKS=gotor:9050
+      - METRICS=gotor:9052
+      - ORPORT=gotor:9001
     logging:
       driver: json-file
       options:

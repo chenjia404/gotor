@@ -5,8 +5,9 @@
 - 镜像：`chenjia404/gotor:latest`（Docker Hub；本机构建推送，服务器只 pull）
 - 数据：`./data` 挂载，属主需为 `65532:65532`
 - 公网只映射 **9001**（ORPort）
-- `ConnLimit 10000`、`mem_limit 2g`：避免默认 1000/512m 把 middle 打满拒连
-- `loadgen` 使用 `network_mode: service:gotor`；**gotor 单独重启后必须 recreate loadgen**，否则 SOCKS/metrics 探针全失败
+- SOCKS / metrics 绑在 compose 网络（`gotor:9050` / `gotor:9052`），不映射宿主机。loadgen 不再共享中继网络命名空间，中继重启后探测不会一直假失败
+- `ConnLimit 10000`、`mem_limit 4g`、`GOMEMLIMIT=3GiB`：避免默认 1000 连接和 2g 上限把 middle 打满
+- 控制口仍只听 `127.0.0.1:9051`
 
 ## 部署
 
@@ -26,4 +27,4 @@ sh ./check.sh
 
 ## 巡检
 
-`check.sh` 会检测 loadgen/gotor 网络命名空间是否一致，不一致时自动 `force-recreate loadgen`。
+`check.sh` 只看容器状态和最近探测，不再按网络命名空间重建 loadgen。

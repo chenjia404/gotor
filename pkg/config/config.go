@@ -135,8 +135,9 @@ type Config struct {
 	LogFile  string // Log notice file PATH 时的文件路径；空表示 stdout
 
 	// Monitoring and observability (Phase 9.1)
-	MetricsPort   int  // HTTP metrics server port (default: 0 = disabled)
-	EnableMetrics bool // Enable HTTP metrics endpoint (default: false)
+	MetricsPort       int    // HTTP metrics server port (default: 0 = disabled)
+	MetricsListenAddr string // HTTP metrics 绑定地址（默认 127.0.0.1）
+	EnableMetrics     bool   // Enable HTTP metrics endpoint (default: false)
 
 	// Performance tuning (Phase 8.3)
 	EnableConnectionPooling  bool          // Enable connection pooling for relay connections
@@ -353,8 +354,9 @@ func DefaultConfig() *Config {
 		LogLevel:                         "info",
 		LogFile:                          "",
 		// Monitoring defaults (Phase 9.1)
-		MetricsPort:   0,     // Disabled by default
-		EnableMetrics: false, // Disabled by default
+		MetricsPort:       0,           // Disabled by default
+		MetricsListenAddr: "127.0.0.1", // 默认只绑本机；容器内给同伴探测时再改
+		EnableMetrics:     false,       // Disabled by default
 		// Performance tuning defaults (Phase 8.3)
 		EnableConnectionPooling:  true,
 		ConnectionPoolMaxIdle:    5,

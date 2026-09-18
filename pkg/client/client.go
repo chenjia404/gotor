@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -251,7 +252,11 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 
 	// Initialize HTTP metrics server if enabled
 	if cfg.EnableMetrics && cfg.MetricsPort > 0 {
-		metricsAddr := fmt.Sprintf("127.0.0.1:%d", cfg.MetricsPort)
+		metricsHost := cfg.MetricsListenAddr
+		if metricsHost == "" {
+			metricsHost = "127.0.0.1"
+		}
+		metricsAddr := net.JoinHostPort(metricsHost, strconv.Itoa(cfg.MetricsPort))
 		client.metricsServer = httpmetrics.NewServer(metricsAddr, client.metrics, client.healthMonitor, log)
 	}
 
@@ -403,11 +408,12 @@ func (c *Client) Start(ctx context.Context) error {
 
 	// Step 6.5: Start HTTP metrics server if enabled
 	if c.metricsServer != nil {
-		c.logger.Info("Starting HTTP metrics server", "port", c.config.MetricsPort)
+		c.logger.Info("Starting HTTP metrics server", "port", c.config.MetricsPort, "addr", c.config.MetricsListenAddr)
 		if err := c.metricsServer.Start(); err != nil {
 			return fmt.Errorf("failed to start metrics server: %w", err)
 		}
 	}
+	c.startHeapReclaim(ctx)
 
 	// Step 7: Start circuit maintenance loop
 	if !c.config.DisableNetwork {
@@ -480,6 +486,39 @@ func (c *Client) handleNewnym() {
 }
 
 // Stop gracefully stops the Tor client
+// startHeapReclaim 定期把空闲堆还给操作系统。
+// 中继在 cgroup 上限附近会把历史高水位一直占着，看起来像泄漏。
+func (c *Client) startHeapReclaim(ctx context.Context) {
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.ctx.Done():
+				return
+			case <-ticker.C:
+				var ms runtime.MemStats
+				runtime.ReadMemStats(&ms)
+				if ms.HeapIdle < 256<<20 {
+					continue
+				}
+				before := ms.HeapIdle
+				debug.FreeOSMemory()
+				runtime.ReadMemStats(&ms)
+				c.logger.Info("returned idle heap to OS",
+					"idle_before", before,
+					"heap_alloc", ms.HeapAlloc,
+					"heap_inuse", ms.HeapInuse,
+					"goroutines", runtime.NumGoroutine())
+			}
+		}
+	}()
+}
+
 func (c *Client) Stop() error {
 	c.shutdownOnce.Do(func() {
 		c.logger.Info("Stopping Tor client...")

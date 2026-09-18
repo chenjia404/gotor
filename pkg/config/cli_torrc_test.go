@@ -151,3 +151,16 @@ func TestParseCLI_HiddenServicePositional(t *testing.T) {
 		t.Fatalf("%+v", osvc)
 	}
 }
+
+func TestParseCLI_MetricsAddr(t *testing.T) {
+	res, err := ParseCLI([]string{"-metrics-port", "9052", "-metrics-addr", "0.0.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Config.EnableMetrics || res.Config.MetricsPort != 9052 {
+		t.Fatalf("metrics port: enabled=%v port=%d", res.Config.EnableMetrics, res.Config.MetricsPort)
+	}
+	if res.Config.MetricsListenAddr != "0.0.0.0" {
+		t.Fatalf("metrics addr: %q", res.Config.MetricsListenAddr)
+	}
+}

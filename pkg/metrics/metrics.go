@@ -4,6 +4,7 @@
 package metrics
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -322,6 +323,16 @@ func (m *Metrics) UpdateMemoryMetrics(heapAlloc, heapSys, heapInuse uint64, numG
 	m.MemoryNumGoroutines.Set(int64(numGoroutines))
 }
 
+// refreshRuntime 把当前堆和 goroutine 数写入指标，避免 /metrics 里这些字段一直是 0。
+func (m *Metrics) refreshRuntime() {
+	if m == nil {
+		return
+	}
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	m.UpdateMemoryMetrics(ms.HeapAlloc, ms.HeapSys, ms.HeapInuse, runtime.NumGoroutine())
+}
+
 // RecordMemoryPressureEvent records when a memory pressure event is detected
 func (m *Metrics) RecordMemoryPressureEvent() {
 	m.MemoryPressureEvents.Inc()
@@ -407,6 +418,7 @@ func (m *Metrics) UpdateUptime() {
 // Snapshot returns a point-in-time snapshot of all metrics
 func (m *Metrics) Snapshot() *Snapshot {
 	m.UpdateUptime()
+	m.refreshRuntime()
 	return &Snapshot{
 		// Circuit metrics
 		CircuitBuilds:       m.CircuitBuilds.Value(),

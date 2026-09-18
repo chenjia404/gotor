@@ -38,16 +38,18 @@ type CLIResult struct {
 
 // legacyOverrides 在 torrc 加载后再应用，保证命令行优先于文件。
 type legacyOverrides struct {
-	socksPort   int
-	socksSet    bool
-	controlPort int
-	controlSet  bool
-	metricsPort int
-	metricsSet  bool
-	dataDir     string
-	dataDirSet  bool
-	logLevel    string
-	logLevelSet bool
+	socksPort      int
+	socksSet       bool
+	controlPort    int
+	controlSet     bool
+	metricsPort    int
+	metricsSet     bool
+	metricsAddr    string
+	metricsAddrSet bool
+	dataDir        string
+	dataDirSet     bool
+	logLevel       string
+	logLevelSet    bool
 }
 
 // ParseCLI 解析类似 C Tor 的 argv。使用 DefaultCLIConfig()，不改变 DefaultConfig() 库行为。
@@ -178,6 +180,12 @@ func ParseCLIWithStdin(args []string, stdin io.Reader) (*CLIResult, error) {
 			}
 			leg.metricsPort, leg.metricsSet = p, true
 			i += 2
+		case a == "-metrics-addr" || a == "--metrics-addr":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("%s requires an address", a)
+			}
+			leg.metricsAddr, leg.metricsAddrSet = args[i+1], true
+			i += 2
 		case a == "-data-dir" || a == "--data-dir":
 			if i+1 >= len(args) {
 				return nil, fmt.Errorf("%s requires a path", a)
@@ -283,6 +291,9 @@ func applyLegacyOverrides(cfg *Config, leg legacyOverrides) {
 	if leg.metricsSet {
 		cfg.MetricsPort = leg.metricsPort
 		cfg.EnableMetrics = true
+	}
+	if leg.metricsAddrSet {
+		cfg.MetricsListenAddr = leg.metricsAddr
 	}
 	if leg.dataDirSet {
 		cfg.DataDirectory = leg.dataDir
