@@ -184,6 +184,7 @@ type Descriptor struct {
 	RawDescriptor            []byte              // Raw descriptor content
 	CreatedAt                time.Time           // When descriptor was created
 	Lifetime                 time.Duration       // Descriptor validity lifetime
+	PoWParams                *PoWParams          // 第二层明文 pow-params v1（可选）
 }
 
 // IntroductionPoint represents an introduction point
@@ -943,6 +944,11 @@ func parseDecryptedLayer(data []byte) (*Descriptor, error) {
 				if err == nil && len(decoded) == 20 {
 					currentIntroPoint.LegacyKeyID = decoded
 				}
+			}
+
+		case "pow-params":
+			if p := parsePoWParamsLine(args); p != nil {
+				desc.PoWParams = p
 			}
 		}
 	}
@@ -1733,6 +1739,7 @@ type IntroduceRequest struct {
 	EphemeralPrivate    [32]byte           // Client's ephemeral private key x
 	EphemeralPublic     [32]byte           // Client's ephemeral public key X
 	Subcredential       []byte             // N_hs_subcred（32 字节）
+	PoW                 *PoWProof          // 可选；描述符宣告 pow-params 时由客户端填入
 }
 
 // BuildIntroduce1Cell constructs an INTRODUCE1 cell for the introduction protocol
@@ -1816,7 +1823,7 @@ func (ip *IntroductionProtocol) BuildIntroduce1Cell(req *IntroduceRequest) ([]by
 // buildEncryptedData 构造 INTRODUCE1 的 ENCRYPTED = X || C || M（hs-ntor）。
 // 明文（rend-spec PROCESS_INTRO2）：
 //
-//	COOKIE | N_EXT=0 | ONION_KEY_TYPE=1 | LEN | KEY | NSPEC | LSPECs
+//	COOKIE | N_EXT | [PoW EXT] | ONION_KEY_TYPE=1 | LEN | KEY | NSPEC | LSPECs
 func (ip *IntroductionProtocol) buildEncryptedData(req *IntroduceRequest) ([]byte, error) {
 	if req.IntroPoint == nil {
 		return nil, fmt.Errorf("introduction point is required")
@@ -1845,7 +1852,12 @@ func (ip *IntroductionProtocol) buildEncryptedData(req *IntroduceRequest) ([]byt
 
 	var plaintext bytes.Buffer
 	plaintext.Write(req.RendezvousCookie)
-	plaintext.WriteByte(0)              // N_EXTENSIONS
+	if req.PoW != nil {
+		plaintext.WriteByte(1)
+		plaintext.Write(encodePoWExtension(req.PoW))
+	} else {
+		plaintext.WriteByte(0)
+	}
 	plaintext.WriteByte(0x01)           // ONION_KEY_TYPE = NTOR
 	plaintext.Write([]byte{0x00, 0x20}) // ONION_KEY_LEN = 32
 	plaintext.Write(req.RendezvousOnionKey)
@@ -2102,6 +2114,11 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 		RendezvousOnionKey:  rpOnionKey,
 		RendezvousLinkSpecs: rpLinkSpecs,
 	}
+	proof, err := SolveOnionPoW(ctx, desc.PoWParams, blinded)
+	if err != nil {
+		return 0, fmt.Errorf("onion pow: %w", err)
+	}
+	req.PoW = proof
 
 	introduce1Data, err := intro.BuildIntroduce1Cell(req)
 	if err != nil {

@@ -356,6 +356,7 @@ func (c *Client) TryClientAuth(descriptor *Descriptor, address *Address) (*Descr
 
 	// Merge the decrypted introduction points into the descriptor
 	descriptor.IntroPoints = decryptedDesc.IntroPoints
+	descriptor.PoWParams = decryptedDesc.PoWParams
 
 	return descriptor, nil
 }

@@ -71,10 +71,15 @@ func DecryptDescriptor(descriptor *Descriptor, address *Address, timePeriod uint
 
 	out := *descriptor
 	out.IntroPoints = nil
+	out.PoWParams = nil
 	parsed, err := parseDecryptedLayer(innerPlain)
-	if err == nil && parsed != nil && len(parsed.IntroPoints) > 0 {
-		out.IntroPoints = parsed.IntroPoints
-	} else {
+	if err == nil && parsed != nil {
+		out.PoWParams = parsed.PoWParams
+		if len(parsed.IntroPoints) > 0 {
+			out.IntroPoints = parsed.IntroPoints
+		}
+	}
+	if len(out.IntroPoints) == 0 {
 		out.IntroPoints = parseIntroPointsFromPlaintext(innerPlain)
 	}
 	return &out, nil
