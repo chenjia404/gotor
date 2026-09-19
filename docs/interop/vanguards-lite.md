@@ -23,11 +23,11 @@
 - `circuit.Builder` 在 `Middle2 != nil` 时多一次 EXTEND2。
 - 落盘 `GotorHSLayer3Guards`；L1/L2/L3 互斥；目标碰巧是某 L3 时只在本条避开。
 - 四跳家族冲突失败关闭。
+- 拉共识后读取 `guard-hs-l2-*` / `guard-hs-l3-*`（数量 1–19 / 1–20；寿命秒；min>max 回退默认）。下一轮选路按新上限补员或裁剪。
 
 ## 明确未做
 
 - 洋葱**托管**侧 intro/rend 电路的 L2/L3 固定
-- 共识参数 `guard-hs-l2-*` / `guard-hs-l3-*`（当前用 param-spec 默认值）
 - 与 C Tor 完全相同的 state `Guard in=...` 行格式（本切片用独立键以免误改官方入口）
 - 把 L2 寿命改成 Full Vanguards 文档里的 30–60 天（现网 param-spec 默认仍是 lite 的 1–12 天）
 

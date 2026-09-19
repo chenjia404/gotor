@@ -25,6 +25,11 @@ const (
 	defaultL3LifetimeMax   = 48 * time.Hour
 	hsLayer2GuardsStateKey = "GotorHSLayer2Guards"
 	hsLayer3GuardsStateKey = "GotorHSLayer3Guards"
+
+	// C Tor networkstatus_get_param 对数量的上限（param-spec 写 INT32_MAX，实现会夹紧以免集合膨胀）。
+	maxLayer2Count         = 19
+	maxLayer3Count         = 20
+	maxVanguardLifetimeSec = 1<<31 - 1
 )
 
 // torStateFileMu 串行化对 DataDirectory/state 的读改写，避免与 GuardManager 互相覆盖。
@@ -65,6 +70,79 @@ type VanguardSet struct {
 	layer2    []layerEntry
 	layer3    []layerEntry
 	logger    *logger.Logger
+}
+
+// VanguardParams 是 param-spec guard-hs-l2-* / guard-hs-l3-*。
+type VanguardParams struct {
+	L2Count int
+	L2Min   time.Duration
+	L2Max   time.Duration
+	L3Count int
+	L3Min   time.Duration
+	L3Max   time.Duration
+}
+
+// VanguardParamsFromConsensus 从已验签共识 params 覆盖默认值。缺键用 param-spec 默认。
+func VanguardParamsFromConsensus(params map[string]int) VanguardParams {
+	p := VanguardParams{
+		L2Count: defaultLayer2Count,
+		L2Min:   defaultL2LifetimeMin,
+		L2Max:   defaultL2LifetimeMax,
+		L3Count: defaultLayer3Count,
+		L3Min:   defaultL3LifetimeMin,
+		L3Max:   defaultL3LifetimeMax,
+	}
+	p.L2Count = consensusInt(params, "guard-hs-l2-number", p.L2Count, 1, maxLayer2Count)
+	p.L3Count = consensusInt(params, "guard-hs-l3-number", p.L3Count, 1, maxLayer3Count)
+	p.L2Min = time.Duration(consensusInt(params, "guard-hs-l2-lifetime-min", int(p.L2Min/time.Second), 1, maxVanguardLifetimeSec)) * time.Second
+	p.L2Max = time.Duration(consensusInt(params, "guard-hs-l2-lifetime-max", int(p.L2Max/time.Second), 1, maxVanguardLifetimeSec)) * time.Second
+	p.L3Min = time.Duration(consensusInt(params, "guard-hs-l3-lifetime-min", int(p.L3Min/time.Second), 1, maxVanguardLifetimeSec)) * time.Second
+	p.L3Max = time.Duration(consensusInt(params, "guard-hs-l3-lifetime-max", int(p.L3Max/time.Second), 1, maxVanguardLifetimeSec)) * time.Second
+	if p.L2Min > p.L2Max {
+		p.L2Min, p.L2Max = defaultL2LifetimeMin, defaultL2LifetimeMax
+	}
+	if p.L3Min > p.L3Max {
+		p.L3Min, p.L3Max = defaultL3LifetimeMin, defaultL3LifetimeMax
+	}
+	return p
+}
+
+func consensusInt(params map[string]int, key string, def, min, max int) int {
+	v := def
+	if params != nil {
+		if p, ok := params[key]; ok {
+			v = p
+		}
+	}
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+// ApplyConsensusParams 更新 L2/L3 目标数量与寿命。下一轮 SelectHSPath 会按新上限补员或裁剪。
+// 不在这里改已注入的节点指纹，避免无共识刷新时打乱固定集合。
+func (v *VanguardSet) ApplyConsensusParams(p VanguardParams) {
+	if v == nil {
+		return
+	}
+	if p.L2Count < 1 {
+		p.L2Count = defaultLayer2Count
+	}
+	if p.L3Count < 1 {
+		p.L3Count = defaultLayer3Count
+	}
+	v.mu.Lock()
+	v.count = p.L2Count
+	v.minLife = p.L2Min
+	v.maxLife = p.L2Max
+	v.l3Count = p.L3Count
+	v.l3MinLife = p.L3Min
+	v.l3MaxLife = p.L3Max
+	v.mu.Unlock()
 }
 
 // NewVanguardSet 构造 L2/L3 池。
@@ -315,6 +393,12 @@ func (v *VanguardSet) refillLayer(current []layerEntry, want int, minL, maxL tim
 		}
 		seen[fp] = true
 		kept = append(kept, layerEntry{FP: fp, Until: e.Until})
+	}
+	if want < 0 {
+		want = 0
+	}
+	if len(kept) > want {
+		kept = kept[:want]
 	}
 	cands := l2Candidates(byFP, seen)
 	for len(kept) < want && len(cands) > 0 {

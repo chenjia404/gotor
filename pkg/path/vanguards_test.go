@@ -639,3 +639,63 @@ func TestVanguardSetDoesNotPickTargetAsL3(t *testing.T) {
 		}
 	}
 }
+
+func TestVanguardParamsFromConsensusDefaultsAndClamp(t *testing.T) {
+	def := VanguardParamsFromConsensus(nil)
+	if def.L2Count != 4 || def.L3Count != 8 {
+		t.Fatalf("默认 L2/L3 = %d/%d", def.L2Count, def.L3Count)
+	}
+	if def.L2Min != defaultL2LifetimeMin || def.L2Max != defaultL2LifetimeMax {
+		t.Fatal("默认 L2 寿命")
+	}
+	if def.L3Min != defaultL3LifetimeMin || def.L3Max != defaultL3LifetimeMax {
+		t.Fatal("默认 L3 寿命")
+	}
+	clamped := VanguardParamsFromConsensus(map[string]int{
+		"guard-hs-l2-number":       0,
+		"guard-hs-l3-number":       100,
+		"guard-hs-l2-lifetime-min": 0,
+		"guard-hs-l2-lifetime-max": maxVanguardLifetimeSec + 10,
+		"guard-hs-l3-lifetime-min": 10,
+		"guard-hs-l3-lifetime-max": 5,
+	})
+	if clamped.L2Count != 1 {
+		t.Fatalf("L2 number 下限 1, got %d", clamped.L2Count)
+	}
+	if clamped.L3Count != maxLayer3Count {
+		t.Fatalf("L3 number 上限 %d, got %d", maxLayer3Count, clamped.L3Count)
+	}
+	if clamped.L2Min != time.Second {
+		t.Fatalf("lifetime-min 下限 1s, got %s", clamped.L2Min)
+	}
+	if clamped.L2Max != time.Duration(maxVanguardLifetimeSec)*time.Second {
+		t.Fatal("lifetime-max 应夹到 INT32_MAX 秒")
+	}
+	if clamped.L3Min != defaultL3LifetimeMin || clamped.L3Max != defaultL3LifetimeMax {
+		t.Fatal("min>max 时应回退 L3 默认寿命")
+	}
+}
+
+func TestVanguardSetApplyConsensusParamsResizes(t *testing.T) {
+	v := NewVanguardSet(VanguardConfig{Count: 4, L3Count: 8, MinLife: time.Hour, MaxLife: time.Hour, L3MinLife: time.Hour, L3MaxLife: time.Hour}, nil)
+	pool := vgWidePool()
+	if _, err := v.SelectHSPath(pool, pool[15], nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Fingerprints()) != 4 || len(v.Layer3Fingerprints()) != 8 {
+		t.Fatalf("初始 L2/L3 = %d/%d", len(v.Fingerprints()), len(v.Layer3Fingerprints()))
+	}
+	v.ApplyConsensusParams(VanguardParamsFromConsensus(map[string]int{
+		"guard-hs-l2-number": 6,
+		"guard-hs-l3-number": 4,
+	}))
+	if _, err := v.SelectHSPath(pool, pool[15], nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Fingerprints()) != 6 {
+		t.Fatalf("共识加大 L2 后应补到 6, got %v", v.Fingerprints())
+	}
+	if len(v.Layer3Fingerprints()) != 4 {
+		t.Fatalf("共识缩小 L3 后应裁到 4, got %v", v.Layer3Fingerprints())
+	}
+}

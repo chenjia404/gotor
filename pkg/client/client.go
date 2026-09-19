@@ -316,6 +316,7 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 	if !c.config.DisableNetwork {
 		c.refreshCircpadConfig()
+		c.refreshVanguardParams()
 	}
 	c.logger.Info("Path selector initialized")
 
@@ -1820,6 +1821,13 @@ func (c *Client) refreshCircpadConfig() {
 	if cfg.Disabled {
 		c.logger.Info("circuit padding disabled by consensus circpad_padding_disabled")
 	}
+}
+
+func (c *Client) refreshVanguardParams() {
+	if c == nil || c.vanguards == nil || c.directory == nil {
+		return
+	}
+	c.vanguards.ApplyConsensusParams(path.VanguardParamsFromConsensus(c.directory.LastConsensusParams()))
 }
 
 // CircpadConfig 返回共识驱动的 circpad 配置副本（供 onion HS setup 使用）。
