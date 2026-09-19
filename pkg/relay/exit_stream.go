@@ -37,14 +37,15 @@ const (
 
 // ExitStreamManager 管理出口 TCP 流。
 type ExitStreamManager struct {
-	policy  *ExitPolicy
-	logger  *logger.Logger
-	lookup  func(ctx context.Context, host string) ([]net.IP, error)
-	lookupP func(ctx context.Context, addr string) ([]string, error)
-	dial    func(ctx context.Context, network, address string) (net.Conn, error)
-	bw      *bandwidthLimiter
-	gate    *exitConnGate
-	dirDial func(orAddr string) (net.Conn, error) // BEGIN_DIR：本机目录缓存
+	policy    *ExitPolicy
+	logger    *logger.Logger
+	lookup    func(ctx context.Context, host string) ([]net.IP, error)
+	lookupP   func(ctx context.Context, addr string) ([]string, error)
+	dial      func(ctx context.Context, network, address string) (net.Conn, error)
+	bw        *bandwidthLimiter
+	gate      *exitConnGate
+	dirDial   func(orAddr string) (net.Conn, error) // BEGIN_DIR：本机目录缓存
+	exitStats *ExitStats
 
 	mu                 sync.Mutex
 	streams            map[streamKey]*exitStream
@@ -112,7 +113,8 @@ type exitStream struct {
 	deliverWindow int // 允许再收多少客户端 DATA
 	deliverCount  int
 	halfClosed    bool
-	held          bool // 已占用 gate
+	held          bool   // 已占用 gate
+	exitPort      uint16 // RELAY_BEGIN 目标端口；0 表示 BEGIN_DIR，不计入 exit-*
 }
 
 func NewExitStreamManager(policy *ExitPolicy, log *logger.Logger) *ExitStreamManager {
@@ -132,6 +134,7 @@ func NewExitStreamManager(policy *ExitPolicy, log *logger.Logger) *ExitStreamMan
 		orWrites:           make(map[uint32]*orconnWriteStats),
 		ccParams:           circuit.DefaultCCParams(),
 		gate:               newExitConnGate(1024),
+		exitStats:          NewExitStats(),
 	}
 }
 
@@ -402,6 +405,7 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 		packageWindow: exitStreamWindowInit,
 		deliverWindow: exitStreamWindowInit,
 		held:          true,
+		exitPort:      port,
 	}
 	m.circStreams[circ.CircuitID]++
 	if circ != nil && circ.ccEnabled {
@@ -412,6 +416,7 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 	m.mu.Unlock()
 	held = false
 
+	m.exitStats.NoteOpened(port)
 	go m.pumpRemoteToClient(sctx, circ, clientConn, streamID, c)
 	return nil
 }
@@ -555,12 +560,17 @@ func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn,
 	}
 	es.deliverWindow--
 	conn := es.conn
+	port := es.exitPort
 	m.mu.Unlock()
 
 	if err := m.bw.wait(context.Background(), len(data)); err != nil {
 		return err
 	}
-	if _, err := conn.Write(data); err != nil {
+	n, err := conn.Write(data)
+	if n > 0 {
+		m.exitStats.NoteBytes(port, uint64(n), 0)
+	}
+	if err != nil {
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonConnReset)
 	}
 
@@ -709,6 +719,30 @@ func (m *ExitStreamManager) HandleEnd(circID uint32, streamID uint16) {
 	m.teardown(es)
 }
 
+func (m *ExitStreamManager) streamExitPort(circID uint32, streamID uint16) uint16 {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	es := m.streams[streamKey{circID, streamID}]
+	if es == nil {
+		return 0
+	}
+	return es.exitPort
+}
+
+// StatsExit 已完成 24h 窗的 exit-*；非出口或不允许退出则空。
+func (m *ExitStreamManager) StatsExit() map[string]string {
+	if m == nil || m.exitStats == nil {
+		return nil
+	}
+	if m.policy == nil || !m.policy.AllowExit {
+		return nil
+	}
+	return m.exitStats.StatsMap()
+}
+
 func (m *ExitStreamManager) removeStream(circID uint32, streamID uint16) *exitStream {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -745,6 +779,7 @@ func (m *ExitStreamManager) pumpRemoteToClient(ctx context.Context, circ *Server
 			if err := m.bw.wait(ctx, n); err != nil {
 				return
 			}
+			m.exitStats.NoteBytes(m.streamExitPort(circ.CircuitID, streamID), 0, uint64(n))
 			if err := m.sendRelay(circ, clientConn, streamID, cell.RelayData, buf[:n]); err != nil {
 				return
 			}

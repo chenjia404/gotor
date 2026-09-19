@@ -191,6 +191,9 @@ func (s *Server) startPublisher(ctx context.Context) error {
 		if s.dirCache != nil {
 			stats = mergeExtraInfoStats(stats, s.dirCache.StatsDirReq())
 		}
+		if s.listener != nil && s.listener.circuitHandler != nil && s.listener.circuitHandler.exits != nil {
+			stats = mergeExtraInfoStats(stats, s.listener.circuitHandler.exits.StatsExit())
+		}
 		desc, extra, err := GenerateDescriptorPair(s.keys, dcfg, stats)
 		if err != nil {
 			return nil, nil, err

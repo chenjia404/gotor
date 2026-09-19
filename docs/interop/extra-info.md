@@ -20,11 +20,12 @@
 - `dirreq-stats-end` / `dirreq-v3-resp`：v3 网络状态（ns/microdesc/diff）HTTP 应答；满 24h 且有计数才写；计数向上取 4。
 - `dirreq-v3-ips` / `dirreq-v3-reqs`：无 geoip，一律 `??=N`（规范允许无法映射时用 `??`）；ips 为 24h 窗内 unique IP（DirPort 对端或 BEGIN_DIR 相邻 OR），reqs 为请求次数；向上取 8。不写国家码。空地址不计入 ips。
 - `dirreq-v3-direct-dl` / `dirreq-v3-tunneled-dl`：DirPort HTTP 为 direct，BEGIN_DIR 为 tunneled；仅 HTTP 200 计 `complete`；满 24h 且该通道 complete>0 才写。无字节速率观测，不写 timeout/running/min/d1/…/max。
+- `exit-stats-end` / `exit-kibibytes-written` / `exit-kibibytes-read` / `exit-streams-opened`：仅 RELAY_BEGIN 成功出口 TCP；BEGIN_DIR / RESOLVE 不计。C Tor interesting ports 分列，其余 `other`。KiB 向上取整，流数向上取 4。满 24h 且有观测、且策略允许退出才写。
 
 ## 明确未做
 
 - `dirreq-v3-ips` / `dirreq-v3-reqs` 的真实国家码（无 GeoIP 库）
-- `exit-*` / `hidserv-*` / `padding-counts`（无 24h 观测不写）
+- `hidserv-*` / `padding-counts`（无 24h 观测不写）
 - `dirreq-v3-*-dl` 的 timeout/running 与 B/s 分位数（无下载时长/速率观测不写）
 - 进程空闲但在跑时的全零格（无心跳；有流量的格才入列）
 - 真网权威归档 extra-info 的观察证据
