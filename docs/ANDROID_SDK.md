@@ -70,7 +70,7 @@ StatusListener
 
 ### 依赖
 
-- Go 1.25+（与本仓库 `go.mod` 一致）
+- Go 1.27.1+（与本仓库 `go.mod` 一致）
 - [gomobile](https://pkg.go.dev/golang.org/x/mobile/cmd/gomobile)：`go install golang.org/x/mobile/cmd/gomobile@latest && gomobile init`
 - Android NDK（设置 `ANDROID_NDK_HOME` 或通过 Android SDK 的 ndk）
 - 启用 CGO 的 C 编译器（gomobile 生成 JNI 胶水；go-tor 业务代码本身仍是纯 Go）

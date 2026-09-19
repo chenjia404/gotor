@@ -1,8 +1,6 @@
 module github.com/opd-ai/go-tor
 
-go 1.25.0
-
-toolchain go1.26.6
+go 1.27.1
 
 require (
 	filippo.io/edwards25519 v1.2.0

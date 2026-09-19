@@ -1,6 +1,6 @@
 module github.com/opd-ai/go-tor/examples/bine-examples/client-example
 
-go 1.25.0
+go 1.27.1
 
 replace github.com/opd-ai/go-tor => ../../..
 

@@ -32,7 +32,7 @@ go-tor is a cross-platform Tor client written entirely in Go without CGo depende
 
 ### Prerequisites
 
-- Go 1.25 or later（toolchain 1.26.6）
+- Go 1.27.1 or later（toolchain 1.27.1）
 - Git
 
 ### Build from Source
