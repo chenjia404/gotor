@@ -773,3 +773,44 @@ func TestSetCCParamsAppliedOnNewVegas(t *testing.T) {
 		t.Fatalf("cwnd_init from SetCCParams: %d", got)
 	}
 }
+
+func TestOrconnWriteStatsQueueAndOneShot(t *testing.T) {
+	var s orconnWriteStats
+	if s.WriteBlocked() {
+		t.Fatal("空闲不得报堵住")
+	}
+	s.waiters.Store(2)
+	if !s.WriteBlocked() {
+		t.Fatal("排队 >1 应报堵住")
+	}
+	s.waiters.Store(0)
+	s.lastNs.Store(exitOrconnSlowWrite.Nanoseconds())
+	if !s.WriteBlocked() {
+		t.Fatal("慢写出应报一次")
+	}
+	if s.WriteBlocked() {
+		t.Fatal("慢写出信号必须一次性，不得 sticky")
+	}
+}
+
+func TestExitVegasSamplesWriteBlocked(t *testing.T) {
+	m := NewExitStreamManager(NewExitPolicy(logger.NewDefault()), logger.NewDefault())
+	m.NoteCircuitFlow(3, true, 31)
+	tag := bytes.Repeat([]byte{0x77}, cell.SendmeV1DigestLen)
+	m.circExpectedSendme[3] = []exitSendmePending{{digest: append([]byte(nil), tag...), sentAt: time.Now().Add(-2 * time.Millisecond)}}
+	m.orWriteOf(3).waiters.Store(2)
+	payload, err := cell.EncodeSendmeV1(tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.HandleSendme(3, 0, payload); err != nil {
+		t.Fatal(err)
+	}
+	snap := m.circCC[3].vegas.Snapshot()
+	if !snap.BlockedChan {
+		t.Fatal("SENDME 应把 WriteBlocked 采进 vegas.blockedChan")
+	}
+	if snap.InSlowStart {
+		t.Fatal("orconn_blocked 必须退出 Slow Start")
+	}
+}

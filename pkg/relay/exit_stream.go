@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
@@ -31,6 +32,7 @@ const (
 	beginFlagIPv4NotOK     = 2
 	beginFlagIPv6Preferred = 4
 	ccSendmeIncDefault     = 31
+	exitOrconnSlowWrite    = 100 * time.Millisecond
 )
 
 // ExitStreamManager 管理出口 TCP 流。
@@ -52,6 +54,7 @@ type ExitStreamManager struct {
 	circCC             map[uint32]circFlow
 	lastFwdDigest      map[uint32][]byte
 	circExpectedSendme map[uint32][]exitSendmePending
+	orWrites           map[uint32]*orconnWriteStats
 	ccParams           circuit.CCParams
 }
 
@@ -65,6 +68,36 @@ type circFlow struct {
 type exitSendmePending struct {
 	digest []byte
 	sentAt time.Time
+}
+
+// orconnWriteStats 对齐客户端 Connection.WriteBlocked：排队 >1 或单次写出 ≥100ms（一次性）。
+type orconnWriteStats struct {
+	waiters atomic.Int32
+	lastNs  atomic.Int64
+}
+
+func (s *orconnWriteStats) begin() {
+	if s != nil {
+		s.waiters.Add(1)
+	}
+}
+
+func (s *orconnWriteStats) end(d time.Duration) {
+	if s == nil {
+		return
+	}
+	s.lastNs.Store(d.Nanoseconds())
+	s.waiters.Add(-1)
+}
+
+func (s *orconnWriteStats) WriteBlocked() bool {
+	if s == nil {
+		return false
+	}
+	if s.waiters.Load() > 1 {
+		return true
+	}
+	return time.Duration(s.lastNs.Swap(0)) >= exitOrconnSlowWrite
 }
 
 type streamKey struct {
@@ -96,6 +129,7 @@ func NewExitStreamManager(policy *ExitPolicy, log *logger.Logger) *ExitStreamMan
 		circCC:             make(map[uint32]circFlow),
 		lastFwdDigest:      make(map[uint32][]byte),
 		circExpectedSendme: make(map[uint32][]exitSendmePending),
+		orWrites:           make(map[uint32]*orconnWriteStats),
 		ccParams:           circuit.DefaultCCParams(),
 		gate:               newExitConnGate(1024),
 	}
@@ -187,6 +221,25 @@ func (m *ExitStreamManager) flowOf(circID uint32) circFlow {
 	return circFlow{sendmeInc: exitCircSendmeInc}
 }
 
+func (m *ExitStreamManager) orWriteOf(circID uint32) *orconnWriteStats {
+	m.mu.Lock()
+	s := m.orWriteLocked(circID)
+	m.mu.Unlock()
+	return s
+}
+
+func (m *ExitStreamManager) orWriteLocked(circID uint32) *orconnWriteStats {
+	s := m.orWrites[circID]
+	if s == nil {
+		s = &orconnWriteStats{}
+		if m.orWrites == nil {
+			m.orWrites = make(map[uint32]*orconnWriteStats)
+		}
+		m.orWrites[circID] = s
+	}
+	return s
+}
+
 // CloseCircuit 关闭该电路全部出口流。
 func (m *ExitStreamManager) CloseCircuit(circID uint32) {
 	m.mu.Lock()
@@ -203,6 +256,7 @@ func (m *ExitStreamManager) CloseCircuit(circID uint32) {
 	delete(m.lastFwdDigest, circID)
 	delete(m.circCC, circID)
 	delete(m.circExpectedSendme, circID)
+	delete(m.orWrites, circID)
 	m.mu.Unlock()
 	for _, es := range toClose {
 		m.teardown(es)
@@ -223,6 +277,7 @@ func (m *ExitStreamManager) CloseAll() {
 	m.lastFwdDigest = make(map[uint32][]byte)
 	m.circCC = make(map[uint32]circFlow)
 	m.circExpectedSendme = make(map[uint32][]exitSendmePending)
+	m.orWrites = make(map[uint32]*orconnWriteStats)
 	m.mu.Unlock()
 	for _, es := range all {
 		m.teardown(es)
@@ -595,6 +650,7 @@ func (m *ExitStreamManager) HandleSendme(circID uint32, streamID uint16, payload
 		if !pending.sentAt.IsZero() {
 			rtt = time.Since(pending.sentAt).Microseconds()
 		}
+		flow.vegas.SetBlockedChan(m.orWriteLocked(circID).WriteBlocked())
 		flow.vegas.ProcessSendme(rtt)
 		m.circOutWindow[circID] = flow.vegas.PackageWindow()
 		return nil
@@ -764,7 +820,12 @@ func (m *ExitStreamManager) sendRelay(circ *ServerCircuit, clientConn net.Conn, 
 		return err
 	}
 	c := &cell.Cell{CircID: circ.CircuitID, Command: cell.CmdRelay, Payload: enc}
-	if err := c.Encode(clientConn); err != nil {
+	ws := m.orWriteOf(circ.CircuitID)
+	ws.begin()
+	start := time.Now()
+	err = c.Encode(clientConn)
+	ws.end(time.Since(start))
+	if err != nil {
 		return err
 	}
 	if cmd == cell.RelayData {

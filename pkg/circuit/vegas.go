@@ -348,6 +348,14 @@ func (v *Vegas) ProcessSendme(rttUsec int64) {
 	v.s.processSendme(rttUsec)
 }
 
+// SetBlockedChan 在 processSendme 之前写入 orconn_blocked 采样。
+func (v *Vegas) SetBlockedChan(blocked bool) {
+	if v == nil || v.s == nil {
+		return
+	}
+	v.s.blockedChan = blocked
+}
+
 // PackageWindow 是还可再发的 DATA 格数（cwnd-inflight）。
 func (v *Vegas) PackageWindow() int {
 	if v == nil || v.s == nil {
