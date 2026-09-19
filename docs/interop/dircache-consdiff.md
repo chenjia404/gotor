@@ -78,9 +78,19 @@
 - ns 历史同样最多 72 小时 / 72 份，consdiff 缓存键带 flavor，两库不得交叉命中。
 - **仍禁止** 在 `proto` 写 `DirCache=2`
 
+## 本切片已做（2026-09-19 预压缩 consdiff 库）
+
+对照 C Tor `consdiffmgr`：换共识时预先算 hist→current 的 limited-ed，并按 lzma→zstd→gzip→deflate 预压缩。
+
+- `CacheDirectory/cached-microdesc-consensus.diff/<FromDigest>`（ns：`cached-consensus.diff/`）存放未压缩 limited-ed；同名 `.lzma` / `.zst` / `.gz` / `.z` 为预压缩件。
+- `persistConsensusDisk` / `persistNSConsensusDisk` 写完当前共识后同步重建该 flavor 的库；DirPort `Listen` 再扫一遍（补齐上次未写完的压缩件）。
+- DirPort 对未过滤的 `X-Or-Diff-From-Consensus` 与 `/diff/<HASH>/` **优先读库**；hash 行 ToDigest 必须等于当前共识。未命中才实时 LCS。
+- FPRLIST 过滤体仍不进库、不实时 LCS（header 回过滤后的整份，`/diff/` 404）。
+- 超过 72 小时的历史不进库；库内过期/错 ToDigest 文件在重建时删除。
+- **仍禁止** 在 `proto` 写 `DirCache=2`
+
 ## 明确未做（因此禁止 `DirCache=2`）
 
-- 预压缩 / 预计算的完整 consdiff 库（C Tor consdiffmgr）
 - 真网官方客户端把本中继当 DirCache 的证据；权威 V2Dir 仍取决于 Running / 可达性，不由本切片单独证明
 
 ## 禁止

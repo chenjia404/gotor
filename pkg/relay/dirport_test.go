@@ -867,3 +867,135 @@ func TestDirCacheRejectsWrongFlavorFile(t *testing.T) {
 		t.Fatalf("错 flavor 文件必须 404, got %d", rec.Code)
 	}
 }
+
+func TestDirCacheServesPrecompressedDiffLibrary(t *testing.T) {
+	dir := t.TempDir()
+	prev, curr := writeConsensusPair(t, dir)
+	if err := os.MkdirAll(filepath.Join(dir, directory.CachedMicrodescConsensusHistDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	from := strings.ToLower(directory.ConsensusDiffFromDigest(prev))
+	if err := os.WriteFile(filepath.Join(dir, directory.CachedMicrodescConsensusHistDir, from), []byte(prev), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.RebuildConsensusDiffLibrary(dir, directory.FlavorMicrodesc, curr); err != nil {
+		t.Fatal(err)
+	}
+	// 删掉 hist/.prev：若仍能出 limited-ed，说明走的是预压缩库而不是实时 LCS。
+	_ = os.RemoveAll(filepath.Join(dir, directory.CachedMicrodescConsensusHistDir))
+	_ = os.Remove(filepath.Join(dir, directory.ConsensusCachePrevFile(directory.FlavorMicrodesc)))
+
+	want, err := directory.GenerateConsensusDiff(prev, curr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(dir, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody)
+	req.Header.Set("X-Or-Diff-From-Consensus", from)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if rec.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("encoding %q", rec.Header().Get("Content-Encoding"))
+	}
+	zr, err := gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(zr)
+	_ = zr.Close()
+	if err != nil || string(got) != want {
+		t.Fatalf("预压缩库 gzip 解压后须为 limited-ed: %v", err)
+	}
+
+	urlRec := httptest.NewRecorder()
+	urlReq := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc/diff/"+from+"/all", http.NoBody)
+	urlReq.Header.Set("Accept-Encoding", "x-zstd")
+	s.handler().ServeHTTP(urlRec, urlReq)
+	if urlRec.Code != http.StatusOK {
+		t.Fatalf("/diff/ 预压缩库 status %d", urlRec.Code)
+	}
+	if urlRec.Header().Get("Content-Encoding") != "x-zstd" {
+		t.Fatalf("/diff/ encoding %q", urlRec.Header().Get("Content-Encoding"))
+	}
+	zr2, err := zstd.NewReader(urlRec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, err := io.ReadAll(zr2)
+	zr2.Close()
+	if err != nil || string(got2) != want {
+		t.Fatal("/diff/ 预压缩库 zstd 解压后须为同一 limited-ed")
+	}
+
+	zRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(zRec, httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc/diff/"+from+"/all.z", http.NoBody))
+	if zRec.Code != http.StatusOK {
+		t.Fatalf(".z 预压缩库 status %d", zRec.Code)
+	}
+	if zRec.Header().Get("Content-Encoding") != "" {
+		t.Fatal(".z 且无 Accept-Encoding 不得带 Content-Encoding")
+	}
+	zr3, err := zlib.NewReader(zRec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got3, err := io.ReadAll(zr3)
+	_ = zr3.Close()
+	if err != nil || string(got3) != want {
+		t.Fatal(".z 预压缩库须为 zlib limited-ed")
+	}
+}
+
+func TestDirCacheNSPrecompressedDiffLibrary(t *testing.T) {
+	dir := t.TempDir()
+	prev := "" +
+		"network-status-version 3\n" +
+		"vote-status consensus\n" +
+		"consensus-method 32\n" +
+		"valid-after 2024-01-01 00:00:00\n" +
+		"fresh-until 2024-01-01 01:00:00\n" +
+		"valid-until 2024-01-01 03:00:00\n" +
+		"directory-footer\n" +
+		"directory-signature sha256 AA BB\n-----BEGIN SIGNATURE-----\nOLD\n-----END SIGNATURE-----\n"
+	curr := "" +
+		"network-status-version 3\n" +
+		"vote-status consensus\n" +
+		"consensus-method 32\n" +
+		"valid-after 2024-01-01 01:00:00\n" +
+		"fresh-until 2024-01-01 02:00:00\n" +
+		"valid-until 2024-01-01 04:00:00\n" +
+		"directory-footer\n" +
+		"directory-signature sha256 CC DD\n-----BEGIN SIGNATURE-----\nNEW\n-----END SIGNATURE-----\n"
+	if err := os.MkdirAll(filepath.Join(dir, directory.CachedNSConsensusHistDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	from := strings.ToLower(directory.ConsensusDiffFromDigest(prev))
+	if err := os.WriteFile(filepath.Join(dir, directory.CachedNSConsensusHistDir, from), []byte(prev), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, directory.ConsensusCacheFile(directory.FlavorNS)), []byte(curr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.RebuildConsensusDiffLibrary(dir, directory.FlavorNS, curr); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.RemoveAll(filepath.Join(dir, directory.CachedNSConsensusHistDir))
+
+	want, err := directory.GenerateConsensusDiff(prev, curr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(dir, nil)
+	req := httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus", http.NoBody)
+	req.Header.Set("X-Or-Diff-From-Consensus", from)
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Body.String() != want {
+		t.Fatalf("ns 预压缩库应出 limited-ed, status=%d", rec.Code)
+	}
+}

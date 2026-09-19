@@ -49,6 +49,25 @@ func consensusHistDir(f ConsensusFlavor) string {
 	return CachedMicrodescConsensusHistDir
 }
 
+const (
+	// CachedMicrodescConsensusDiffDir 存放 microdesc hist→current 的预计算 limited-ed 及预压缩件。
+	CachedMicrodescConsensusDiffDir = "cached-microdesc-consensus.diff"
+	// CachedNSConsensusDiffDir 存放 ns flavor 的预计算 limited-ed 及预压缩件。
+	CachedNSConsensusDiffDir = "cached-consensus.diff"
+)
+
+// ConsensusDiffLibraryDir 返回该 flavor 预压缩 consdiff 库在 CacheDirectory 下的子目录名。
+func ConsensusDiffLibraryDir(f ConsensusFlavor) string {
+	return consensusDiffLibDir(f)
+}
+
+func consensusDiffLibDir(f ConsensusFlavor) string {
+	if f == FlavorNS {
+		return CachedNSConsensusDiffDir
+	}
+	return CachedMicrodescConsensusDiffDir
+}
+
 // DetectConsensusFlavor 读首个 network-status-version 行。
 // dir-spec：`network-status-version` SP version [SP flavor]；缺 flavor 即为 ns。
 func DetectConsensusFlavor(doc string) (ConsensusFlavor, bool) {

@@ -2,9 +2,6 @@ package relay
 
 import (
 	"bufio"
-	"bytes"
-	"compress/gzip"
-	"compress/zlib"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -17,10 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
-	"github.com/ulikunitz/xz/lzma"
 )
 
 type dirZKey struct{}
@@ -29,7 +24,8 @@ const maxDirServeBytes = 8 << 20
 
 // DirCacheServer 用 CacheDirectory 的落盘共识/microdesc 应答 BEGIN_DIR / DirPort。
 // ns 与 microdesc 分库存放（cached-consensus / cached-microdesc-consensus），
-// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/<FPRLIST> 从最多 72 小时历史共识提供 limited-ed，
+// 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/<FPRLIST> 从最多 72 小时历史共识提供 limited-ed
+// （优先预压缩库，未命中再实时 LCS），
 // 按 FPRLIST 过滤权威签名（未过半 404），并协商 x-tor-lzma/x-zstd/gzip/deflate/.z 与 304；不宣告 DirCache=2。
 type DirCacheServer struct {
 	cacheDir string
@@ -155,8 +151,7 @@ func (d *DirCacheServer) serveConsensus(w http.ResponseWriter, r *http.Request) 
 	hashes := directory.ParseOrDiffFromConsensusHeader(r.Header.Get("X-Or-Diff-From-Consensus"))
 	mod := consensusLastModified(curr, d.cachedModTime(directory.ConsensusCacheFile(flavor)))
 	if len(hashes) > 0 {
-		if diff, ok := d.diffFromHashes(flavor, hashes, curr, fprKey); ok {
-			writeDirBody(w, r, []byte(diff), mod, !filter)
+		if d.writeConsensusDiff(w, r, flavor, hashes, curr, fprKey, mod, false) {
 			return
 		}
 	}
@@ -193,12 +188,33 @@ func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.R
 		}
 		fprKey = strings.Join(fps, "+")
 	}
-	diff, ok := d.diffFromHashes(flavor, []string{hash}, curr, fprKey)
-	if !ok {
-		http.NotFound(w, r)
-		return
+	mod := consensusLastModified(curr, d.cachedModTime(directory.ConsensusCacheFile(flavor)))
+	d.writeConsensusDiff(w, r, flavor, []string{hash}, curr, fprKey, mod, true)
+}
+
+// writeConsensusDiff 优先从预压缩库出 limited-ed；未命中再实时 LCS。
+// notFoundOnMiss 为 true 时（/diff/ URL）找不到则 404；header 路径则返回 false 让调用方发整份。
+func (d *DirCacheServer) writeConsensusDiff(w http.ResponseWriter, r *http.Request, flavor directory.ConsensusFlavor, hashes []string, curr, fprKey string, mod time.Time, notFoundOnMiss bool) bool {
+	if fprKey == "" {
+		enc, hideCE := negotiateDirEncoding(r)
+		if payload, used, ok := directory.TryConsensusDiffLibrary(d.cacheDir, flavor, hashes, curr, enc); ok {
+			if used != "" {
+				writeDirPrecompressed(w, r, payload, used, hideCE, mod)
+			} else {
+				writeDirBody(w, r, payload, mod, true)
+			}
+			return true
+		}
 	}
-	writeDirBody(w, r, []byte(diff), consensusLastModified(curr, d.cachedModTime(directory.ConsensusCacheFile(flavor))), !filter)
+	if diff, ok := d.diffFromHashes(flavor, hashes, curr, fprKey); ok {
+		writeDirBody(w, r, []byte(diff), mod, fprKey == "")
+		return true
+	}
+	if notFoundOnMiss {
+		http.NotFound(w, r)
+		return true
+	}
+	return false
 }
 
 func parseConsensusDiffPath(path string) (hash, fprlist string, flavor directory.ConsensusFlavor, ok bool) {
@@ -387,15 +403,8 @@ func consensusLastModified(doc string, fallback time.Time) time.Time {
 }
 
 func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte, mod time.Time, allowLzma bool) {
-	if !mod.IsZero() {
-		lm := mod.UTC().Truncate(time.Second)
-		w.Header().Set("Last-Modified", lm.Format(http.TimeFormat))
-		if ims := r.Header.Get("If-Modified-Since"); ims != "" {
-			if t, err := http.ParseTime(ims); err == nil && !lm.After(t.UTC().Truncate(time.Second)) {
-				w.WriteHeader(http.StatusNotModified)
-				return
-			}
-		}
+	if writeDirNotModified(w, r, mod) {
+		return
 	}
 	enc, hideCE := negotiateDirEncoding(r)
 	if enc == "x-tor-lzma" && !allowLzma {
@@ -412,6 +421,32 @@ func writeDirBody(w http.ResponseWriter, r *http.Request, body []byte, mod time.
 	} else {
 		payload, used = compressDirBody(enc, body)
 	}
+	writeDirEncoded(w, r, payload, used, hideCE)
+}
+
+func writeDirPrecompressed(w http.ResponseWriter, r *http.Request, payload []byte, used string, hideCE bool, mod time.Time) {
+	if writeDirNotModified(w, r, mod) {
+		return
+	}
+	writeDirEncoded(w, r, payload, used, hideCE)
+}
+
+func writeDirNotModified(w http.ResponseWriter, r *http.Request, mod time.Time) bool {
+	if mod.IsZero() {
+		return false
+	}
+	lm := mod.UTC().Truncate(time.Second)
+	w.Header().Set("Last-Modified", lm.Format(http.TimeFormat))
+	if ims := r.Header.Get("If-Modified-Since"); ims != "" {
+		if t, err := http.ParseTime(ims); err == nil && !lm.After(t.UTC().Truncate(time.Second)) {
+			w.WriteHeader(http.StatusNotModified)
+			return true
+		}
+	}
+	return false
+}
+
+func writeDirEncoded(w http.ResponseWriter, r *http.Request, payload []byte, used string, hideCE bool) {
 	if used != "" && !hideCE {
 		w.Header().Set("Content-Encoding", used)
 	}
@@ -529,64 +564,11 @@ func compressDirLzmaCached(body []byte) (payload []byte, used string) {
 }
 
 func compressDirBody(enc string, body []byte) (payload []byte, used string) {
-	switch enc {
-	case "gzip":
-		var buf bytes.Buffer
-		zw := gzip.NewWriter(&buf)
-		if _, err := zw.Write(body); err != nil {
-			return body, ""
-		}
-		if err := zw.Close(); err != nil {
-			return body, ""
-		}
-		return buf.Bytes(), "gzip"
-	case "deflate":
-		var buf bytes.Buffer
-		zw := zlib.NewWriter(&buf)
-		if _, err := zw.Write(body); err != nil {
-			return body, ""
-		}
-		if err := zw.Close(); err != nil {
-			return body, ""
-		}
-		return buf.Bytes(), "deflate"
-	case "x-zstd":
-		var buf bytes.Buffer
-		zw, err := zstd.NewWriter(&buf, zstd.WithEncoderConcurrency(1))
-		if err != nil {
-			return body, ""
-		}
-		if _, err := zw.Write(body); err != nil {
-			_ = zw.Close()
-			return body, ""
-		}
-		if err := zw.Close(); err != nil {
-			return body, ""
-		}
-		return buf.Bytes(), "x-zstd"
-	case "x-tor-lzma":
-		// C Tor 用 lzma_alone_encoder（legacy .lzma），不是 xz 容器。
-		// dir-spec：preset 不得高于 6（约 8MiB 字典）。
-		var buf bytes.Buffer
-		zw, err := lzma.WriterConfig{DictCap: 8 << 20}.NewWriter(&buf)
-		if err != nil {
-			return body, ""
-		}
-		if _, err := zw.Write(body); err != nil {
-			_ = zw.Close()
-			return body, ""
-		}
-		if err := zw.Close(); err != nil {
-			return body, ""
-		}
-		return buf.Bytes(), "x-tor-lzma"
-	default:
-		return body, ""
-	}
+	return directory.CompressDirBody(enc, body)
 }
 
 // serveKeysFP 按 dir-spec 提供 /tor/keys/fp/<F>[+<F>…]，从 CacheDirectory/cached-certs 抽取。
-// consdiff（含 72h 历史）/ gzip / zstd / lzma / 304 已接线；在缺真网被当缓存之前，禁止宣告 DirCache=2。
+// consdiff（含 72h 历史与预压缩库）/ gzip / zstd / lzma / 304 已接线；在缺真网被当缓存之前，禁止宣告 DirCache=2。
 func (d *DirCacheServer) serveKeysFP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -730,8 +712,19 @@ func (d *DirCacheServer) Listen(addr string) error {
 	go func() {
 		_ = d.srv.Serve(ln)
 	}()
+	d.scheduleDiffLibraryRebuild()
 	d.logger.Info("DirPort listening", "addr", addr)
 	return nil
+}
+
+func (d *DirCacheServer) scheduleDiffLibraryRebuild() {
+	go func() {
+		for _, fl := range []directory.ConsensusFlavor{directory.FlavorMicrodesc, directory.FlavorNS} {
+			if curr, ok := d.readCachedFlavor(fl); ok {
+				_ = directory.RebuildConsensusDiffLibrary(d.cacheDir, fl, curr)
+			}
+		}
+	}()
 }
 
 // Dial 返回一对连接到本机目录处理器的连接（BEGIN_DIR）。

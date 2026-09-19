@@ -123,6 +123,10 @@ func (c *Client) persistConsensusDisk(doc string) {
 	}
 	if err := writeFileAtomic(path, []byte(doc), 0o600); err != nil {
 		c.logger.Warn("failed to persist cached-microdesc-consensus", "error", err)
+		return
+	}
+	if err := RebuildConsensusDiffLibrary(filepath.Dir(path), FlavorMicrodesc, doc); err != nil && c.logger != nil {
+		c.logger.Warn("failed to rebuild microdesc consdiff library", "error", err)
 	}
 }
 
@@ -152,5 +156,9 @@ func (c *Client) persistNSConsensusDisk(doc string) {
 	}
 	if err := writeFileAtomic(path, []byte(doc), 0o600); err != nil {
 		c.logger.Warn("failed to persist cached-consensus", "error", err)
+		return
+	}
+	if err := RebuildConsensusDiffLibrary(filepath.Dir(path), FlavorNS, doc); err != nil && c.logger != nil {
+		c.logger.Warn("failed to rebuild ns consdiff library", "error", err)
 	}
 }

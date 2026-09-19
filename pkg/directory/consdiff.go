@@ -310,6 +310,12 @@ func ConsensusDiffFromDigest(oldDoc string) string {
 	return consensusDiffFromDigest(oldDoc)
 }
 
+// ConsensusDiffToDigest 是 limited-ed 第二行的 ToDigest：规范化后整份文档（含签名）的 SHA3-256。
+func ConsensusDiffToDigest(newDoc string) string {
+	newDoc = stripConsensusPreamble(strings.TrimPrefix(newDoc, "\ufeff"))
+	return sha3_256Hex([]byte(normalizeConsensusText(newDoc)))
+}
+
 func consensusDiffFromDigest(oldDoc string) string {
 	if signed, err := extractConsensusSignedBody(oldDoc); err == nil {
 		return sha3_256Hex(signed)

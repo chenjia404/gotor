@@ -13,7 +13,7 @@ const (
 	CachedMicrodescConsensusHistDir = "cached-microdesc-consensus.hist"
 
 	// maxConsensusHistHours 对齐 param-spec max-consensus-age-to-cache-for-diff 默认 72。
-	// 仍禁止宣告 DirCache=2：缺真网被当缓存证据，且未做预压缩 diff 库。
+	// 仍禁止宣告 DirCache=2：缺真网被当缓存证据。
 	maxConsensusHistHours = 72
 	maxConsensusHistFiles = 72
 	maxOrDiffFromHashes   = 16
