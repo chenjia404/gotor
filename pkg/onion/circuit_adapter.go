@@ -14,7 +14,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/path"
 )
 
-// CircuitAdapter 实现 CircuitBuilder + CellSender，用 3-hop 电路到达目标 OR。
+// CircuitAdapter 实现 CircuitBuilder + CellSender，用 3-hop（或 vanguards 四跳）到达目标 OR。
 type CircuitAdapter struct {
 	builder   *circuit.Builder
 	manager   *circuit.Manager
@@ -40,7 +40,7 @@ func NewCircuitAdapter(builder *circuit.Builder, manager *circuit.Manager, relay
 	}
 }
 
-// SetVanguards 注入 vanguards-lite（nil 则 HS 选路退回随机中间跳）。
+// SetVanguards 注入客户端 vanguards（nil 则 HS 选路退回随机中间跳）。
 func (a *CircuitAdapter) SetVanguards(v *path.VanguardSet, gm *path.GuardManager) {
 	if a == nil {
 		return
@@ -58,7 +58,7 @@ func (a *CircuitAdapter) SetRelays(relays []*directory.Relay) {
 	a.mu.Unlock()
 }
 
-// BuildCircuitToRelay 建 Guard→Middle→relay 三跳。
+// BuildCircuitToRelay 建 Guard→Middle[→L3]→relay。
 func (a *CircuitAdapter) BuildCircuitToRelay(ctx context.Context, target *HSDirectory, timeout time.Duration) (uint32, error) {
 	if a == nil || a.builder == nil {
 		return 0, fmt.Errorf("circuit adapter not configured")

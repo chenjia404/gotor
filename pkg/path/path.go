@@ -34,14 +34,22 @@ func (p *Path) hopsMeetFlagConstraints() bool {
 	if p == nil || p.Guard == nil || p.Middle == nil || p.Exit == nil {
 		return false
 	}
-	return p.Guard.UsableAsGuard() && p.Middle.UsableAsCircuitHop() && p.Exit.UsableAsExit()
+	if !p.Guard.UsableAsGuard() || !p.Middle.UsableAsCircuitHop() || !p.Exit.UsableAsExit() {
+		return false
+	}
+	if p.Middle2 != nil && !p.Middle2.UsableAsCircuitHop() {
+		return false
+	}
+	return true
 }
 
-// Path represents a selected path through the Tor network
+// Path represents a selected path through the Tor network.
+// Middle2 仅用于完整 vanguards 的 HS 四跳（L3）；SOCKS/Conflux 三跳保持 nil。
 type Path struct {
-	Guard  *directory.Relay
-	Middle *directory.Relay
-	Exit   *directory.Relay
+	Guard   *directory.Relay
+	Middle  *directory.Relay
+	Middle2 *directory.Relay
+	Exit    *directory.Relay
 }
 
 // Selector provides path selection for Tor circuits
@@ -96,9 +104,18 @@ func PathHopsShareFamily(dir *directory.Client, p *Path) bool {
 		return false
 	}
 	useIDs, useLists := familyPolicyFromDir(dir)
-	return p.Guard.InSameFamilyPolicy(p.Middle, useIDs, useLists) ||
-		p.Guard.InSameFamilyPolicy(p.Exit, useIDs, useLists) ||
-		p.Middle.InSameFamilyPolicy(p.Exit, useIDs, useLists)
+	hops := []*directory.Relay{p.Guard, p.Middle, p.Exit}
+	if p.Middle2 != nil {
+		hops = []*directory.Relay{p.Guard, p.Middle, p.Middle2, p.Exit}
+	}
+	for i := 0; i < len(hops); i++ {
+		for j := i + 1; j < len(hops); j++ {
+			if hops[i] != nil && hops[j] != nil && hops[i].InSameFamilyPolicy(hops[j], useIDs, useLists) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ConfluxLegsShareFamily 检查两腿 Guard/Middle 是否同家族。共享 Exit 是设计如此，不比较。

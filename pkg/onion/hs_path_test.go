@@ -1,6 +1,8 @@
 package onion
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/opd-ai/go-tor/pkg/directory"
@@ -16,7 +18,7 @@ func TestSelectOnionPathUsesFixedL2(t *testing.T) {
 		{Nickname: "G5", Fingerprint: "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE", Flags: []string{"Running", "Valid", "Guard", "Fast", "Stable"}},
 		{Nickname: "T", Fingerprint: "1111111111111111111111111111111111111111", Flags: []string{"Running", "Valid", "Guard", "Fast", "Stable"}},
 	}
-	v := path.NewVanguardSet(path.VanguardConfig{Count: 4}, nil)
+	v := path.NewVanguardSet(path.VanguardConfig{L3Count: -1, Count: 4}, nil)
 	p1, err := selectOnionPath(v, nil, pool, pool[5])
 	if err != nil {
 		t.Fatal(err)
@@ -41,10 +43,43 @@ func TestSelectOnionPathUsesFixedL2(t *testing.T) {
 	if p1.Exit != pool[5] || p2.Exit != pool[5] {
 		t.Fatal("末跳必须是目标")
 	}
+	if p1.Middle2 != nil || p2.Middle2 != nil {
+		t.Fatal("lite 单测关闭 L3 时不得四跳")
+	}
+}
+
+func TestSelectOnionPathUsesFixedL3(t *testing.T) {
+	pool := make([]*directory.Relay, 0, 16)
+	for i := 0; i < 16; i++ {
+		fp := strings.Repeat(fmt.Sprintf("%02X", i), 20)
+		pool = append(pool, &directory.Relay{
+			Nickname:    fmt.Sprintf("N%d", i),
+			Fingerprint: fp,
+			Flags:       []string{"Running", "Valid", "Guard", "Fast", "Stable"},
+		})
+	}
+	v := path.NewVanguardSet(path.VanguardConfig{Count: 4, L3Count: 8}, nil)
+	p, err := selectOnionPath(v, nil, pool, pool[15])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Middle2 == nil {
+		t.Fatal("默认应走四跳 L3")
+	}
+	ok := false
+	for _, fp := range v.Layer3Fingerprints() {
+		if strings.EqualFold(fp, p.Middle2.Fingerprint) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		t.Fatal("第三跳必须来自 L3 池")
+	}
 }
 
 func TestSelectOnionPathFailsClosedWhenVanguardsCannotPick(t *testing.T) {
-	v := path.NewVanguardSet(path.VanguardConfig{Count: 4}, nil)
+	v := path.NewVanguardSet(path.VanguardConfig{L3Count: -1, Count: 4}, nil)
 	only := []*directory.Relay{
 		{Nickname: "T", Fingerprint: "1111111111111111111111111111111111111111", Flags: []string{"Running", "Valid", "Guard", "Fast", "Stable"}},
 	}

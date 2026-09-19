@@ -69,7 +69,7 @@ func (b *Builder) SetMetricsRecorder(recorder MetricsRecorder) {
 	b.metricsRecorder = recorder
 }
 
-// BuildCircuit builds a complete 3-hop circuit using the provided path
+// BuildCircuit builds a circuit (3 hops, or 4 when Path.Middle2 为 HS L3).
 func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.Duration) (*Circuit, error) {
 	// Check rate limit before acquiring the build lock
 	// This prevents queuing up too many circuit builds
@@ -100,6 +100,7 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 	b.logger.Info("Building circuit",
 		"guard", p.Guard.Nickname,
 		"middle", p.Middle.Nickname,
+		"middle2", nicknameOrEmpty(p.Middle2),
 		"exit", p.Exit.Nickname)
 
 	// Create the circuit
@@ -120,6 +121,10 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 	if !p.Middle.HasExtendKeys() {
 		circuit.SetState(StateFailed)
 		return nil, fmt.Errorf("middle %s missing extend keys", p.Middle.Nickname)
+	}
+	if p.Middle2 != nil && !p.Middle2.HasExtendKeys() {
+		circuit.SetState(StateFailed)
+		return nil, fmt.Errorf("middle2 %s missing extend keys", p.Middle2.Nickname)
 	}
 	if !p.Exit.HasExtendKeys() {
 		circuit.SetState(StateFailed)
@@ -142,6 +147,16 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 
 	b.logger.Info("Extended to middle", "middle", p.Middle.Nickname)
 
+	if p.Middle2 != nil {
+		ext.SetTargetRelay(p.Middle2)
+		addr := fmt.Sprintf("%s:%d", p.Middle2.Address, p.Middle2.ORPort)
+		if err := ext.ExtendCircuit(buildCtx, addr, HandshakeTypeFor(p.Middle2)); err != nil {
+			circuit.Close()
+			return nil, fmt.Errorf("failed to extend to L3 hop: %w", err)
+		}
+		b.logger.Info("Extended to L3", "middle2", p.Middle2.Nickname)
+	}
+
 	// Extend to exit relay using EXTEND2 protocol
 	ext.SetTargetRelay(p.Exit)
 	exitAddr := fmt.Sprintf("%s:%d", p.Exit.Address, p.Exit.ORPort)
@@ -159,6 +174,13 @@ func (b *Builder) BuildCircuit(ctx context.Context, p *path.Path, timeout time.D
 	b.logger.Info("Circuit built successfully", "circuit_id", circuit.ID, "hops", circuit.Length())
 
 	return circuit, nil
+}
+
+func nicknameOrEmpty(r *directory.Relay) string {
+	if r == nil {
+		return ""
+	}
+	return r.Nickname
 }
 
 // BuildFirstHop 只做 TLS + link handshake + Guard CREATE2/ntor。

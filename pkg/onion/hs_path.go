@@ -9,7 +9,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/path"
 )
 
-// selectOnionPath 已注入 VanguardSet 时必须走固定 L2，失败则关闭（不得随机中间跳冒充）。
+// selectOnionPath 已注入 VanguardSet 时必须走固定 L2（及默认 L3），失败则关闭（不得随机中间跳冒充）。
 // 未配置 vanguards 时才退回随机 Guard/Middle。
 func selectOnionPath(v *path.VanguardSet, gm *path.GuardManager, relays []*directory.Relay, target *directory.Relay) (*path.Path, error) {
 	if target == nil {

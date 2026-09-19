@@ -198,7 +198,7 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 		AvoidDisk: cfg.AvoidDiskWrites,
 	}, log)
 	if err := vset.Load(); err != nil {
-		log.Warn("vanguards-lite load failed", "error", err)
+		log.Warn("vanguards load failed", "error", err)
 	}
 
 	client := &Client{

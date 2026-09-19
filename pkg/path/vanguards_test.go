@@ -3,6 +3,7 @@ package path
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +38,7 @@ func vgPool() []*directory.Relay {
 
 func TestVanguardSetFillsFourAndSticks(t *testing.T) {
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: 2 * time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{L3Count: -1, Count: 4, MinLife: time.Hour, MaxLife: 2 * time.Hour}, nil)
 	v.nowFn = func() time.Time { return now }
 	pool := vgPool()
 	target := pool[len(pool)-1]
@@ -79,7 +80,7 @@ func TestVanguardSetPersistsAndReloads(t *testing.T) {
 	dir := t.TempDir()
 	state := filepath.Join(dir, datadir.StateFileName)
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	v := NewVanguardSet(VanguardConfig{StatePath: state, Count: 4, MinLife: 24 * time.Hour, MaxLife: 24 * time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{StatePath: state, L3Count: -1, Count: 4, MinLife: 24 * time.Hour, MaxLife: 24 * time.Hour}, nil)
 	v.nowFn = func() time.Time { return now }
 	pool := vgPool()
 	if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
@@ -89,7 +90,7 @@ func TestVanguardSetPersistsAndReloads(t *testing.T) {
 	if len(first) != 4 {
 		t.Fatalf("want 4, got %v", first)
 	}
-	again := NewVanguardSet(VanguardConfig{StatePath: state, Count: 4}, nil)
+	again := NewVanguardSet(VanguardConfig{StatePath: state, L3Count: -1, Count: 4}, nil)
 	again.nowFn = func() time.Time { return now }
 	if err := again.Load(); err != nil {
 		t.Fatal(err)
@@ -124,6 +125,7 @@ func TestVanguardAndGuardConcurrentState(t *testing.T) {
 	pool := vgPool()
 	v := NewVanguardSet(VanguardConfig{
 		StatePath: filepath.Join(dir, datadir.StateFileName),
+		L3Count:   -1,
 		Count:     4,
 		MinLife:   time.Hour,
 		MaxLife:   time.Hour,
@@ -183,7 +185,7 @@ func TestVanguardAndGuardShareStateFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := filepath.Join(dir, datadir.StateFileName)
-	v := NewVanguardSet(VanguardConfig{StatePath: state, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{StatePath: state, L3Count: -1, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +203,7 @@ func TestVanguardAndGuardShareStateFile(t *testing.T) {
 	if !strings.Contains(txt, strings.ToUpper(pool[0].Fingerprint)) {
 		t.Fatal("L2 写入后不得丢掉 Guard 行")
 	}
-	again := NewVanguardSet(VanguardConfig{StatePath: state, Count: 4}, nil)
+	again := NewVanguardSet(VanguardConfig{StatePath: state, L3Count: -1, Count: 4}, nil)
 	if err := again.Load(); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +215,7 @@ func TestVanguardAndGuardShareStateFile(t *testing.T) {
 func TestVanguardSetAvoidDisk(t *testing.T) {
 	dir := t.TempDir()
 	state := filepath.Join(dir, datadir.StateFileName)
-	v := NewVanguardSet(VanguardConfig{StatePath: state, AvoidDisk: true, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{StatePath: state, AvoidDisk: true, L3Count: -1, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	pool := vgPool()
 	if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
 		t.Fatal(err)
@@ -227,7 +229,7 @@ func TestVanguardSetExpiresAndRefills(t *testing.T) {
 	dir := t.TempDir()
 	state := filepath.Join(dir, datadir.StateFileName)
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	v := NewVanguardSet(VanguardConfig{StatePath: state, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{StatePath: state, L3Count: -1, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	v.nowFn = func() time.Time { return now }
 	pool := vgPool()
 	if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
@@ -266,7 +268,7 @@ func TestVanguardSetExpiresAndRefills(t *testing.T) {
 }
 
 func TestVanguardSetDropsL2WhenItBecomesPersistL1(t *testing.T) {
-	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{L3Count: -1, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	pool := vgPool()
 	if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
 		t.Fatal(err)
@@ -302,7 +304,7 @@ func TestVanguardSetDropsL2WhenItBecomesPersistL1(t *testing.T) {
 }
 
 func TestVanguardSetKeepsL2WhenTargetMatches(t *testing.T) {
-	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{L3Count: -1, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	pool := vgPool()
 	if _, err := v.SelectHSPath(pool, pool[6], nil); err != nil {
 		t.Fatal(err)
@@ -337,7 +339,7 @@ func TestVanguardSetKeepsL2WhenTargetMatches(t *testing.T) {
 }
 
 func TestVanguardSetAcceptsBase64PersistL1(t *testing.T) {
-	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{L3Count: -1, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	pool := vgPool()
 	hexFP := pool[0].Fingerprint
 	raw, err := hex.DecodeString(hexFP)
@@ -360,7 +362,7 @@ func TestVanguardSetAcceptsBase64PersistL1(t *testing.T) {
 }
 
 func TestVanguardSetAcceptsSpacedPersistL1(t *testing.T) {
-	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{L3Count: -1, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	pool := vgPool()
 	raw := pool[0].Fingerprint
 	var b strings.Builder
@@ -387,7 +389,7 @@ func TestVanguardSetAcceptsSpacedPersistL1(t *testing.T) {
 }
 
 func TestVanguardSetRejectsL1SameFamilyAsTarget(t *testing.T) {
-	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{L3Count: -1, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	pool := vgPool()
 	fam := []string{"ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
 	pool[0].FamilyIDs = fam
@@ -405,7 +407,7 @@ func TestVanguardSetRejectsL1SameFamilyAsTarget(t *testing.T) {
 }
 
 func TestVanguardSetFailsWhenAllShareFamilyWithTarget(t *testing.T) {
-	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{L3Count: -1, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	pool := vgPool()
 	fam := []string{"ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
 	for _, r := range pool {
@@ -417,7 +419,7 @@ func TestVanguardSetFailsWhenAllShareFamilyWithTarget(t *testing.T) {
 }
 
 func TestVanguardSetDoesNotPickTargetAsL2(t *testing.T) {
-	v := NewVanguardSet(VanguardConfig{Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
+	v := NewVanguardSet(VanguardConfig{L3Count: -1, Count: 4, MinLife: time.Hour, MaxLife: time.Hour}, nil)
 	pool := vgPool()
 	target := pool[6]
 	for i := 0; i < 8; i++ {
@@ -439,4 +441,201 @@ func containsFP(list []string, fp string) bool {
 		}
 	}
 	return false
+}
+
+func vgWidePool() []*directory.Relay {
+	out := make([]*directory.Relay, 0, 16)
+	for i := 0; i < 16; i++ {
+		fp := strings.Repeat(fmt.Sprintf("%02X", i), 20)
+		nick := fmt.Sprintf("N%d", i)
+		if i == 15 {
+			nick = "Target"
+		}
+		out = append(out, vgRelay(fp, nick))
+	}
+	return out
+}
+
+func TestVanguardSetFillsL3FourHopAndSticks(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	v := NewVanguardSet(VanguardConfig{Count: 4, L3Count: 8, MinLife: time.Hour, MaxLife: 2 * time.Hour, L3MinLife: time.Hour, L3MaxLife: 2 * time.Hour}, nil)
+	v.nowFn = func() time.Time { return now }
+	pool := vgWidePool()
+	target := pool[len(pool)-1]
+	p1, err := v.SelectHSPath(pool, target, []string{pool[0].Fingerprint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p1.Guard.Fingerprint != pool[0].Fingerprint {
+		t.Fatalf("L1 应优先持久入口，got %s", p1.Guard.Nickname)
+	}
+	if p1.Middle2 == nil {
+		t.Fatal("启用 L3 必须是四跳")
+	}
+	if p1.Exit != target {
+		t.Fatal("末跳必须是目标")
+	}
+	seen := map[string]bool{
+		p1.Guard.Fingerprint:   true,
+		p1.Middle.Fingerprint:  true,
+		p1.Middle2.Fingerprint: true,
+		p1.Exit.Fingerprint:    true,
+	}
+	if len(seen) != 4 {
+		t.Fatal("L1/L2/L3/目标必须互异")
+	}
+	l2 := v.Fingerprints()
+	l3 := v.Layer3Fingerprints()
+	if len(l2) != 4 {
+		t.Fatalf("L2 数 %d", len(l2))
+	}
+	if len(l3) != 8 {
+		t.Fatalf("L3 数 %d, want 8", len(l3))
+	}
+	if containsFP(l2, pool[0].Fingerprint) || containsFP(l3, pool[0].Fingerprint) {
+		t.Fatal("L2/L3 不得含持久 L1")
+	}
+	for _, fp := range l2 {
+		if containsFP(l3, fp) {
+			t.Fatalf("L2 与 L3 重叠 %s", fp)
+		}
+	}
+	if !containsFP(l2, p1.Middle.Fingerprint) {
+		t.Fatal("第二跳必须来自 L2 池")
+	}
+	if !containsFP(l3, p1.Middle2.Fingerprint) {
+		t.Fatal("第三跳必须来自 L3 池")
+	}
+	p2, err := v.SelectHSPath(pool, target, []string{pool[0].Fingerprint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsFP(l2, p2.Middle.Fingerprint) || !containsFP(l3, p2.Middle2.Fingerprint) {
+		t.Fatal("第二次选路仍须落在固定 L2/L3 集合内")
+	}
+}
+
+func TestVanguardSetPersistsLayer3(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, datadir.StateFileName)
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	v := NewVanguardSet(VanguardConfig{StatePath: state, Count: 4, L3Count: 8, MinLife: 24 * time.Hour, MaxLife: 24 * time.Hour, L3MinLife: time.Hour, L3MaxLife: time.Hour}, nil)
+	v.nowFn = func() time.Time { return now }
+	pool := vgWidePool()
+	if _, err := v.SelectHSPath(pool, pool[15], nil); err != nil {
+		t.Fatal(err)
+	}
+	first := v.Layer3Fingerprints()
+	if len(first) != 8 {
+		t.Fatalf("want 8 L3, got %v", first)
+	}
+	again := NewVanguardSet(VanguardConfig{StatePath: state, Count: 4, L3Count: 8}, nil)
+	again.nowFn = func() time.Time { return now }
+	if err := again.Load(); err != nil {
+		t.Fatal(err)
+	}
+	loaded := again.Layer3Fingerprints()
+	if len(loaded) != 8 {
+		t.Fatalf("reload L3 %v", loaded)
+	}
+	for _, fp := range first {
+		if !containsFP(loaded, fp) {
+			t.Fatalf("missing L3 %s after reload", fp)
+		}
+	}
+	raw, err := os.ReadFile(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	txt := string(raw)
+	if !strings.Contains(txt, hsLayer3GuardsStateKey) {
+		t.Fatal("state 应含 GotorHSLayer3Guards")
+	}
+	if !strings.Contains(txt, hsLayer2GuardsStateKey) {
+		t.Fatal("写 L3 不得丢掉 L2 键")
+	}
+}
+
+func TestVanguardSetDropsL3WhenItBecomesPersistL1(t *testing.T) {
+	v := NewVanguardSet(VanguardConfig{Count: 4, L3Count: 8, MinLife: time.Hour, MaxLife: time.Hour, L3MinLife: time.Hour, L3MaxLife: time.Hour}, nil)
+	pool := vgWidePool()
+	if _, err := v.SelectHSPath(pool, pool[15], nil); err != nil {
+		t.Fatal(err)
+	}
+	l3 := append([]string{}, v.Layer3Fingerprints()...)
+	promoted := l3[0]
+	p, err := v.SelectHSPath(pool, pool[15], []string{promoted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Guard.Fingerprint != promoted {
+		t.Fatalf("晋升入口应作 L1，got %s", p.Guard.Nickname)
+	}
+	if containsFP(v.Layer3Fingerprints(), promoted) {
+		t.Fatal("已是入口的节点必须退出 L3")
+	}
+	if len(v.Layer3Fingerprints()) != 8 {
+		t.Fatalf("退出后应补满 L3，got %v", v.Layer3Fingerprints())
+	}
+}
+
+func TestVanguardSetKeepsL3WhenTargetMatches(t *testing.T) {
+	v := NewVanguardSet(VanguardConfig{Count: 4, L3Count: 8, MinLife: time.Hour, MaxLife: time.Hour, L3MinLife: time.Hour, L3MaxLife: time.Hour}, nil)
+	pool := vgWidePool()
+	if _, err := v.SelectHSPath(pool, pool[15], nil); err != nil {
+		t.Fatal(err)
+	}
+	before := append([]string{}, v.Layer3Fingerprints()...)
+	var hit *directory.Relay
+	for _, r := range pool {
+		if containsFP(before, r.Fingerprint) {
+			hit = r
+			break
+		}
+	}
+	if hit == nil {
+		t.Fatal("no L3 in pool")
+	}
+	if _, err := v.SelectHSPath(pool, hit, nil); err != nil {
+		t.Fatal(err)
+	}
+	after := v.Layer3Fingerprints()
+	if len(after) != 8 {
+		t.Fatalf("target=L3 后集合被收缩: %v → %v", before, after)
+	}
+	for _, fp := range before {
+		if !containsFP(after, fp) {
+			t.Fatalf("L3 %s 因当前目标被踢出集合", fp)
+		}
+	}
+}
+
+func TestVanguardSetFourHopRejectsSharedFamily(t *testing.T) {
+	v := NewVanguardSet(VanguardConfig{Count: 4, L3Count: 8, MinLife: time.Hour, MaxLife: time.Hour, L3MinLife: time.Hour, L3MaxLife: time.Hour}, nil)
+	pool := vgWidePool()
+	fam := []string{"ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+	for _, r := range pool {
+		r.FamilyIDs = fam
+	}
+	if _, err := v.SelectHSPath(pool, pool[15], []string{pool[0].Fingerprint}); err == nil {
+		t.Fatal("四跳全体同家族时应失败关闭")
+	}
+}
+
+func TestVanguardSetDoesNotPickTargetAsL3(t *testing.T) {
+	v := NewVanguardSet(VanguardConfig{Count: 4, L3Count: 8, MinLife: time.Hour, MaxLife: time.Hour, L3MinLife: time.Hour, L3MaxLife: time.Hour}, nil)
+	pool := vgWidePool()
+	target := pool[15]
+	for i := 0; i < 8; i++ {
+		p, err := v.SelectHSPath(pool, target, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Middle2 == nil {
+			t.Fatal("应有 L3")
+		}
+		if p.Middle2.Fingerprint == target.Fingerprint || p.Middle.Fingerprint == target.Fingerprint || p.Guard.Fingerprint == target.Fingerprint {
+			t.Fatal("L1/L2/L3 不得是目标")
+		}
+	}
 }
