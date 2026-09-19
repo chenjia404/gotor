@@ -61,10 +61,13 @@ func writeEd25519CertArmor(buf *bytes.Buffer, cert []byte) {
 	fmt.Fprintf(buf, "-----END ED25519 CERT-----\n")
 }
 
-// encodeIntroPointsPlaintext 编码第二层明文（含 create2-formats 与合法 auth-key/enc-key-cert）。
-func encodeIntroPointsPlaintext(intros []IntroductionPoint, descSigningPriv ed25519.PrivateKey, expires time.Time) ([]byte, error) {
+// encodeIntroPointsPlaintext 编码第二层明文（含 create2-formats、可选 pow-params、合法 auth-key/enc-key-cert）。
+func encodeIntroPointsPlaintext(intros []IntroductionPoint, descSigningPriv ed25519.PrivateKey, expires time.Time, pow *PoWParams) ([]byte, error) {
 	var out bytes.Buffer
 	fmt.Fprintf(&out, "create2-formats 2 3\n")
+	if line := encodePoWParamsLine(pow); line != "" {
+		out.WriteString(line)
+	}
 
 	for _, intro := range intros {
 		lsCombined := make([]byte, 0, 64)

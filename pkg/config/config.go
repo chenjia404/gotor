@@ -234,11 +234,12 @@ type MapAddressEntry struct {
 
 // OnionServiceConfig represents configuration for a single onion service
 type OnionServiceConfig struct {
-	ServiceDir  string            // Directory for service keys and state
-	VirtualPort int               // Virtual port for the onion service
-	TargetAddr  string            // Target address (localhost:port)
-	MaxStreams  int               // Max concurrent streams (default: 0 = unlimited)
-	ClientAuth  map[string]string // Client authorization keys
+	ServiceDir         string            // Directory for service keys and state
+	VirtualPort        int               // Virtual port for the onion service
+	TargetAddr         string            // Target address (localhost:port)
+	MaxStreams         int               // Max concurrent streams (default: 0 = unlimited)
+	ClientAuth         map[string]string // Client authorization keys
+	PoWDefensesEnabled bool              // HiddenServicePoWDefensesEnabled（默认关）
 }
 
 // ClientTransportConfig represents configuration for a client-side pluggable transport.

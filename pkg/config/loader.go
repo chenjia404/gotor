@@ -627,7 +627,7 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 		if st.pendingHS.VirtualPort != 0 {
 			cfg.OnionServices = append(cfg.OnionServices, *st.pendingHS)
 			dir := st.pendingHS.ServiceDir
-			st.pendingHS = &OnionServiceConfig{ServiceDir: dir}
+			st.pendingHS = &OnionServiceConfig{ServiceDir: dir, PoWDefensesEnabled: st.pendingHS.PoWDefensesEnabled, MaxStreams: st.pendingHS.MaxStreams}
 		}
 		st.pendingHS.VirtualPort = vp
 		st.pendingHS.TargetAddr = target
@@ -646,6 +646,12 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 			return fmt.Errorf("invalid HiddenServiceMaxStreams: %s", value)
 		}
 		st.pendingHS.MaxStreams = n
+
+	case "HiddenServicePoWDefensesEnabled":
+		if st == nil || st.pendingHS == nil {
+			return fmt.Errorf("HiddenServicePoWDefensesEnabled without HiddenServiceDir")
+		}
+		st.pendingHS.PoWDefensesEnabled = parseBool(value)
 
 	case "%include", "Include":
 		if st == nil {

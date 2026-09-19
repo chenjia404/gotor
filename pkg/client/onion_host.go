@@ -27,14 +27,18 @@ func (c *Client) startConfiguredOnionServices(ctx context.Context) error {
 		sc, ok := byDir[osvc.ServiceDir]
 		if !ok {
 			sc = &onion.ServiceConfig{
-				DataDirectory:  osvc.ServiceDir,
-				Ports:          map[int]string{},
-				NumIntroPoints: 3,
+				DataDirectory:      osvc.ServiceDir,
+				Ports:              map[int]string{},
+				NumIntroPoints:     3,
+				PoWDefensesEnabled: osvc.PoWDefensesEnabled,
 			}
 			byDir[osvc.ServiceDir] = sc
 			order = append(order, osvc.ServiceDir)
 		}
 		sc.Ports[osvc.VirtualPort] = osvc.TargetAddr
+		if osvc.PoWDefensesEnabled {
+			sc.PoWDefensesEnabled = true
+		}
 	}
 
 	networkRelays := c.pathSelector.GetRelays()
@@ -47,6 +51,7 @@ func (c *Client) startConfiguredOnionServices(ctx context.Context) error {
 	begindir := onion.NewBegindirFetcher(builder, c.logger)
 	begindir.SetRelays(networkRelays)
 	begindir.SetMicrodescLoader(c.directory)
+	begindir.SetVanguards(c.vanguards, c.guardManager)
 	var srvCur, srvPrev []byte
 	if c.directory != nil {
 		srvCur, srvPrev = c.directory.SharedRandomValues()
@@ -60,6 +65,9 @@ func (c *Client) startConfiguredOnionServices(ctx context.Context) error {
 		sc := byDir[dir]
 		sc.CircuitBuilder = builder
 		sc.PathSelector = c.pathSelector
+		sc.Vanguards = c.vanguards
+		sc.GuardManager = c.guardManager
+		sc.MicrodescLoader = c.directory
 		sc.Begindir = begindir
 		sc.NetworkRelays = networkRelays
 		sc.SharedRandCurrent = srvCur

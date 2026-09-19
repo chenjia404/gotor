@@ -124,18 +124,72 @@ func ParseIntroduce2(cell, introEncPriv, subcred []byte) (*Introduce2Request, er
 }
 
 func parseIntroduce2Inner(plaintext []byte) (*Introduce2Request, error) {
-	if len(plaintext) < 20+1 {
+	if req, err := parseIntroduce2InnerRendSpec(plaintext); err == nil {
+		return req, nil
+	}
+	return parseIntroduce2InnerLegacy(plaintext)
+}
+
+// parseIntroduce2InnerRendSpec 现行 rend-spec：COOKIE | N_EXT(TYPE+LEN1+DATA) | ONION_KEY_TYPE=1 | LEN | KEY | NSPEC | LSPECs。
+func parseIntroduce2InnerRendSpec(plaintext []byte) (*Introduce2Request, error) {
+	if len(plaintext) < 20+1+1+2 {
 		return nil, fmt.Errorf("decrypted data too short: %d bytes", len(plaintext))
 	}
-	offset := 0
 	rendezvousCookie := make([]byte, 20)
-	copy(rendezvousCookie, plaintext[offset:offset+20])
-	offset += 20
-
-	nspec := plaintext[offset]
+	copy(rendezvousCookie, plaintext[:20])
+	offset := 20
+	nExt := int(plaintext[offset])
 	offset++
+	extensions := make(map[uint8][]byte)
+	for i := 0; i < nExt; i++ {
+		if offset+2 > len(plaintext) {
+			return nil, fmt.Errorf("truncated intro extension header")
+		}
+		extType := plaintext[offset]
+		offset++
+		extLen := int(plaintext[offset])
+		offset++
+		if offset+extLen > len(plaintext) {
+			return nil, fmt.Errorf("truncated intro extension data")
+		}
+		extensions[extType] = append([]byte(nil), plaintext[offset:offset+extLen]...)
+		offset += extLen
+	}
+	if offset >= len(plaintext) {
+		return nil, fmt.Errorf("missing onion key type")
+	}
+	if plaintext[offset] != 0x01 {
+		return nil, fmt.Errorf("unsupported onion key type 0x%02x", plaintext[offset])
+	}
+	offset++
+	if offset+2 > len(plaintext) {
+		return nil, fmt.Errorf("truncated onion key length")
+	}
+	onionKeyLen := binary.BigEndian.Uint16(plaintext[offset : offset+2])
+	offset += 2
+	if offset+int(onionKeyLen) > len(plaintext) {
+		return nil, fmt.Errorf("truncated onion key")
+	}
+	offset += int(onionKeyLen)
+	if offset >= len(plaintext) {
+		return nil, fmt.Errorf("missing nspec")
+	}
+	nspec := int(plaintext[offset])
+	offset++
+	linkSpecifiers, err := parseIntroCellLinkSpecs(plaintext, offset, nspec)
+	if err != nil {
+		return nil, err
+	}
+	return &Introduce2Request{
+		RendezvousCookie: rendezvousCookie,
+		LinkSpecifiers:   linkSpecifiers,
+		Extensions:       extensions,
+	}, nil
+}
+
+func parseIntroCellLinkSpecs(plaintext []byte, offset, nspec int) ([]LinkSpecifier, error) {
 	linkSpecifiers := make([]LinkSpecifier, 0, nspec)
-	for i := 0; i < int(nspec); i++ {
+	for i := 0; i < nspec; i++ {
 		if offset+2 > len(plaintext) {
 			return nil, fmt.Errorf("truncated link specifier %d", i)
 		}
@@ -151,6 +205,29 @@ func parseIntroduce2Inner(plaintext []byte) (*Introduce2Request, error) {
 		offset += int(lslen)
 		linkSpecifiers = append(linkSpecifiers, LinkSpecifier{Type: lstype, Data: lsdata})
 	}
+	return linkSpecifiers, nil
+}
+
+func parseIntroduce2InnerLegacy(plaintext []byte) (*Introduce2Request, error) {
+	if len(plaintext) < 20+1 {
+		return nil, fmt.Errorf("decrypted data too short: %d bytes", len(plaintext))
+	}
+	offset := 0
+	rendezvousCookie := make([]byte, 20)
+	copy(rendezvousCookie, plaintext[offset:offset+20])
+	offset += 20
+
+	nspec := plaintext[offset]
+	offset++
+	linkSpecifiers, err := parseIntroCellLinkSpecs(plaintext, offset, int(nspec))
+	if err != nil {
+		return nil, err
+	}
+	consumed := 20 + 1
+	for _, ls := range linkSpecifiers {
+		consumed += 2 + len(ls.Data)
+	}
+	offset = consumed
 
 	extensions := make(map[uint8][]byte)
 	// 可选 ONION_KEY（旧格式）；新格式握手密钥已在外层 X

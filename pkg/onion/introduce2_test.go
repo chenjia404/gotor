@@ -71,6 +71,13 @@ func TestParseIntroduce2OfficialVector(t *testing.T) {
 	if !bytes.Equal(req.RendezvousCookie, plaintext[:20]) {
 		t.Fatal("cookie content")
 	}
+	addr, err := LinkSpecifierToAddress(req.LinkSpecifiers)
+	if err != nil || addr != "127.0.0.1:5001" {
+		t.Fatalf("rend-spec 内层应解析 RP 地址, got %q err=%v", addr, err)
+	}
+	if _, ok := req.Extensions[1]; !ok {
+		t.Fatal("应保留内层扩展 type 1")
+	}
 }
 
 func TestParseIntroduce2RoundTrip(t *testing.T) {
@@ -118,6 +125,59 @@ func TestParseIntroduce2RoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(req.RendezvousCookie, cookie) {
 		t.Fatal("cookie")
+	}
+	addr, err := LinkSpecifierToAddress(req.LinkSpecifiers)
+	if err != nil || addr != "192.0.2.1:8080" {
+		t.Fatalf("addr=%q err=%v", addr, err)
+	}
+}
+
+func TestParseIntroduce2RendSpecInnerPoW(t *testing.T) {
+	bPriv, err := crypto.GenerateCurve25519PrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	B, err := curve25519.X25519(bPriv, curve25519.Basepoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xPriv, err := crypto.GenerateCurve25519PrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authKey := bytes.Repeat([]byte{0xAB}, 32)
+	subcred := bytes.Repeat([]byte{0xCD}, 32)
+	cookie := bytes.Repeat([]byte{0x11}, 20)
+	proof := &PoWProof{Effort: 1}
+	copy(proof.Nonce[:], bytes.Repeat([]byte{0x22}, 16))
+	copy(proof.SeedHead[:], []byte{1, 2, 3, 4})
+	copy(proof.Solution[:], bytes.Repeat([]byte{0x33}, 16))
+	inner := make([]byte, 0)
+	inner = append(inner, cookie...)
+	inner = append(inner, 1)
+	inner = append(inner, encodePoWExtension(proof)...)
+	inner = append(inner, 0x01, 0x00, 0x20)
+	inner = append(inner, bytes.Repeat([]byte{0x44}, 32)...)
+	inner = append(inner, 0x01, 0x00, 0x06, 192, 0, 2, 1, 0x1F, 0x90)
+
+	header := make([]byte, 0, 56)
+	header = append(header, make([]byte, 20)...)
+	header = append(header, 0x02, 0x00, 0x20)
+	header = append(header, authKey...)
+	header = append(header, 0x00)
+
+	enc, err := BuildIntroduce1Encrypted(header, inner, xPriv, B, authKey, subcred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell := append(append([]byte{}, header...), enc...)
+	req, err := ParseIntroduce2(cell, bPriv, subcred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parsePoWProof(req.Extensions[introExtPoW])
+	if got == nil || got.Effort != 1 || !bytes.Equal(got.SeedHead[:], proof.SeedHead[:]) {
+		t.Fatalf("未解析内层 PoW: %+v", got)
 	}
 	addr, err := LinkSpecifierToAddress(req.LinkSpecifiers)
 	if err != nil || addr != "192.0.2.1:8080" {

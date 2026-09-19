@@ -4,6 +4,8 @@ package onion
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -524,5 +526,44 @@ func TestSelectWeighted(t *testing.T) {
 	selected = rcb.selectWeighted(zeroBWRelays)
 	if selected == nil {
 		t.Error("selectWeighted should handle zero bandwidth relays")
+	}
+}
+
+func TestSelectPathToRelayUsesVanguards(t *testing.T) {
+	pool := make([]*directory.Relay, 0, 16)
+	for i := 0; i < 16; i++ {
+		fp := strings.Repeat(fmt.Sprintf("%02X", i), 20)
+		pool = append(pool, &directory.Relay{
+			Nickname:    fmt.Sprintf("N%d", i),
+			Fingerprint: fp,
+			Flags:       []string{"Running", "Valid", "Guard", "Fast", "Stable"},
+		})
+	}
+	selector := &mockPathSelector{relays: pool}
+	rcb := NewRendezvousCircuitBuilder(nil, selector, nil)
+	v := path.NewVanguardSet(path.VanguardConfig{Count: 4, L3Count: 8}, nil)
+	rcb.SetVanguards(v, nil)
+	p, err := rcb.selectPathToRelay(pool[15])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Exit != pool[15] {
+		t.Fatal("末跳必须是会合点")
+	}
+	if p.Middle2 == nil {
+		t.Fatal("托管 rend 应走 L3")
+	}
+}
+
+func TestSelectPathToRelayVanguardsFailClosed(t *testing.T) {
+	only := []*directory.Relay{{
+		Nickname:    "T",
+		Fingerprint: "1111111111111111111111111111111111111111",
+		Flags:       []string{"Running", "Valid", "Guard", "Fast", "Stable"},
+	}}
+	rcb := NewRendezvousCircuitBuilder(nil, &mockPathSelector{relays: only}, nil)
+	rcb.SetVanguards(path.NewVanguardSet(path.VanguardConfig{L3Count: -1, Count: 4}, nil), nil)
+	if _, err := rcb.selectPathToRelay(only[0]); err == nil {
+		t.Fatal("托管 rend 已注入 vanguards 时不得随机中间跳")
 	}
 }

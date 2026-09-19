@@ -59,6 +59,11 @@ type Service struct {
 	persistence   *ServicePersistence // Handles state persistence
 	createdAt     time.Time           // Service creation timestamp
 	descriptorRev uint64              // Descriptor revision counter
+
+	// HiddenServicePoWDefensesEnabled：当前/上一轮种子。无队列控制环。
+	powSeed     []byte
+	powSeedPrev []byte
+	powExpire   time.Time
 }
 
 // CircuitGetter provides access to circuits by ID
@@ -103,6 +108,17 @@ type ServiceConfig struct {
 	// Path selector for choosing introduction point paths (optional)
 	// If nil, uses placeholder circuits for testing
 	PathSelector *path.Selector
+
+	// Vanguards / GuardManager：托管 intro/rend 与客户端 HS 共用 L2+L3。已注入则失败关闭。
+	Vanguards    *path.VanguardSet
+	GuardManager *path.GuardManager
+
+	// MicrodescLoader 在建 intro 电路前补齐 hop 密钥（可选）
+	MicrodescLoader PathMicrodescLoader
+
+	// PoWDefensesEnabled 对应 torrc HiddenServicePoWDefensesEnabled（默认关）。
+	// 开启后描述符写 pow-params，INTRODUCE2 校验 EXT 0x02。无 prop 362 控制环。
+	PoWDefensesEnabled bool
 
 	// Metrics collector (optional)
 	// If nil, metrics are not collected
@@ -328,6 +344,7 @@ func NewService(config *ServiceConfig, log *logger.Logger) (*Service, error) {
 			config.PathSelector,
 			log,
 		)
+		service.rendezvousBuilder.SetVanguards(config.Vanguards, config.GuardManager)
 	}
 
 	return service, nil
@@ -669,6 +686,9 @@ func (s *Service) createDescriptor() error {
 		CreatedAt:       now,
 		Lifetime:        s.config.DescriptorLifetime,
 	}
+	if s.config != nil && s.config.PoWDefensesEnabled {
+		desc.PoWParams = s.ensurePoWParams()
+	}
 
 	// Sign the descriptor
 	if err := s.signDescriptor(desc); err != nil {
@@ -711,7 +731,7 @@ func (s *Service) signDescriptor(desc *Descriptor) error {
 		expires = time.Now().Add(3 * time.Hour)
 	}
 
-	introPlain, err := encodeIntroPointsPlaintext(desc.IntroPoints, signingPriv, expires)
+	introPlain, err := encodeIntroPointsPlaintext(desc.IntroPoints, signingPriv, expires, desc.PoWParams)
 	if err != nil {
 		return fmt.Errorf("encode intro plaintext: %w", err)
 	}
@@ -1007,6 +1027,9 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 	request, err := ParseIntroduce2(introduce2Data, introPoint.EncKey, subcred)
 	if err != nil {
 		return fmt.Errorf("failed to parse INTRODUCE2: %w", err)
+	}
+	if err := s.verifyIntroducePoW(request, blinded); err != nil {
+		return fmt.Errorf("INTRODUCE2 PoW: %w", err)
 	}
 
 	s.logger.Debug("INTRODUCE2 parsed successfully",

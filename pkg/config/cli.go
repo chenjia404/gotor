@@ -395,6 +395,7 @@ func KnownTorrcOptions() []string {
 		"ClientTransportPlugin", "ServerTransportPlugin", "ServerTransportListenAddr",
 		"ServerTransportOptions", "TransportProxy",
 		"HiddenServiceDir", "HiddenServicePort", "HiddenServiceVersion", "HiddenServiceMaxStreams",
+		"HiddenServicePoWDefensesEnabled",
 		"ORPort", "Nickname", "ContactInfo", "Address", "ExitRelay",
 		"IPv6Exit", "ReduceExitPolicy", "ExitPolicy", "ExitPolicyRejectPrivate",
 		"ExitPolicyRejectLocalInterfaces", "DirPort", "DirCache", "MyFamily", "FamilyID",

@@ -29,6 +29,8 @@ type PathSelectorInterface interface {
 type RendezvousCircuitBuilder struct {
 	circuitBuilder CircuitBuilderInterface
 	pathSelector   PathSelectorInterface
+	vanguards      *path.VanguardSet
+	guards         *path.GuardManager
 	logger         *logger.Logger
 }
 
@@ -43,6 +45,15 @@ func NewRendezvousCircuitBuilder(builder CircuitBuilderInterface, selector PathS
 		pathSelector:   selector,
 		logger:         log.Component("rendezvous"),
 	}
+}
+
+// SetVanguards 注入托管侧 intro/rend 共用的 L2/L3。已设置则选路失败关闭，不退回随机中间跳。
+func (r *RendezvousCircuitBuilder) SetVanguards(v *path.VanguardSet, gm *path.GuardManager) {
+	if r == nil {
+		return
+	}
+	r.vanguards = v
+	r.guards = gm
 }
 
 // BuildRendezvousCircuit builds a 3-hop circuit to a rendezvous point
@@ -93,6 +104,7 @@ func (r *RendezvousCircuitBuilder) BuildRendezvousCircuit(ctx context.Context, l
 	r.logger.Info("Selected path for rendezvous circuit",
 		"guard", p.Guard.Nickname,
 		"middle", p.Middle.Nickname,
+		"l3", hopNick(p.Middle2),
 		"exit", p.Exit.Nickname)
 
 	// Build the circuit
@@ -210,10 +222,19 @@ func (r *RendezvousCircuitBuilder) findRelayInConsensus(info *RelayInfo) (*direc
 	return nil, fmt.Errorf("relay not found in consensus: address=%s", info.Address)
 }
 
+func hopNick(r *directory.Relay) string {
+	if r == nil {
+		return ""
+	}
+	return r.Nickname
+}
+
 // selectPathToRelay selects a path with the given relay as the exit
 func (r *RendezvousCircuitBuilder) selectPathToRelay(exitRelay *directory.Relay) (*path.Path, error) {
-	// Get available relays
 	allRelays := r.pathSelector.GetRelays()
+	if r.vanguards != nil {
+		return selectOnionPath(r.vanguards, r.guards, allRelays, exitRelay)
+	}
 	if len(allRelays) < 3 {
 		return nil, fmt.Errorf("insufficient relays: need 3, have %d", len(allRelays))
 	}

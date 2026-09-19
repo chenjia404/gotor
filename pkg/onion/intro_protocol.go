@@ -11,6 +11,7 @@ import (
 
 	"github.com/opd-ai/go-tor/pkg/circuit"
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/path"
 )
 
 const (
@@ -102,15 +103,32 @@ func (m *IntroPointManager) BuildIntroCircuitWithRetry(ctx context.Context, rela
 	return nil, fmt.Errorf("failed after %d attempts: %w", defaultMaxRetries+1, lastErr)
 }
 
+// selectIntroPath 选到引言点的路径：已注入 vanguards 则 L1→L2→L3→intro，失败关闭。
+func (m *IntroPointManager) selectIntroPath(relay *HSDirectory) (*path.Path, error) {
+	if m.service == nil || m.service.config == nil {
+		return nil, fmt.Errorf("path selector or circuit builder not configured")
+	}
+	cfg := m.service.config
+	relays := hostingRelays(cfg)
+	target := resolveHostingTarget(relay, relays)
+	if target == nil {
+		return nil, fmt.Errorf("introduction point relay not in consensus")
+	}
+	return selectOnionPath(cfg.Vanguards, cfg.GuardManager, relays, target)
+}
+
 // buildIntroCircuit builds a single introduction point circuit (internal helper)
 func (m *IntroPointManager) buildIntroCircuit(ctx context.Context, relay *HSDirectory) (*circuit.Circuit, error) {
-	if m.service.config.PathSelector == nil || m.service.config.CircuitBuilder == nil {
+	if m.service == nil || m.service.config == nil || m.service.config.PathSelector == nil || m.service.config.CircuitBuilder == nil {
 		return nil, fmt.Errorf("path selector or circuit builder not configured")
 	}
 
-	selectedPath, err := m.service.config.PathSelector.SelectPath(0)
+	selectedPath, err := m.selectIntroPath(relay)
 	if err != nil {
 		return nil, fmt.Errorf("failed to select path: %w", err)
+	}
+	if err := ensurePathKeys(ctx, m.service.config.MicrodescLoader, selectedPath); err != nil {
+		return nil, fmt.Errorf("microdescriptors for intro path: %w", err)
 	}
 
 	buildCtx, cancel := context.WithTimeout(ctx, defaultCircuitTimeout)

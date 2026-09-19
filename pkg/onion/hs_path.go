@@ -35,6 +35,40 @@ func ensurePathKeys(ctx context.Context, loader PathMicrodescLoader, p *path.Pat
 	return nil
 }
 
+func hostingRelays(cfg *ServiceConfig) []*directory.Relay {
+	if cfg == nil {
+		return nil
+	}
+	if len(cfg.NetworkRelays) > 0 {
+		return cfg.NetworkRelays
+	}
+	if cfg.PathSelector != nil {
+		return cfg.PathSelector.GetRelays()
+	}
+	return nil
+}
+
+func resolveHostingTarget(h *HSDirectory, relays []*directory.Relay) *directory.Relay {
+	if h == nil {
+		return nil
+	}
+	if h.Relay != nil {
+		return h.Relay
+	}
+	if h.Fingerprint == "" {
+		return nil
+	}
+	for _, r := range relays {
+		if r == nil {
+			continue
+		}
+		if r.Fingerprint == h.Fingerprint || r.GetFingerprintHex() == h.Fingerprint {
+			return r
+		}
+	}
+	return nil
+}
+
 // selectOnionPath 已注入 VanguardSet 时必须走固定 L2（及默认 L3），失败则关闭（不得随机中间跳冒充）。
 // 未配置 vanguards 时才退回随机 Guard/Middle。
 func selectOnionPath(v *path.VanguardSet, gm *path.GuardManager, relays []*directory.Relay, target *directory.Relay) (*path.Path, error) {

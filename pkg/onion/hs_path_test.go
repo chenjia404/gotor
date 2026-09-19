@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/opd-ai/go-tor/pkg/directory"
+	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/path"
 )
 
@@ -86,5 +87,51 @@ func TestSelectOnionPathFailsClosedWhenVanguardsCannotPick(t *testing.T) {
 	_, err := selectOnionPath(v, nil, only, only[0])
 	if err == nil {
 		t.Fatal("已配置 vanguards 时不得退回随机中间跳")
+	}
+}
+
+func hsWidePool(n int) []*directory.Relay {
+	pool := make([]*directory.Relay, 0, n)
+	for i := 0; i < n; i++ {
+		fp := strings.Repeat(fmt.Sprintf("%02X", i), 20)
+		pool = append(pool, &directory.Relay{
+			Nickname:    fmt.Sprintf("N%d", i),
+			Fingerprint: fp,
+			Flags:       []string{"Running", "Valid", "Guard", "Fast", "Stable"},
+		})
+	}
+	return pool
+}
+
+func TestHostingIntroPathUsesVanguards(t *testing.T) {
+	pool := hsWidePool(16)
+	v := path.NewVanguardSet(path.VanguardConfig{Count: 4, L3Count: 8}, nil)
+	svc := &Service{config: &ServiceConfig{NetworkRelays: pool, Vanguards: v}}
+	mgr := NewIntroPointManager(svc, logger.NewDefault())
+	hs := &HSDirectory{Fingerprint: pool[15].Fingerprint, Relay: pool[15]}
+	p, err := mgr.selectIntroPath(hs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Exit != pool[15] {
+		t.Fatal("末跳必须是引言点")
+	}
+	if p.Middle2 == nil {
+		t.Fatal("托管 intro 应走 L3")
+	}
+}
+
+func TestHostingIntroPathFailsClosed(t *testing.T) {
+	only := []*directory.Relay{{
+		Nickname:    "T",
+		Fingerprint: "1111111111111111111111111111111111111111",
+		Flags:       []string{"Running", "Valid", "Guard", "Fast", "Stable"},
+	}}
+	v := path.NewVanguardSet(path.VanguardConfig{L3Count: -1, Count: 4}, nil)
+	svc := &Service{config: &ServiceConfig{NetworkRelays: only, Vanguards: v}}
+	mgr := NewIntroPointManager(svc, logger.NewDefault())
+	_, err := mgr.selectIntroPath(&HSDirectory{Relay: only[0]})
+	if err == nil {
+		t.Fatal("托管 intro 已注入 vanguards 时不得随机中间跳")
 	}
 }

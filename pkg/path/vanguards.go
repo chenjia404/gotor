@@ -53,9 +53,9 @@ type layerEntry struct {
 	Until time.Time
 }
 
-// VanguardSet 是客户端 HS 电路的 L2+L3 池（完整 vanguards 的客户端层）。
+// VanguardSet 是 HS 电路的 L2+L3 池（完整 vanguards 的客户端/托管共用层）。
 // 无持久化不得宣称已防护；读写 DataDirectory/state 自有键，不改 Guard 行语义。
-// 未做托管侧 intro/rend 固定；不把本实现写成插件级完整 vanguards。
+// 不把本实现写成插件级完整 vanguards。
 type VanguardSet struct {
 	count     int
 	minLife   time.Duration

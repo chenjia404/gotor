@@ -90,6 +90,9 @@ func TestLoadTorrcClientOptions(t *testing.T) {
 	if osvc.ServiceDir != hsDir || osvc.VirtualPort != 80 || osvc.TargetAddr != "127.0.0.1:8080" {
 		t.Fatalf("%+v", osvc)
 	}
+	if osvc.PoWDefensesEnabled {
+		t.Fatal("PoW 默认应关闭")
+	}
 	if len(cfg.ExitNodes) != 2 || !cfg.StrictNodes {
 		t.Fatalf("exitnodes %+v strict %v", cfg.ExitNodes, cfg.StrictNodes)
 	}
@@ -165,5 +168,21 @@ func TestParseCLI_MetricsAddr(t *testing.T) {
 	}
 	if res.Config.MetricsListenAddr != "0.0.0.0" {
 		t.Fatalf("metrics addr: %q", res.Config.MetricsListenAddr)
+	}
+}
+
+func TestParseCLI_HiddenServicePoWDefensesEnabled(t *testing.T) {
+	dir := t.TempDir()
+	hs := filepath.Join(dir, "hs")
+	res, err := ParseCLI([]string{
+		"HiddenServiceDir", hs,
+		"HiddenServicePoWDefensesEnabled", "1",
+		"HiddenServicePort", "80", "127.0.0.1:8080",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Config.OnionServices) != 1 || !res.Config.OnionServices[0].PoWDefensesEnabled {
+		t.Fatalf("%+v", res.Config.OnionServices)
 	}
 }

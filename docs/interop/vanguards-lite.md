@@ -1,7 +1,7 @@
-# 客户端 vanguards（L2 + L3）
+# 客户端与托管 vanguards（L2 + L3）
 
-**日期**：2026-09-19  
-**状态**：PARTIAL（客户端 HS 电路固定 L2+L3 并落盘；**无**托管侧、**无**共识参数）
+**日期**：2026-09-20  
+**状态**：PARTIAL（客户端 HS 电路与托管 intro/rend 固定 L2+L3 并落盘；读共识参数；**托管未真网上线**）
 
 对照：[vanguards-spec Vanguards-lite](https://spec.torproject.org/vanguards-spec/vanguards-lite.html)、[Full Vanguards](https://spec.torproject.org/vanguards-spec/full-vanguards.html)、param-spec `guard-hs-l2-*` / `guard-hs-l3-*` 默认值。
 
@@ -25,14 +25,20 @@
 - 四跳家族冲突失败关闭。
 - 拉共识后读取 `guard-hs-l2-*` / `guard-hs-l3-*`（数量 1–19 / 1–20；寿命秒；min>max 回退默认）。下一轮选路按新上限补员或裁剪。
 
+## 本切片已做（2026-09-20 托管 intro/rend）
+
+- 托管引言电路末跳必须是引言点（不再 `SelectPath(0)` 随机出口）。
+- 托管会合电路与描述符上传 BEGIN_DIR 走同一套 `selectOnionPath`（已注入则 L1→L2→L3→目标，失败关闭）。
+- `startConfiguredOnionServices` 把客户端 `VanguardSet` / `GuardManager` 注入 `ServiceConfig`。
+
 ## 明确未做
 
-- 洋葱**托管**侧 intro/rend 电路的 L2/L3 固定
 - 与 C Tor 完全相同的 state `Guard in=...` 行格式（本切片用独立键以免误改官方入口）
 - 把 L2 寿命改成 Full Vanguards 文档里的 30–60 天（现网 param-spec 默认仍是 lite 的 1–12 天）
+- 真网托管上线后的 intro/rend 四跳证据
 
 ## 禁止
 
 - 随机多跳冒充 vanguards
 - 无持久化状态就宣称已防护
-- 把本切片写成含托管侧的完整 vanguards 插件
+- 把本切片写成插件级完整 vanguards

@@ -261,6 +261,9 @@ func TestKnownTorrcOptionsCoversNewKeys(t *testing.T) {
 			t.Fatalf("missing %s", k)
 		}
 	}
+	if !strings.Contains(opts, "HiddenServicePoWDefensesEnabled") {
+		t.Fatal("missing HiddenServicePoWDefensesEnabled")
+	}
 }
 
 func TestDumpConfigAndModules(t *testing.T) {

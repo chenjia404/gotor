@@ -148,3 +148,134 @@ func TestBuildIntroduce1CellWithPoW(t *testing.T) {
 		t.Fatalf("cell 过短 %d", len(cell))
 	}
 }
+
+func TestVerifyOnionPoWRoundTrip(t *testing.T) {
+	params := &PoWParams{
+		Seed:            bytes.Repeat([]byte{0x42}, 32),
+		SuggestedEffort: 1,
+		Expiration:      time.Now().UTC().Add(time.Hour),
+	}
+	id := bytes.Repeat([]byte{0x07}, 32)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	proof, err := SolveOnionPoW(ctx, params, id)
+	if err != nil || proof == nil {
+		t.Fatalf("solve: %v", err)
+	}
+	if err := VerifyOnionPoW(proof, params, id); err != nil {
+		t.Fatal(err)
+	}
+	bad := *proof
+	bad.Solution[0] ^= 0xff
+	if err := VerifyOnionPoW(&bad, params, id); err == nil {
+		t.Fatal("篡改 solution 应失败")
+	}
+	low := *proof
+	low.Effort = 0
+	if err := VerifyOnionPoW(&low, params, id); err == nil {
+		t.Fatal("effort 低于 suggested 应失败")
+	}
+}
+
+func TestVerifyIntroducePoWMissingExtension(t *testing.T) {
+	svc, err := NewService(&ServiceConfig{
+		Ports:              map[int]string{80: "localhost:8080"},
+		PoWDefensesEnabled: true,
+	}, logger.NewDefault())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blinded := ComputeBlindedPubkey(svc.publicKey, GetTimePeriod(time.Now()))
+	if err := svc.verifyIntroducePoW(&Introduce2Request{Extensions: map[uint8][]byte{}}, blinded); err == nil {
+		t.Fatal("开启 PoW 且无 EXT 0x02 应拒绝")
+	}
+}
+
+func TestVerifyIntroducePoWAcceptsValidProof(t *testing.T) {
+	svc, err := NewService(&ServiceConfig{
+		Ports:              map[int]string{80: "localhost:8080"},
+		PoWDefensesEnabled: true,
+	}, logger.NewDefault())
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := svc.ensurePoWParams()
+	if params == nil {
+		t.Fatal("应生成种子")
+	}
+	blinded := ComputeBlindedPubkey(svc.publicKey, GetTimePeriod(time.Now()))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	proof, err := SolveOnionPoW(ctx, params, blinded)
+	if err != nil || proof == nil {
+		t.Fatalf("solve: %v", err)
+	}
+	ext := encodePoWExtension(proof)
+	req := &Introduce2Request{Extensions: map[uint8][]byte{introExtPoW: ext[2:]}}
+	if err := svc.verifyIntroducePoW(req, blinded); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifyIntroducePoWPreviousSeed(t *testing.T) {
+	svc, err := NewService(&ServiceConfig{
+		Ports:              map[int]string{80: "localhost:8080"},
+		PoWDefensesEnabled: true,
+	}, logger.NewDefault())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := svc.ensurePoWParams()
+	svc.mu.Lock()
+	svc.powSeedPrev = append([]byte(nil), old.Seed...)
+	svc.powSeed = bytes.Repeat([]byte{0x99}, 32)
+	svc.powExpire = time.Now().UTC().Add(time.Hour)
+	svc.mu.Unlock()
+	blinded := ComputeBlindedPubkey(svc.publicKey, GetTimePeriod(time.Now()))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	proof, err := SolveOnionPoW(ctx, old, blinded)
+	if err != nil || proof == nil {
+		t.Fatalf("solve: %v", err)
+	}
+	ext := encodePoWExtension(proof)
+	req := &Introduce2Request{Extensions: map[uint8][]byte{introExtPoW: ext[2:]}}
+	if err := svc.verifyIntroducePoW(req, blinded); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateDescriptorEmitsPoWParams(t *testing.T) {
+	svc, err := NewService(&ServiceConfig{
+		Ports:              map[int]string{80: "localhost:8080"},
+		PoWDefensesEnabled: true,
+	}, logger.NewDefault())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.introPoints = []*ServiceIntroPoint{{
+		Relay:       &HSDirectory{Fingerprint: "relay1"},
+		CircuitID:   1,
+		AuthPublic:  make([]byte, 32),
+		EncKey:      make([]byte, 32),
+		Established: true,
+	}}
+	if err := svc.createDescriptor(); err != nil {
+		t.Fatal(err)
+	}
+	if svc.descriptor == nil || svc.descriptor.PoWParams == nil {
+		t.Fatal("开启 PoW 的描述符应带 pow-params")
+	}
+	parsed, err := ParseDescriptor(svc.descriptor.RawDescriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.BlindedPubkey = svc.descriptor.BlindedPubkey
+	dec, err := DecryptDescriptor(parsed, svc.address, GetTimePeriod(time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec.PoWParams == nil || dec.PoWParams.SuggestedEffort != defaultHostPoWEffort {
+		t.Fatalf("解密层未含 pow-params: %+v", dec.PoWParams)
+	}
+}
