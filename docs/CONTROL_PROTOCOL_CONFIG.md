@@ -50,6 +50,8 @@ The following configuration parameters can be queried via GETCONF:
 - `DirCache` - torrc 目录缓存开关（0/1，不是协议版本 DirCache=2）
 - `IPv6Exit` - 是否允许 IPv6 出口（0/1）
 - `ReduceExitPolicy` - 精简默认出口策略（0/1）
+- `BandwidthRate` / `RelayBandwidthRate` - 中继带宽上限（字节/秒，0=不限；两键读同一存储）
+- `BandwidthBurst` / `RelayBandwidthBurst` - 突发上限（字节，0=不限；两键读同一存储）
 - `DataDirectory` - Directory for persistent state
 - `ConnLimit` - Max concurrent connections
 - `DormantTimeout` - Time before entering dormant mode

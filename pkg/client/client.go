@@ -1492,6 +1492,10 @@ func (p *clientConfigProvider) GetConfigValue(key string) (string, bool) {
 		return boolStr(cfg.IPv6Exit), true
 	case "ReduceExitPolicy":
 		return boolStr(cfg.ReduceExitPolicy), true
+	case "BandwidthRate", "RelayBandwidthRate":
+		return fmt.Sprintf("%d", cfg.RelayBandwidthRate), true
+	case "BandwidthBurst", "RelayBandwidthBurst":
+		return fmt.Sprintf("%d", cfg.RelayBandwidthBurst), true
 	case "DataDirectory":
 		return cfg.DataDirectory, true
 	case "ConnLimit":
@@ -1948,7 +1952,7 @@ func (p *clientConfigProvider) SetConfigValue(key, value string) error {
 		return nil
 
 	// Settings that require restart
-	case "SocksPort", "ControlPort", "HTTPTunnelPort", "DNSPort", "DisableNetwork", "ClientOnly", "ORPort", "DirPort", "Nickname", "ExitRelay", "ContactInfo", "Address", "PublishServerDescriptor", "AssumeReachable", "DirCache", "IPv6Exit", "ReduceExitPolicy", "DataDirectory", "NumEntryGuards",
+	case "SocksPort", "ControlPort", "HTTPTunnelPort", "DNSPort", "DisableNetwork", "ClientOnly", "ORPort", "DirPort", "Nickname", "ExitRelay", "ContactInfo", "Address", "PublishServerDescriptor", "AssumeReachable", "DirCache", "IPv6Exit", "ReduceExitPolicy", "BandwidthRate", "BandwidthBurst", "RelayBandwidthRate", "RelayBandwidthBurst", "DataDirectory", "NumEntryGuards",
 		"UseEntryGuards", "UseBridges", "MetricsPort", "EnableMetrics",
 		"ConnLimit", "EnableConnectionPooling", "ConnectionPoolMaxIdle",
 		"ConnectionPoolMaxLife", "EnableCircuitPrebuilding", "CircuitPoolMinSize",
