@@ -691,18 +691,24 @@ func assertAuthChallengePayload(p []byte) error {
 		return fmt.Errorf("AUTH_CHALLENGE too short: %d", len(p))
 	}
 	n := int(binary.BigEndian.Uint16(p[32:34]))
-	if n < 1 {
-		return fmt.Errorf("N_Methods = %d", n)
+	if n != 1 {
+		return fmt.Errorf("N_Methods = %d, want 1（仅方法 3）", n)
 	}
 	if len(p) < 34+2*n {
 		return fmt.Errorf("AUTH_CHALLENGE truncated methods")
 	}
-	var has3 bool
+	var has1, has3 bool
 	for i := 0; i < n; i++ {
 		m := binary.BigEndian.Uint16(p[34+2*i : 36+2*i])
+		if m == authMethodRSASHA256TLSSecret {
+			has1 = true
+		}
 		if m == authMethodEd25519SHA256RFC5705 {
 			has3 = true
 		}
+	}
+	if has1 {
+		return fmt.Errorf("AUTH_CHALLENGE 不得广告未实现的方法 1")
 	}
 	if !has3 {
 		return fmt.Errorf("AUTH_CHALLENGE missing method 3")

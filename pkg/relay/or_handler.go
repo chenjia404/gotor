@@ -19,7 +19,7 @@ import (
 
 // AUTH_CHALLENGE 方法（tor-spec negotiating-channels）。
 const (
-	authMethodRSASHA256TLSSecret   uint16 = 1 // 已过时，仍宣告以免旧发起方无法选方法
+	authMethodRSASHA256TLSSecret   uint16 = 1 // 已过时，不广告、不校验
 	authMethodEd25519SHA256RFC5705 uint16 = 3 // LinkAuth=3
 	authChallengeLen                      = 32
 )
@@ -204,7 +204,7 @@ func (h *LinkProtocolHandler) sendAuthChallenge(conn net.Conn) error {
 	if _, err := rand.Read(challenge); err != nil {
 		return fmt.Errorf("generate AUTH_CHALLENGE: %w", err)
 	}
-	methods := []uint16{authMethodRSASHA256TLSSecret, authMethodEd25519SHA256RFC5705}
+	methods := []uint16{authMethodEd25519SHA256RFC5705}
 	nMethods, err := security.SafeIntToUint16(len(methods))
 	if err != nil {
 		return fmt.Errorf("AUTH_CHALLENGE method count: %w", err)
