@@ -20,6 +20,7 @@ type ORListener struct {
 	listener  net.Listener
 	tlsConfig *tls.Config
 	bwHist    *BandwidthHistory
+	bidi      *ConnBiDirect
 	logger    *logger.Logger
 
 	// Connection management
@@ -214,8 +215,8 @@ func (l *ORListener) acceptLoop(ctx context.Context) {
 			}
 		}
 
-		if l.bwHist != nil {
-			conn = &countingConn{Conn: conn, hist: l.bwHist}
+		if l.bwHist != nil || l.bidi != nil {
+			conn = newCountingConn(conn, l.bwHist, l.bidi)
 		}
 		if l.tlsConfig != nil {
 			conn = tls.Server(conn, l.tlsConfig)
@@ -444,26 +445,65 @@ func (l *ORListener) SetBandwidthHistory(h *BandwidthHistory) {
 	}
 }
 
-// countingConn 在 TLS 之下统计 socket 读写。
+// SetConnBiDirect 注入 OR 双向连接观测（nil 则不计）。
+func (l *ORListener) SetConnBiDirect(h *ConnBiDirect) {
+	if l == nil {
+		return
+	}
+	l.bidi = h
+	if l.circuitHandler != nil {
+		l.circuitHandler.SetConnBiDirect(h)
+	}
+}
+
+// countingConn 在 TLS 之下统计 socket 读写，并按连接记入 conn-bi-direct。
 type countingConn struct {
 	net.Conn
 	hist *BandwidthHistory
+	bidi *ConnBiDirect
+	ent  *bidiEntry
+}
+
+func newCountingConn(c net.Conn, hist *BandwidthHistory, bidi *ConnBiDirect) *countingConn {
+	cc := &countingConn{Conn: c, hist: hist, bidi: bidi}
+	if bidi != nil {
+		cc.ent = bidi.register()
+	}
+	return cc
 }
 
 func (c *countingConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
-	if n > 0 && c.hist != nil {
-		c.hist.AddRead(uint64(n))
+	if n > 0 {
+		if c.hist != nil {
+			c.hist.AddRead(uint64(n))
+		}
+		if c.bidi != nil {
+			c.bidi.noteRead(c.ent, uint64(n))
+		}
 	}
 	return n, err
 }
 
 func (c *countingConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
-	if n > 0 && c.hist != nil {
-		c.hist.AddWrite(uint64(n))
+	if n > 0 {
+		if c.hist != nil {
+			c.hist.AddWrite(uint64(n))
+		}
+		if c.bidi != nil {
+			c.bidi.noteWrite(c.ent, uint64(n))
+		}
 	}
 	return n, err
+}
+
+func (c *countingConn) Close() error {
+	if c.bidi != nil && c.ent != nil {
+		c.bidi.unregister(c.ent)
+		c.ent = nil
+	}
+	return c.Conn.Close()
 }
 
 // GetStats returns current listener statistics

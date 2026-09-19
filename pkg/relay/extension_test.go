@@ -468,6 +468,6 @@ func TestWrapOutboundConnNilHistoryIsIdentity(t *testing.T) {
 	defer a.Close()
 	defer b.Close()
 	if h.wrapOutboundConn(a) != a {
-		t.Fatal("无历史时不得改包连接")
+		t.Fatal("无历史且无 conn-bi-direct 时不得改包连接")
 	}
 }

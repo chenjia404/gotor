@@ -181,6 +181,7 @@ type ExtensionHandler struct {
 	pendingCreate map[string]map[uint32]chan *cell.Cell // addr → circID → waiter
 	pendingMu     sync.Mutex
 	bwHist        *BandwidthHistory
+	bidi          *ConnBiDirect
 }
 
 // NewExtensionHandler creates a new extension handler
@@ -212,11 +213,22 @@ func (h *ExtensionHandler) SetBandwidthHistory(hist *BandwidthHistory) {
 	h.bwHist = hist
 }
 
+// SetConnBiDirect 把出站中间跳 OR 计入 conn-bi-direct。nil 则不计。
+func (h *ExtensionHandler) SetConnBiDirect(bidi *ConnBiDirect) {
+	if h == nil {
+		return
+	}
+	h.bidi = bidi
+}
+
 func (h *ExtensionHandler) wrapOutboundConn(c net.Conn) net.Conn {
-	if h == nil || h.bwHist == nil || c == nil {
+	if h == nil || c == nil {
 		return c
 	}
-	return &countingConn{Conn: c, hist: h.bwHist}
+	if h.bwHist == nil && h.bidi == nil {
+		return c
+	}
+	return newCountingConn(c, h.bwHist, h.bidi)
 }
 
 // HandleExtend2 processes a RELAY_EXTEND2 cell
@@ -356,7 +368,7 @@ func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string,
 	if ident.hasIdentity() {
 		cfg.RequireCERTS = true
 	}
-	if h.bwHist != nil {
+	if h.bwHist != nil || h.bidi != nil {
 		cfg.WrapConn = h.wrapOutboundConn
 	}
 

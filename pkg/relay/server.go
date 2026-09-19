@@ -26,6 +26,7 @@ type Server struct {
 	dirCache  *DirCacheServer
 	policy    *ExitPolicy
 	bwHist    *BandwidthHistory
+	bidi      *ConnBiDirect
 	startedAt time.Time
 	logger    *logger.Logger
 }
@@ -93,8 +94,10 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 		}
 	}
 	ln.SetBandwidthHistory(bwHist)
+	bidi := NewConnBiDirect()
+	ln.SetConnBiDirect(bidi)
 	ln.SetDoS(NewDoSGuardFromConfig(cfg))
-	s := &Server{cfg: cfg, keys: keys, listener: ln, policy: policy, bwHist: bwHist, logger: log.Component("relay")}
+	s := &Server{cfg: cfg, keys: keys, listener: ln, policy: policy, bwHist: bwHist, bidi: bidi, logger: log.Component("relay")}
 	s.reach = NewReachability(ReachabilityConfig{
 		AssumeReachable: cfg.AssumeReachable,
 		DisableNetwork:  cfg.DisableNetwork,
@@ -179,6 +182,9 @@ func (s *Server) startPublisher(ctx context.Context) error {
 		if s.bwHist != nil {
 			_ = s.bwHist.Persist()
 			stats = s.bwHist.StatsMap()
+		}
+		if s.bidi != nil {
+			stats = mergeExtraInfoStats(stats, s.bidi.StatsMap())
 		}
 		desc, extra, err := GenerateDescriptorPair(s.keys, dcfg, stats)
 		if err != nil {

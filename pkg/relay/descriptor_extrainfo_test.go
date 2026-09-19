@@ -33,8 +33,9 @@ func TestGenerateDescriptorPairCrossDigest(t *testing.T) {
 		t.Fatal("server descriptor 必须交叉引用 extra-info-digest")
 	}
 	if strings.Contains(string(extra.RawDescriptor), "write-history") ||
-		strings.Contains(string(extra.RawDescriptor), "read-history") {
-		t.Fatal("无观测不得写 history")
+		strings.Contains(string(extra.RawDescriptor), "read-history") ||
+		strings.Contains(string(extra.RawDescriptor), "conn-bi-direct") {
+		t.Fatal("无观测不得写 history / conn-bi-direct")
 	}
 
 	const marker = "router-signature\n"
@@ -72,8 +73,9 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats := map[string]string{
-		"write-history": "2026-08-20 12:15:00 (900 s) 400",
-		"read-history":  "2026-08-20 12:15:00 (900 s) 1000",
+		"write-history":  "2026-08-20 12:15:00 (900 s) 400",
+		"read-history":   "2026-08-20 12:15:00 (900 s) 1000",
+		"conn-bi-direct": "2026-08-21 12:00:00 (86400 s) 10,2,1,3",
 	}
 	_, extra, err := GenerateDescriptorPair(keys, &DescriptorConfig{
 		Nickname: "ObsRelay",
@@ -94,6 +96,10 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 	r := strings.Index(raw, "read-history")
 	if w < 0 || r < w {
 		t.Fatal("write-history 应在 read-history 前")
+	}
+	bidi := strings.Index(raw, "conn-bi-direct 2026-08-21 12:00:00 (86400 s) 10,2,1,3\n")
+	if bidi < 0 || bidi < r {
+		t.Fatal("conn-bi-direct 应在 read-history 后")
 	}
 }
 

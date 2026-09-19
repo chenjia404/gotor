@@ -129,6 +129,14 @@ func (h *CircuitHandler) SetBandwidthHistory(hist *BandwidthHistory) {
 	h.extender.SetBandwidthHistory(hist)
 }
 
+// SetConnBiDirect 把出站中间跳 OR 交给 EXTEND 拨号（与入站 countingConn 同一份观测）。
+func (h *CircuitHandler) SetConnBiDirect(bidi *ConnBiDirect) {
+	if h == nil || h.extender == nil {
+		return
+	}
+	h.extender.SetConnBiDirect(bidi)
+}
+
 // handleCreate2 processes a CREATE2 cell and sends CREATED2 response
 // Per tor-spec.txt §5.1:
 //

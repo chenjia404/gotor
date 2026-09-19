@@ -257,3 +257,19 @@ func TestORListenerSetBandwidthHistoryWiresExtender(t *testing.T) {
 		t.Fatal("出站中间跳应与入站共用同一份带宽历史")
 	}
 }
+
+func TestORListenerSetConnBiDirectWiresExtender(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := NewORListener(DefaultORListenerConfig("127.0.0.1:0", keys), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bidi := NewConnBiDirect()
+	ln.SetConnBiDirect(bidi)
+	if ln.circuitHandler.extender.bidi != bidi {
+		t.Fatal("出站中间跳应与入站共用同一份 conn-bi-direct")
+	}
+}
