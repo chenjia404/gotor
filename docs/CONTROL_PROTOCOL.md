@@ -102,13 +102,13 @@ GETCONF key [key ...]
 
 **Example:**
 ```
-> GETCONF SocksPort HTTPTunnelPort DNSPort
+> GETCONF SocksPort HTTPTunnelPort DisableNetwork
 < 250-SocksPort=9050
 < 250-HTTPTunnelPort=9080
-< 250 DNSPort=5353
+< 250 DisableNetwork=0
 ```
 
-已实现键返回当前配置（`HTTPTunnelPort`/`DNSPort` 为端口数字，未开为 `0`）；未知键按 control-spec 返回空值。
+已实现键返回当前配置（端口未开为 `0`；`DisableNetwork`/`ClientOnly` 为 `0`/`1`）；未知键按 control-spec 返回空值。
 
 ### SETCONF
 
@@ -125,7 +125,7 @@ SETCONF key=value [key=value ...]
 < 250 OK
 ```
 
-运行时可写键立即生效；`SocksPort`/`HTTPTunnelPort`/`DNSPort` 等监听端口需重启，会报错而非假装已改。
+运行时可写键立即生效；`SocksPort`/`HTTPTunnelPort`/`DNSPort`/`DisableNetwork`/`ClientOnly` 等需重启，会报错而非假装已改。
 
 ### SETEVENTS
 

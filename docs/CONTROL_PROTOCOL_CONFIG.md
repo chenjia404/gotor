@@ -37,6 +37,8 @@ The following configuration parameters can be queried via GETCONF:
 - `ControlPort` - Control protocol port
 - `HTTPTunnelPort` - HTTP CONNECT 隧道端口（0=关闭）
 - `DNSPort` - UDP DNS 端口（0=关闭）
+- `DisableNetwork` - 起监听但不拉共识/不建电路（0/1）
+- `ClientOnly` - 禁止作为中继/出口运行（0/1）
 - `DataDirectory` - Directory for persistent state
 - `ConnLimit` - Max concurrent connections
 - `DormantTimeout` - Time before entering dormant mode
