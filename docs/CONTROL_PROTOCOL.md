@@ -104,13 +104,13 @@ GETCONF key [key ...]
 
 **Example:**
 ```
-> GETCONF SocksPort HTTPTunnelPort DisableNetwork
+> GETCONF SocksPort ORPort Nickname
 < 250-SocksPort=9050
-< 250-HTTPTunnelPort=9080
-< 250 DisableNetwork=0
+< 250-ORPort=9001
+< 250 Nickname=gotorRelay
 ```
 
-已实现键返回当前配置（端口未开为 `0`；`DisableNetwork`/`ClientOnly` 为 `0`/`1`）；未知键按 control-spec 返回空值。
+已实现键返回当前配置（端口未开为 `0`；`DisableNetwork`/`ClientOnly`/`ExitRelay` 为 `0`/`1`）；未知键按 control-spec 返回空值。
 
 ### SETCONF
 
@@ -127,7 +127,7 @@ SETCONF key=value [key=value ...]
 < 250 OK
 ```
 
-运行时可写键立即生效；`SocksPort`/`HTTPTunnelPort`/`DNSPort`/`DisableNetwork`/`ClientOnly` 等需重启，会报错而非假装已改。
+运行时可写键立即生效；`SocksPort`/`ORPort`/`DirPort`/`DisableNetwork`/`ClientOnly`/`Nickname`/`ExitRelay` 等需重启，会报错而非假装已改。
 
 ### SETEVENTS
 

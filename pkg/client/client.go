@@ -1470,6 +1470,14 @@ func (p *clientConfigProvider) GetConfigValue(key string) (string, bool) {
 		return boolStr(cfg.DisableNetwork), true
 	case "ClientOnly":
 		return boolStr(cfg.ClientOnly), true
+	case "ORPort":
+		return fmt.Sprintf("%d", cfg.ORPort), true
+	case "DirPort":
+		return fmt.Sprintf("%d", cfg.DirPort), true
+	case "Nickname":
+		return cfg.Nickname, true
+	case "ExitRelay":
+		return boolStr(cfg.ExitRelay), true
 	case "DataDirectory":
 		return cfg.DataDirectory, true
 	case "ConnLimit":
@@ -1926,7 +1934,7 @@ func (p *clientConfigProvider) SetConfigValue(key, value string) error {
 		return nil
 
 	// Settings that require restart
-	case "SocksPort", "ControlPort", "HTTPTunnelPort", "DNSPort", "DisableNetwork", "ClientOnly", "DataDirectory", "NumEntryGuards",
+	case "SocksPort", "ControlPort", "HTTPTunnelPort", "DNSPort", "DisableNetwork", "ClientOnly", "ORPort", "DirPort", "Nickname", "ExitRelay", "DataDirectory", "NumEntryGuards",
 		"UseEntryGuards", "UseBridges", "MetricsPort", "EnableMetrics",
 		"ConnLimit", "EnableConnectionPooling", "ConnectionPoolMaxIdle",
 		"ConnectionPoolMaxLife", "EnableCircuitPrebuilding", "CircuitPoolMinSize",

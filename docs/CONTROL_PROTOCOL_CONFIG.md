@@ -39,6 +39,10 @@ The following configuration parameters can be queried via GETCONF:
 - `DNSPort` - UDP DNS 端口（0=关闭）
 - `DisableNetwork` - 起监听但不拉共识/不建电路（0/1）
 - `ClientOnly` - 禁止作为中继/出口运行（0/1）
+- `ORPort` - OR 监听端口（0=不启用中继）
+- `DirPort` - 目录缓存 HTTP 端口（0=不监听）
+- `Nickname` - 中继昵称
+- `ExitRelay` - 是否作为出口中继（0/1）
 - `DataDirectory` - Directory for persistent state
 - `ConnLimit` - Max concurrent connections
 - `DormantTimeout` - Time before entering dormant mode
