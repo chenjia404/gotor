@@ -1,6 +1,7 @@
 package onion
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"math/big"
@@ -8,6 +9,31 @@ import (
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/path"
 )
+
+// PathMicrodescLoader 在握手前补齐路径上的 ntor / Ed25519。
+// *directory.Client 已实现。拉不到就让建路失败，禁止用全零密钥顶上。
+type PathMicrodescLoader interface {
+	FetchMicrodescriptorsFor(ctx context.Context, relays []*directory.Relay) error
+}
+
+func ensurePathKeys(ctx context.Context, loader PathMicrodescLoader, p *path.Path) error {
+	if loader == nil || p == nil {
+		return nil
+	}
+	hops := make([]*directory.Relay, 0, 4)
+	for _, r := range []*directory.Relay{p.Guard, p.Middle, p.Middle2, p.Exit} {
+		if r != nil {
+			hops = append(hops, r)
+		}
+	}
+	if len(hops) == 0 {
+		return nil
+	}
+	if err := loader.FetchMicrodescriptorsFor(ctx, hops); err != nil {
+		return err
+	}
+	return nil
+}
 
 // selectOnionPath 已注入 VanguardSet 时必须走固定 L2（及默认 L3），失败则关闭（不得随机中间跳冒充）。
 // 未配置 vanguards 时才退回随机 Guard/Middle。

@@ -20,6 +20,7 @@ type BegindirFetcher struct {
 	relays    []*directory.Relay // 共识 relay（需含 Guard/Middle 密钥）
 	vanguards *path.VanguardSet
 	guards    *path.GuardManager
+	keys      PathMicrodescLoader
 }
 
 // NewBegindirFetcher 创建拉取器；builder 须已配置。
@@ -36,6 +37,14 @@ func (f *BegindirFetcher) SetRelays(relays []*directory.Relay) {
 		return
 	}
 	f.relays = relays
+}
+
+// SetMicrodescLoader 在建路前拉取路径 hop 的 microdesc。未设置时仍拒绝零密钥。
+func (f *BegindirFetcher) SetMicrodescLoader(l PathMicrodescLoader) {
+	if f == nil {
+		return
+	}
+	f.keys = l
 }
 
 // SetVanguards 注入 vanguards-lite，供 HSDir BEGIN_DIR 电路使用。
@@ -80,6 +89,12 @@ func (f *BegindirFetcher) Fetch(ctx context.Context, relay *directory.Relay, htt
 			if err != nil {
 				return nil, err
 			}
+		}
+		if err := ensurePathKeys(ctx, f.keys, p); err != nil {
+			lastBuild = fmt.Errorf("microdescriptors for BEGIN_DIR path: %w", err)
+			f.logger.Debug("3-hop microdescriptors failed, retrying",
+				"attempt", attempt+1, "error", lastBuild)
+			continue
 		}
 		circ, lastBuild = f.builder.BuildCircuit(ctx, p, timeout)
 		if lastBuild == nil {
@@ -138,6 +153,10 @@ func (f *BegindirFetcher) Post(ctx context.Context, relay *directory.Relay, http
 			if err != nil {
 				return err
 			}
+		}
+		if err := ensurePathKeys(ctx, f.keys, p); err != nil {
+			lastBuild = fmt.Errorf("microdescriptors for BEGIN_DIR path: %w", err)
+			continue
 		}
 		circ, lastBuild = f.builder.BuildCircuit(ctx, p, timeout)
 		if lastBuild == nil {

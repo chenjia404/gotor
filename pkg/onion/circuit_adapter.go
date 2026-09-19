@@ -24,6 +24,7 @@ type CircuitAdapter struct {
 	circs     map[uint32]*circuit.Circuit
 	vanguards *path.VanguardSet
 	guards    *path.GuardManager
+	keys      PathMicrodescLoader
 }
 
 // NewCircuitAdapter 创建适配器。
@@ -48,6 +49,16 @@ func (a *CircuitAdapter) SetVanguards(v *path.VanguardSet, gm *path.GuardManager
 	a.mu.Lock()
 	a.vanguards = v
 	a.guards = gm
+	a.mu.Unlock()
+}
+
+// SetMicrodescLoader 在建路前拉取路径 hop 的 microdesc。
+func (a *CircuitAdapter) SetMicrodescLoader(l PathMicrodescLoader) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.keys = l
 	a.mu.Unlock()
 }
 
@@ -82,6 +93,14 @@ func (a *CircuitAdapter) BuildCircuitToRelay(ctx context.Context, target *HSDire
 			if err != nil {
 				return 0, err
 			}
+		}
+		a.mu.RLock()
+		keys := a.keys
+		a.mu.RUnlock()
+		if err := ensurePathKeys(ctx, keys, p); err != nil {
+			last = fmt.Errorf("microdescriptors for onion path: %w", err)
+			a.logger.Debug("path microdescriptors failed", "attempt", attempt+1, "error", last)
+			continue
 		}
 		circ, last = a.builder.BuildCircuit(ctx, p, timeout)
 		if last == nil {

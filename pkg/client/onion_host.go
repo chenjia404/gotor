@@ -46,6 +46,7 @@ func (c *Client) startConfiguredOnionServices(ctx context.Context) error {
 	c.attachORTrafficCount(builder)
 	begindir := onion.NewBegindirFetcher(builder, c.logger)
 	begindir.SetRelays(networkRelays)
+	begindir.SetMicrodescLoader(c.directory)
 	var srvCur, srvPrev []byte
 	if c.directory != nil {
 		srvCur, srvPrev = c.directory.SharedRandomValues()

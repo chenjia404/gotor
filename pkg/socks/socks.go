@@ -344,9 +344,11 @@ func (s *Server) SetOnionNetwork(
 		begindir := onion.NewBegindirFetcher(builder, s.logger)
 		begindir.SetRelays(relays)
 		begindir.SetVanguards(s.onionVanguards, s.onionGuards)
+		begindir.SetMicrodescLoader(dirClient)
 		s.onionClient.SetBegindir(begindir)
 		adapter := onion.NewCircuitAdapter(builder, mgr, relays, s.logger)
 		adapter.SetVanguards(s.onionVanguards, s.onionGuards)
+		adapter.SetMicrodescLoader(dirClient)
 		s.onionClient.SetCircuitBuilder(adapter)
 		s.onionClient.SetCellSender(adapter)
 	}
