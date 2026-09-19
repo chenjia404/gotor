@@ -80,6 +80,7 @@ GETINFO key [key ...]
 | `traffic/written` | 入口 OR 已写字节 | `2048` |
 | `net/listeners/socks` | SOCKS 实际绑定（TCP 或 unix 路径，不写死 127.0.0.1） | `127.0.0.1:9050` |
 | `net/listeners/control` | 控制口实际绑定（TCP 或 unix 路径） | `127.0.0.1:9051` |
+| `config-file` | 实际 torrc 路径；未从文件加载则为空（不用 DataDirectory 冒充） | `/etc/tor/torrc` |
 
 **Example:**
 ```

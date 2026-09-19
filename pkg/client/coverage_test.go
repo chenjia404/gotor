@@ -46,6 +46,7 @@ func TestStatsGetters(t *testing.T) {
 		EnoughDirInfo:       true,
 		SocksListener:       "0.0.0.0:9050",
 		ControlListener:     "127.0.0.1:9051",
+		ConfigFile:          "/etc/tor/torrc",
 	}
 
 	if stats.GetActiveCircuits() != 5 {
@@ -106,6 +107,9 @@ func TestStatsGetters(t *testing.T) {
 	}
 	if stats.GetControlListener() != "127.0.0.1:9051" {
 		t.Errorf("GetControlListener() = %q", stats.GetControlListener())
+	}
+	if stats.GetConfigFile() != "/etc/tor/torrc" {
+		t.Errorf("GetConfigFile() = %q", stats.GetConfigFile())
 	}
 }
 
@@ -168,6 +172,9 @@ func TestStatsGettersZeroValues(t *testing.T) {
 	}
 	if stats.GetSocksListener() != "" {
 		t.Errorf("GetSocksListener() = %q, want empty", stats.GetSocksListener())
+	}
+	if stats.GetConfigFile() != "" {
+		t.Errorf("GetConfigFile() = %q, want empty", stats.GetConfigFile())
 	}
 }
 

@@ -113,6 +113,9 @@ func TestParseCLIStdin(t *testing.T) {
 	if !res.ReadStdin || res.Config.SocksPort != 0 || !res.Config.DisableNetwork {
 		t.Fatalf("%+v", res.Config)
 	}
+	if res.Config.ConfigFile != "-" {
+		t.Fatalf("stdin torrc ConfigFile=%q", res.Config.ConfigFile)
+	}
 }
 
 func TestLoadQuotedAndGlobInclude(t *testing.T) {

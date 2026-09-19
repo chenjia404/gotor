@@ -31,6 +31,7 @@ type Config struct {
 	CookieAuthentication   bool   // 启用 control_auth_cookie
 	CookieAuthFile         string // 可选 cookie 路径；空则 DataDirectory/control_auth_cookie
 	DataDirectory          string // Directory for persistent state
+	ConfigFile             string // 实际加载的 torrc 路径（GETINFO config-file；空表示未用文件）
 	CacheDirectory         string // 目录缓存（共识/microdesc）；空则等于 DataDirectory
 	PidFile                string // 启动写 PID、停止删除
 	RunAsDaemon            bool   // Unix 后台化；Windows 仅警告

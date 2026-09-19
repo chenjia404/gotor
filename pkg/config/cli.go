@@ -214,6 +214,7 @@ func ParseCLIWithStdin(args []string, stdin io.Reader) (*CLIResult, error) {
 	if err := loadCLIConfig(res, stdin); err != nil {
 		return nil, err
 	}
+	res.Config.ConfigFile = res.ConfigFile
 	applyLegacyOverrides(res.Config, leg)
 	if err := applyPositionalOverrides(res.Config, positional); err != nil {
 		return nil, err

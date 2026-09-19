@@ -26,6 +26,9 @@ func TestParseCLI_FlagsAndPositional(t *testing.T) {
 	if !res.Config.CookieAuthentication {
 		t.Fatal("CookieAuthentication expected")
 	}
+	if res.Config.ConfigFile != torrc {
+		t.Fatalf("Config.ConfigFile=%q want %q", res.Config.ConfigFile, torrc)
+	}
 }
 
 func TestControlPortAddrPort(t *testing.T) {

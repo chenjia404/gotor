@@ -30,6 +30,7 @@ type mockClientGetter struct {
 	enoughDirInfo       bool
 	socksListener       string
 	controlListener     string
+	configFile          string
 	config              map[string]string
 }
 
@@ -145,6 +146,10 @@ func (m *mockClientGetter) GetSocksListener() string {
 
 func (m *mockClientGetter) GetControlListener() string {
 	return m.controlListener
+}
+
+func (m *mockClientGetter) GetConfigFile() string {
+	return m.configFile
 }
 
 // Helper to create test server
@@ -805,7 +810,7 @@ func TestGetInfoExtendedKeys(t *testing.T) {
 		{"Connection attempts", "status/connection-attempts", "200"},
 		{"SOCKS listener", "net/listeners/socks", "127.0.0.1:9050"},
 		{"Control listener", "net/listeners/control", "127.0.0.1:9051"},
-		{"Config file", "config-file", "/tmp/go-tor"},
+		{"Config file", "config-file", ""},
 	}
 
 	for _, tt := range tests {
@@ -1000,5 +1005,27 @@ func TestGetInfoListenersUsesBindAddr(t *testing.T) {
 	got = readResponse(t, reader)
 	if !strings.HasPrefix(got, "250 net/listeners/control=/tmp/gotor.control") {
 		t.Fatalf("控制口 unix 应报路径: %s", got)
+	}
+}
+
+func TestGetInfoConfigFileIsTorrcNotDataDir(t *testing.T) {
+	server, mock := setupTestServer(t)
+	mock.configFile = "/etc/tor/torrc"
+	conn := connectToServer(t, server)
+	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+	readResponse(t, reader)
+	writer.WriteString("AUTHENTICATE\r\n")
+	writer.Flush()
+	readResponse(t, reader)
+
+	writer.WriteString("GETINFO config-file\r\n")
+	writer.Flush()
+	got := readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 config-file=/etc/tor/torrc") {
+		t.Fatalf("config-file 应为 torrc 路径: %s", got)
+	}
+	if strings.Contains(got, mock.dataDir) {
+		t.Fatalf("不得用 DataDirectory 冒充 config-file: %s", got)
 	}
 }

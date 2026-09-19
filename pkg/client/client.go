@@ -1068,6 +1068,7 @@ func (c *Client) GetStats() Stats {
 		UptimeSeconds:       metricsSnap.UptimeSeconds,
 		SocksListener:       listenerFromConfig(c.config.SocksListenAddr, c.config.SocksPort, c.config.SocksUnixPath, c.config.SocksUnixPath != ""),
 		ControlListener:     listenerFromConfig(c.config.ControlListenAddr, c.config.ControlPort, c.config.ControlSocket, c.config.ControlSocket != "" && c.config.ControlPort <= 0),
+		ConfigFile:          c.config.ConfigFile,
 	}
 
 	if c.pathSelector != nil {
@@ -1132,6 +1133,9 @@ type Stats struct {
 	// GETINFO net/listeners/*：实际绑定地址（TCP host:port 或 unix 路径）
 	SocksListener   string
 	ControlListener string
+
+	// GETINFO config-file：torrc 路径；未用文件则为空（不得用 DataDirectory 冒充）
+	ConfigFile string
 
 	// System metrics
 	UptimeSeconds int64
@@ -1215,6 +1219,11 @@ func (s Stats) GetSocksListener() string {
 // GetControlListener 返回控制口实际绑定（TCP 或 unix 路径）。
 func (s Stats) GetControlListener() string {
 	return s.ControlListener
+}
+
+// GetConfigFile 返回实际 torrc 路径；空表示未从文件加载。
+func (s Stats) GetConfigFile() string {
+	return s.ConfigFile
 }
 
 // listenerFromConfig 生成 GETINFO net/listeners 值。unix 优先时只写路径；TCP 空 host 视为 127.0.0.1。

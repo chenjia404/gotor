@@ -97,6 +97,7 @@ type StatsProvider interface {
 	GetEnoughDirInfo() bool
 	GetSocksListener() string
 	GetControlListener() string
+	GetConfigFile() string
 }
 
 // ConfigProvider provides access to configuration values
@@ -641,8 +642,7 @@ func (s *Server) getInfoValue(key string, stats StatsProvider) (string, bool) {
 	case "status/uptime":
 		return fmt.Sprintf("%d", stats.GetUptimeSeconds()), true
 	case "config-file":
-		// Return data directory path (closest equivalent for client)
-		return stats.GetDataDir(), true
+		return stats.GetConfigFile(), true
 	case "config-text":
 		// Not implemented - would require full config serialization
 		return "", false

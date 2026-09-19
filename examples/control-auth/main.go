@@ -169,6 +169,10 @@ func (m *mockClientGetter) GetControlListener() string {
 	return "127.0.0.1:9051"
 }
 
+func (m *mockClientGetter) GetConfigFile() string {
+	return ""
+}
+
 func (m *mockClientGetter) GetConfig() control.ConfigProvider {
 	return nil // No config needed for this demo
 }
