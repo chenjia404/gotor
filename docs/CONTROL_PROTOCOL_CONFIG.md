@@ -55,6 +55,8 @@ The following configuration parameters can be queried via GETCONF:
 - `ExitPolicy` - torrc 中显式规则（逗号拼接；空表示未写行，不含编译期默认策略）
 - `ExitPolicyRejectPrivate` - 拒绝私网/环回等（0/1）
 - `ExitPolicyRejectLocalInterfaces` - 拒绝本机网卡地址（0/1）
+- `MyFamily` - 家族成员指纹/昵称（逗号拼接）
+- `FamilyID` - Desc=4 FamilyID（逗号拼接）
 - `DataDirectory` - Directory for persistent state
 - `ConnLimit` - Max concurrent connections
 - `DormantTimeout` - Time before entering dormant mode

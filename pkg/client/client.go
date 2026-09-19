@@ -1502,6 +1502,10 @@ func (p *clientConfigProvider) GetConfigValue(key string) (string, bool) {
 		return boolStr(cfg.ExitPolicyRejectPrivate), true
 	case "ExitPolicyRejectLocalInterfaces":
 		return boolStr(cfg.ExitPolicyRejectLocalInterfaces), true
+	case "MyFamily":
+		return strings.Join(cfg.MyFamily, ","), true
+	case "FamilyID":
+		return strings.Join(cfg.FamilyIDs, ","), true
 	case "DataDirectory":
 		return cfg.DataDirectory, true
 	case "ConnLimit":
@@ -1958,7 +1962,7 @@ func (p *clientConfigProvider) SetConfigValue(key, value string) error {
 		return nil
 
 	// Settings that require restart
-	case "SocksPort", "ControlPort", "HTTPTunnelPort", "DNSPort", "DisableNetwork", "ClientOnly", "ORPort", "DirPort", "Nickname", "ExitRelay", "ContactInfo", "Address", "PublishServerDescriptor", "AssumeReachable", "DirCache", "IPv6Exit", "ReduceExitPolicy", "BandwidthRate", "BandwidthBurst", "RelayBandwidthRate", "RelayBandwidthBurst", "ExitPolicy", "ExitPolicyRejectPrivate", "ExitPolicyRejectLocalInterfaces", "DataDirectory", "NumEntryGuards",
+	case "SocksPort", "ControlPort", "HTTPTunnelPort", "DNSPort", "DisableNetwork", "ClientOnly", "ORPort", "DirPort", "Nickname", "ExitRelay", "ContactInfo", "Address", "PublishServerDescriptor", "AssumeReachable", "DirCache", "IPv6Exit", "ReduceExitPolicy", "BandwidthRate", "BandwidthBurst", "RelayBandwidthRate", "RelayBandwidthBurst", "ExitPolicy", "ExitPolicyRejectPrivate", "ExitPolicyRejectLocalInterfaces", "MyFamily", "FamilyID", "DataDirectory", "NumEntryGuards",
 		"UseEntryGuards", "UseBridges", "MetricsPort", "EnableMetrics",
 		"ConnLimit", "EnableConnectionPooling", "ConnectionPoolMaxIdle",
 		"ConnectionPoolMaxLife", "EnableCircuitPrebuilding", "CircuitPoolMinSize",
