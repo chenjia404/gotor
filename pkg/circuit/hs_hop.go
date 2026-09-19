@@ -47,3 +47,14 @@ func NewHopFromHSKeyMaterial(keyMaterial []byte) (*Hop, error) {
 		BackwardDigest: bwdDig,
 	}, nil
 }
+
+// NewHopFromHSKeyMaterialResponder 服务端会合末跳：与客户端方向对调（Kf/Df 为入站，Kb/Db 为出站）。
+func NewHopFromHSKeyMaterialResponder(keyMaterial []byte) (*Hop, error) {
+	hop, err := NewHopFromHSKeyMaterial(keyMaterial)
+	if err != nil {
+		return nil, err
+	}
+	hop.ForwardCipher, hop.BackwardCipher = hop.BackwardCipher, hop.ForwardCipher
+	hop.ForwardDigest, hop.BackwardDigest = hop.BackwardDigest, hop.ForwardDigest
+	return hop, nil
+}

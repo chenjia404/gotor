@@ -1129,6 +1129,10 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 		"cookie", cookieStr[:16],
 		"rendezvous", rendezvousAddr)
 
+	// hs-ntor 的 b 是引言点 enc-key 私钥，不是 HiddenServiceDir 里那把服务级 ntor。
+	bPriv := append([]byte(nil), introPoint.EncKey...)
+	authPub := append([]byte(nil), introPoint.AuthPublic...)
+
 	// Build circuit to rendezvous point if we have a rendezvous builder
 	if s.rendezvousBuilder != nil {
 		s.logger.Info("Building rendezvous circuit",
@@ -1174,11 +1178,15 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 			}
 			s.mu.Unlock()
 
-			if len(introAuth) != 32 || len(clientX) != 32 {
+			if len(introAuth) != 32 {
+				introAuth = append([]byte(nil), authPub...)
+			}
+			if len(introAuth) != 32 || len(clientX) != 32 || len(bPriv) != 32 {
 				s.logger.Error("missing hs-ntor keys for RENDEZVOUS1",
 					"cookie", cookieStr[:16],
 					"auth_len", len(introAuth),
-					"x_len", len(clientX))
+					"x_len", len(clientX),
+					"b_len", len(bPriv))
 				if s.config.Metrics != nil {
 					s.config.Metrics.RecordOnionServiceRendezvous(false)
 				}
@@ -1193,12 +1201,12 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 				"cookie", cookieStr[:16],
 				"circuit_id", circ.ID)
 
-			keyMaterial, err := SendRendezvous1(
+			keySeed, err := SendRendezvous1(
 				circ,
 				circ.ID,
 				request.RendezvousCookie,
 				clientX,
-				s.ntorKey,
+				bPriv,
 				introAuth,
 			)
 			if err != nil {
@@ -1208,7 +1216,6 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 				if s.config.Metrics != nil {
 					s.config.Metrics.RecordOnionServiceRendezvous(false)
 				}
-				// Clean up on failure
 				s.mu.Lock()
 				delete(s.pendingIntros, cookieStr)
 				delete(s.rendezvousCircuits, cookieStr)
@@ -1218,14 +1225,48 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 
 			s.logger.Info("RENDEZVOUS1 sent successfully",
 				"cookie", cookieStr[:16],
-				"key_material_len", len(keyMaterial))
+				"key_seed_len", len(keySeed))
+
+			km, err := crypto.HsNtorExpandCircuitKeys(keySeed)
+			if err != nil {
+				s.logger.Error("hs-ntor expand keys", "cookie", cookieStr[:16], "error", err)
+				if s.config.Metrics != nil {
+					s.config.Metrics.RecordOnionServiceRendezvous(false)
+				}
+				s.mu.Lock()
+				delete(s.pendingIntros, cookieStr)
+				delete(s.rendezvousCircuits, cookieStr)
+				s.mu.Unlock()
+				return
+			}
+			hop, err := circuit.NewHopFromHSKeyMaterialResponder(km)
+			if err != nil {
+				s.logger.Error("hs-ntor responder hop", "cookie", cookieStr[:16], "error", err)
+				if s.config.Metrics != nil {
+					s.config.Metrics.RecordOnionServiceRendezvous(false)
+				}
+				s.mu.Lock()
+				delete(s.pendingIntros, cookieStr)
+				delete(s.rendezvousCircuits, cookieStr)
+				s.mu.Unlock()
+				return
+			}
+			if err := circ.AddHSHop(hop); err != nil {
+				s.logger.Error("install HS hop", "cookie", cookieStr[:16], "error", err)
+				if s.config.Metrics != nil {
+					s.config.Metrics.RecordOnionServiceRendezvous(false)
+				}
+				s.mu.Lock()
+				delete(s.pendingIntros, cookieStr)
+				delete(s.rendezvousCircuits, cookieStr)
+				s.mu.Unlock()
+				return
+			}
 
 			if s.config.Metrics != nil {
 				s.config.Metrics.RecordOnionServiceRendezvous(true)
 			}
 
-			// Task 9.3.1: Set up relay cell handler for incoming streams
-			// Start monitoring the rendezvous circuit for RELAY_BEGIN cells
 			s.logger.Info("Starting stream handler for rendezvous circuit",
 				"circuit_id", circ.ID)
 
