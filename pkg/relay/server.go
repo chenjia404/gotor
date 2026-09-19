@@ -239,6 +239,19 @@ func (s *Server) SetHSIntroDoSParams(params map[string]int) {
 	s.listener.SetIntroDoSParams(onion.IntroDoSParamsFromConsensus(params))
 }
 
+// SetDoSConsensusParams 把共识 DoS* 交给 OR 守卫（auto 开关 + ConnectRate/Burst）。不是完整 dos.c。
+func (s *Server) SetDoSConsensusParams(params map[string]int) {
+	if s == nil || s.listener == nil {
+		return
+	}
+	if s.listener.dos == nil && s.cfg != nil {
+		s.listener.SetDoS(NewDoSGuardFromConfig(s.cfg))
+	}
+	if s.listener.dos != nil {
+		s.listener.dos.ApplyConsensus(params)
+	}
+}
+
 // SetHSDirRing 把最近共识的 HSDir 哈希环交给 DirCache（POST 责任判定）。未宣告 HSDir=2。
 func (s *Server) SetHSDirRing(relays []*directory.Relay, current, prev []byte, params map[string]int) {
 	if s == nil || s.dirCache == nil {

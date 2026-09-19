@@ -89,7 +89,7 @@ type Config struct {
 	DormantTimeout time.Duration // Time before entering dormant mode (default: 24h)
 
 	// DoS* 官方键（C Tor dos.c）。Enabled：-1=auto（无共识参数则关）、0=关、1=开。
-	// 不改 ConnLimit 语义：全局仍由 OR 监听的 maxConnections 管。
+	// ConnectRate/Burst/Defense 为 0 时跟共识（缺省 20/40/24h）。不改 ConnLimit 语义。
 	DoSCircuitCreationEnabled        int           // auto/0/1
 	DoSCircuitCreationMinConnections int           // 默认 3
 	DoSCircuitCreationRate           int           // 电路/秒，默认 3
@@ -97,6 +97,9 @@ type Config struct {
 	DoSCircuitCreationDefenseTime    time.Duration // 默认 1h
 	DoSConnectionEnabled             int           // auto/0/1
 	DoSConnectionMaxConcurrentCount  int           // 每 IP 并发 OR，默认 100
+	DoSConnectionConnectRate         int           // 0=跟共识，否则覆盖；共识缺省 20
+	DoSConnectionConnectBurst        int           // 0=跟共识，否则覆盖；共识缺省 40
+	DoSConnectionConnectDefenseTime  time.Duration // 0=跟共识，否则覆盖；共识缺省 24h
 	DoSRefuseSingleHopClient         bool          // 默认 false
 
 	// Relay / OR（中继）设置；ORPort>0 时 gotor 以中继模式启动 OR 监听
@@ -325,6 +328,9 @@ func DefaultConfig() *Config {
 		DoSCircuitCreationDefenseTime:    time.Hour,
 		DoSConnectionEnabled:             DoSEnabledAuto,
 		DoSConnectionMaxConcurrentCount:  100,
+		DoSConnectionConnectRate:         0,
+		DoSConnectionConnectBurst:        0,
+		DoSConnectionConnectDefenseTime:  0,
 		DoSRefuseSingleHopClient:         false,
 		DormantTimeout:                   24 * time.Hour,
 		ORPort:                           0,
@@ -771,6 +777,15 @@ func validateDoSFields(c *Config) error {
 	}
 	if c.DoSConnectionMaxConcurrentCount < 1 {
 		return fmt.Errorf("DoSConnectionMaxConcurrentCount must be at least 1")
+	}
+	if c.DoSConnectionConnectRate < 0 {
+		return fmt.Errorf("DoSConnectionConnectRate must be non-negative")
+	}
+	if c.DoSConnectionConnectBurst < 0 {
+		return fmt.Errorf("DoSConnectionConnectBurst must be non-negative")
+	}
+	if c.DoSConnectionConnectDefenseTime < 0 {
+		return fmt.Errorf("DoSConnectionConnectDefenseTimePeriod must be non-negative")
 	}
 	return nil
 }

@@ -244,7 +244,8 @@ func TestCheckDropInConstraints(t *testing.T) {
 func TestKnownTorrcOptionsCoversNewKeys(t *testing.T) {
 	opts := strings.Join(KnownTorrcOptions(), "\n")
 	for _, k := range []string{"CacheDirectory", "PidFile", "HTTPTunnelPort", "DNSPort", "DisableNetwork",
-		"DoSCircuitCreationEnabled", "DoSConnectionEnabled", "DoSRefuseSingleHopClient"} {
+		"DoSCircuitCreationEnabled", "DoSConnectionEnabled", "DoSRefuseSingleHopClient",
+		"DoSConnectionConnectRate", "DoSConnectionConnectBurst", "DoSConnectionConnectDefenseTimePeriod"} {
 		if !strings.Contains(opts, k) {
 			t.Fatalf("missing %s", k)
 		}

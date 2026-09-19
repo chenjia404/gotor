@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -14,8 +15,16 @@ func TestNewDoSGuardFromConfigAutoIsOff(t *testing.T) {
 	if cfg.DoSCircuitCreationEnabled != config.DoSEnabledAuto {
 		t.Fatalf("default Enabled = %d, want auto", cfg.DoSCircuitCreationEnabled)
 	}
-	if g := NewDoSGuardFromConfig(cfg); g != nil {
+	g := NewDoSGuardFromConfig(cfg)
+	if g == nil {
+		t.Fatal("auto 也应构造守卫以便后续跟共识")
+	}
+	if g.circOn || g.connOn {
 		t.Fatal("auto 且无共识时不得启用 DoS 子系统")
+	}
+	g.ApplyConsensus(nil)
+	if g.circOn || g.connOn {
+		t.Fatal("无共识参数仍应保持关闭")
 	}
 }
 
@@ -205,5 +214,101 @@ func TestClientIPString(t *testing.T) {
 	}
 	if got := clientIPString("[2001:db8::1]:9001"); got != "2001:db8::1" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestDoSGuardApplyConsensusAutoAndExplicit(t *testing.T) {
+	cfg := config.DefaultConfig()
+	g := NewDoSGuardFromConfig(cfg)
+	g.ApplyConsensus(map[string]int{
+		"DoSCircuitCreationEnabled": 1,
+		"DoSConnectionEnabled":      1,
+	})
+	if !g.circOn || !g.connOn {
+		t.Fatal("auto 应跟共识打开")
+	}
+	g.ApplyConsensus(map[string]int{
+		"DoSCircuitCreationEnabled": 0,
+		"DoSConnectionEnabled":      0,
+	})
+	if g.circOn || g.connOn {
+		t.Fatal("共识改回 0 时 auto 应关闭")
+	}
+
+	cfg.DoSCircuitCreationEnabled = config.DoSEnabledOn
+	cfg.DoSConnectionEnabled = config.DoSEnabledOff
+	g = NewDoSGuardFromConfig(cfg)
+	g.ApplyConsensus(map[string]int{
+		"DoSCircuitCreationEnabled": 0,
+		"DoSConnectionEnabled":      1,
+	})
+	if !g.circOn {
+		t.Fatal("显式 1 不得被共识 0 关掉")
+	}
+	if g.connOn {
+		t.Fatal("显式 0 不得被共识 1 打开")
+	}
+}
+
+func TestDoSGuardConnectRateBurstAndDefense(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	cfg := config.DefaultConfig()
+	cfg.DoSConnectionEnabled = config.DoSEnabledOn
+	g := NewDoSGuardFromConfig(cfg)
+	g.nowFn = func() time.Time { return now }
+	g.ApplyConsensus(map[string]int{
+		"DoSConnectionConnectRate":              1,
+		"DoSConnectionConnectBurst":             1,
+		"DoSConnectionConnectDefenseTimePeriod": 3600,
+	})
+	if err := g.OnConnect("198.51.100.40"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.OnConnect("198.51.100.40"); !errors.Is(err, errDoSConnectRate) {
+		t.Fatalf("桶空应拒绝连接速率: %v", err)
+	}
+	now = now.Add(30 * time.Minute)
+	if err := g.OnConnect("198.51.100.40"); !errors.Is(err, errDoSConnectRate) {
+		t.Fatal("防御窗内应继续拒绝")
+	}
+	now = now.Add(40 * time.Minute)
+	if err := g.OnConnect("198.51.100.40"); err != nil {
+		t.Fatalf("防御窗结束后应允许: %v", err)
+	}
+}
+
+func TestDoSGuardConnectRateTorrcOverridesConsensus(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DoSConnectionEnabled = config.DoSEnabledOn
+	cfg.DoSConnectionConnectRate = 2
+	cfg.DoSConnectionConnectBurst = 2
+	cfg.DoSConnectionConnectDefenseTime = time.Hour
+	g := NewDoSGuardFromConfig(cfg)
+	g.ApplyConsensus(map[string]int{
+		"DoSConnectionConnectRate":  1,
+		"DoSConnectionConnectBurst": 1,
+	})
+	if err := g.OnConnect("198.51.100.41"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.OnConnect("198.51.100.41"); err != nil {
+		t.Fatalf("torrc burst=2 应允许第二次: %v", err)
+	}
+	if err := g.OnConnect("198.51.100.41"); !errors.Is(err, errDoSConnectRate) {
+		t.Fatalf("第三次应被速率桶拒绝: %v", err)
+	}
+}
+
+func TestDoSGuardConnectRateDoesNotChangeConnLimit(t *testing.T) {
+	cfg := config.DefaultConfig()
+	g := NewDoSGuardFromConfig(cfg)
+	g.ApplyConsensus(map[string]int{
+		"DoSConnectionConnectRate":  1,
+		"DoSConnectionConnectBurst": 1,
+	})
+	for i := 0; i < 5; i++ {
+		if err := g.OnConnect("198.51.100.42"); err != nil {
+			t.Fatalf("auto 关闭时连接速率不得拒绝: %v", err)
+		}
 	}
 }

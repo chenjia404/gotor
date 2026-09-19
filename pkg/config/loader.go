@@ -440,6 +440,27 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 		}
 		cfg.DoSConnectionMaxConcurrentCount = n
 
+	case "DoSConnectionConnectRate":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("invalid DoSConnectionConnectRate value: %s", value)
+		}
+		cfg.DoSConnectionConnectRate = n
+
+	case "DoSConnectionConnectBurst":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("invalid DoSConnectionConnectBurst value: %s", value)
+		}
+		cfg.DoSConnectionConnectBurst = n
+
+	case "DoSConnectionConnectDefenseTimePeriod":
+		d, err := parseDoSInterval(value)
+		if err != nil {
+			return fmt.Errorf("invalid DoSConnectionConnectDefenseTimePeriod: %w", err)
+		}
+		cfg.DoSConnectionConnectDefenseTime = d
+
 	case "DoSRefuseSingleHopClient":
 		cfg.DoSRefuseSingleHopClient = parseBool(value)
 
@@ -1232,6 +1253,9 @@ func SaveToFile(path string, cfg *Config) error {
 	fmt.Fprintf(writer, "DoSCircuitCreationDefenseTimePeriod %s\n", formatDuration(cfg.DoSCircuitCreationDefenseTime))
 	fmt.Fprintf(writer, "DoSConnectionEnabled %s\n", FormatDoSEnabled(cfg.DoSConnectionEnabled))
 	fmt.Fprintf(writer, "DoSConnectionMaxConcurrentCount %d\n", cfg.DoSConnectionMaxConcurrentCount)
+	fmt.Fprintf(writer, "DoSConnectionConnectRate %d\n", cfg.DoSConnectionConnectRate)
+	fmt.Fprintf(writer, "DoSConnectionConnectBurst %d\n", cfg.DoSConnectionConnectBurst)
+	fmt.Fprintf(writer, "DoSConnectionConnectDefenseTimePeriod %s\n", formatDuration(cfg.DoSConnectionConnectDefenseTime))
 	fmt.Fprintf(writer, "DoSRefuseSingleHopClient %s\n", formatBool(cfg.DoSRefuseSingleHopClient))
 	fmt.Fprintf(writer, "DormantTimeout %s\n\n", formatDuration(cfg.DormantTimeout))
 

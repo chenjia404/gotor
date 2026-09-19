@@ -244,6 +244,7 @@ func run(ctx context.Context, cfg *config.Config, log *logger.Logger) error {
 		relays, cur, prev, params := torClient.HSDirRingSnapshot()
 		relaySrv.SetHSDirRing(relays, cur, prev, params)
 		relaySrv.SetHSIntroDoSParams(params)
+		relaySrv.SetDoSConsensusParams(params)
 	}
 
 	sigCh := make(chan os.Signal, 1)

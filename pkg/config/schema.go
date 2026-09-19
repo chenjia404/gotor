@@ -186,6 +186,21 @@ func GenerateJSONSchema() (*JSONSchema, error) {
 				Description: "Max concurrent OR connections per client IP when DoSConnection is on",
 				Default:     100,
 			},
+			"DoSConnectionConnectRate": {
+				Type:        "integer",
+				Description: "Per-IP OR connect rate; 0 follows consensus (default 20)",
+				Default:     0,
+			},
+			"DoSConnectionConnectBurst": {
+				Type:        "integer",
+				Description: "Per-IP OR connect burst; 0 follows consensus (default 40)",
+				Default:     0,
+			},
+			"DoSConnectionConnectDefenseTimePeriod": {
+				Type:        "string",
+				Description: "Connect-rate defense window; 0 follows consensus (default 24h)",
+				Default:     "0s",
+			},
 			"DoSRefuseSingleHopClient": {
 				Type:        "boolean",
 				Description: "DESTROY circuits that send BEGIN/BEGIN_DIR/RESOLVE without ever EXTEND",
