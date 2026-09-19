@@ -4,18 +4,27 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 )
 
-const rendCookieLen = 20
+const (
+	rendCookieLen   = 20
+	unjoinedRendTTL = 10 * time.Minute // 对齐客户端 MaxCircuitDirtiness / 长 HS 等待窗
+	maxUnjoinedRend = 128
+)
 
 // handleEstablishRendezvous 接受 ESTABLISH_RENDEZVOUS cookie 并回 RENDEZVOUS_ESTABLISHED。
-// 对照 rend-spec-v3 §3.3；未宣告 HSRend=*。
+// 对照 rend-spec-v3 §3.3 与 C Tor rend_mid_establish_rendezvous（须为末端跳）；未宣告 HSRend=*。
 func (h *ForwardingHandler) handleEstablishRendezvous(circ *ServerCircuit, clientConn net.Conn, payload []byte) error {
 	if circ == nil {
 		return fmt.Errorf("nil circuit")
 	}
+	if err := h.rejectIfExtended(circ, clientConn, "ESTABLISH_RENDEZVOUS"); err != nil {
+		return err
+	}
+	h.reapExpiredRend()
 	if len(payload) < rendCookieLen {
 		h.logger.Warn("ESTABLISH_RENDEZVOUS cookie too short", "circuit_id", circ.CircuitID, "len", len(payload))
 		return h.destroyHSCircuit(circ, clientConn, fmt.Sprintf("rendezvous cookie length %d", len(payload)))
@@ -24,6 +33,7 @@ func (h *ForwardingHandler) handleEstablishRendezvous(circ *ServerCircuit, clien
 	if err := h.registerRend(circ, clientConn, cookie); err != nil {
 		return h.destroyHSCircuit(circ, clientConn, err.Error())
 	}
+	h.addHSStat(func(s *HSRelayStats) { s.EstRend++ })
 	return sendRelayToClient(circ, clientConn, 0, cell.RelayRendezvousEstablished, nil)
 }
 
@@ -51,7 +61,13 @@ func (h *ForwardingHandler) registerRend(circ *ServerCircuit, conn net.Conn, coo
 		circ.mu.Unlock()
 		return fmt.Errorf("rendezvous cookie already in use")
 	}
-	h.rendByCookie[key] = &hsRoleSlot{circ: circ, conn: conn}
+	if len(h.rendByCookie) >= maxUnjoinedRend {
+		circ.mu.Lock()
+		circ.rendCookie = nil
+		circ.mu.Unlock()
+		return fmt.Errorf("too many unjoined rendezvous circuits")
+	}
+	h.rendByCookie[key] = &hsRoleSlot{circ: circ, conn: conn, created: h.now()}
 	return nil
 }
 
@@ -59,6 +75,10 @@ func (h *ForwardingHandler) handleRendezvous1(circ *ServerCircuit, clientConn ne
 	if circ == nil {
 		return fmt.Errorf("nil circuit")
 	}
+	if err := h.rejectIfExtended(circ, clientConn, "RENDEZVOUS1"); err != nil {
+		return err
+	}
+	h.reapExpiredRend()
 	if len(payload) < rendCookieLen {
 		return h.destroyHSCircuit(circ, clientConn, "RENDEZVOUS1 cookie too short")
 	}
@@ -90,7 +110,33 @@ func (h *ForwardingHandler) handleRendezvous1(circ *ServerCircuit, clientConn ne
 		return h.destroyHSCircuit(circ, clientConn, "RENDEZVOUS2 send failed")
 	}
 	joinHSCircuits(circ, clientConn, slot.circ, slot.conn)
+	h.addHSStat(func(s *HSRelayStats) { s.RendJoined++ })
 	return nil
+}
+
+func (h *ForwardingHandler) reapExpiredRend() {
+	if h == nil {
+		return
+	}
+	now := h.now()
+	h.hsMu.Lock()
+	var dead []*hsRoleSlot
+	for key, slot := range h.rendByCookie {
+		if slot == nil || now.Sub(slot.created) < unjoinedRendTTL {
+			continue
+		}
+		delete(h.rendByCookie, key)
+		dead = append(dead, slot)
+		h.hsStats.RendExpired++
+	}
+	h.hsMu.Unlock()
+	for _, slot := range dead {
+		if slot.circ == nil {
+			continue
+		}
+		h.logger.Info("unjoined rendezvous expired", "circuit_id", slot.circ.CircuitID)
+		_ = h.closeHSCircuit(slot.circ, slot.conn, "unjoined rendezvous expired", cell.DestroyReasonTimeout)
+	}
 }
 
 func (h *ForwardingHandler) restoreRend(key string, slot *hsRoleSlot) {

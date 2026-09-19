@@ -87,6 +87,9 @@ func (h *ForwardingHandler) handleEstablishIntro(circ *ServerCircuit, clientConn
 	if circ == nil {
 		return fmt.Errorf("nil circuit")
 	}
+	if err := h.rejectIfExtended(circ, clientConn, "ESTABLISH_INTRO"); err != nil {
+		return err
+	}
 	circ.mu.Lock()
 	nonce := append([]byte(nil), circ.circNonce...)
 	already := len(circ.introAuth) > 0
@@ -110,6 +113,7 @@ func (h *ForwardingHandler) handleEstablishIntro(circ *ServerCircuit, clientConn
 	if err := h.registerIntro(circ, clientConn, auth, ext); err != nil {
 		return h.destroyHSCircuit(circ, clientConn, err.Error())
 	}
+	h.addHSStat(func(s *HSRelayStats) { s.EstIntro++ })
 	// INTRO_ESTABLISHED 可为空扩展；StreamID=0。
 	return sendRelayToClient(circ, clientConn, 0, cell.RelayIntroEstablished, nil)
 }
@@ -145,6 +149,9 @@ func (h *ForwardingHandler) registerIntro(circ *ServerCircuit, conn net.Conn, au
 func (h *ForwardingHandler) handleIntroduce1(circ *ServerCircuit, clientConn net.Conn, payload []byte) error {
 	if circ == nil {
 		return fmt.Errorf("nil circuit")
+	}
+	if err := h.rejectIfExtended(circ, clientConn, "INTRODUCE1"); err != nil {
+		return err
 	}
 	auth, ok := parseIntroduce1AuthKey(payload)
 	if !ok {
@@ -213,15 +220,62 @@ func (h *ForwardingHandler) rejectHSControlStream(circ *ServerCircuit, clientCon
 	return h.destroyHSCircuit(circ, clientConn, cmd+" stream_id != 0")
 }
 
+func (h *ForwardingHandler) rejectIfExtended(circ *ServerCircuit, clientConn net.Conn, cmd string) error {
+	if circ == nil {
+		return fmt.Errorf("nil circuit")
+	}
+	circ.mu.RLock()
+	extended := circ.didExtend
+	circ.mu.RUnlock()
+	if !extended {
+		return nil
+	}
+	// C Tor rend_mid / hs intro：n_chan 已存在则不是末端跳，DESTROY。
+	return h.destroyHSCircuit(circ, clientConn, cmd+" on extended circuit")
+}
+
 func (h *ForwardingHandler) destroyHSCircuit(circ *ServerCircuit, clientConn net.Conn, reason string) error {
+	return h.closeHSCircuit(circ, clientConn, reason, cell.DestroyReasonProtocol)
+}
+
+func (h *ForwardingHandler) closeHSCircuit(circ *ServerCircuit, clientConn net.Conn, reason string, dest byte) error {
 	if circ == nil {
 		return fmt.Errorf("%s", reason)
 	}
-	if clientConn != nil {
-		_ = h.circuits.sendDestroyCell(clientConn, circ.CircuitID, cell.DestroyReasonProtocol)
+	if clientConn != nil && h.circuits != nil {
+		_ = h.circuits.sendDestroyCell(clientConn, circ.CircuitID, dest)
 	}
-	h.circuits.CloseCircuit(circ.CircuitID)
+	if h.circuits != nil {
+		h.circuits.CloseCircuit(circ.CircuitID)
+	}
 	return fmt.Errorf("%s", reason)
+}
+
+func (h *ForwardingHandler) addHSStat(fn func(*HSRelayStats)) {
+	if h == nil || fn == nil {
+		return
+	}
+	h.hsMu.Lock()
+	fn(&h.hsStats)
+	h.hsMu.Unlock()
+}
+
+// HSRelayStats 是中继侧 intro/rend 内存计数（不写 extra-info hidserv-*）。
+type HSRelayStats struct {
+	EstIntro    uint64
+	EstRend     uint64
+	RendJoined  uint64
+	RendExpired uint64
+}
+
+// HSStats 返回 intro/rend 计数快照。未宣告 HS*。
+func (h *ForwardingHandler) HSStats() HSRelayStats {
+	if h == nil {
+		return HSRelayStats{}
+	}
+	h.hsMu.Lock()
+	defer h.hsMu.Unlock()
+	return h.hsStats
 }
 
 func sendRelayToClient(circ *ServerCircuit, clientConn net.Conn, streamID uint16, cmd byte, data []byte) error {

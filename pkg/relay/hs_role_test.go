@@ -97,6 +97,56 @@ func TestHandleEstablishRendezvous(t *testing.T) {
 	if err := h.forwarder.handleEstablishRendezvous(circ, conn, cookie); err == nil {
 		t.Fatal("second ESTABLISH_RENDEZVOUS must fail")
 	}
+	if h.forwarder.HSStats().EstRend != 1 {
+		t.Fatalf("EstRend stat %d", h.forwarder.HSStats().EstRend)
+	}
+}
+
+func TestHandleEstablishRendezvousRejectsExtendedCircuit(t *testing.T) {
+	km := bytesRepeatHS(0x44, 72)
+	cc, err := newCircuitCrypto(km)
+	if err != nil {
+		t.Fatal(err)
+	}
+	circ := &ServerCircuit{CircuitID: 91, crypto: cc, didExtend: true}
+	h := NewCircuitHandler(&RelayKeys{NtorOnionKey: bytesRepeatHS(0x33, 32)}, nil)
+	if err := h.forwarder.handleEstablishRendezvous(circ, newMockConn(), bytesRepeatHS(0x5a, 20)); err == nil {
+		t.Fatal("中间跳不得 ESTABLISH_RENDEZVOUS")
+	}
+}
+
+func TestUnjoinedRendezvousExpires(t *testing.T) {
+	kmCli := bytesRepeatHS(0x44, 72)
+	kmSvc := bytesRepeatHS(0x45, 72)
+	cliCC, err := newCircuitCrypto(kmCli)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcCC, err := newCircuitCrypto(kmSvc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := &ServerCircuit{CircuitID: 92, crypto: cliCC}
+	svc := &ServerCircuit{CircuitID: 93, crypto: svcCC}
+	h := NewCircuitHandler(&RelayKeys{NtorOnionKey: bytesRepeatHS(0x33, 32)}, nil)
+	h.circuits[cli.CircuitID] = cli
+	frozen := time.Unix(1_700_000_000, 0)
+	h.forwarder.nowFn = func() time.Time { return frozen }
+	cookie := bytesRepeatHS(0x5e, 20)
+	if err := h.forwarder.handleEstablishRendezvous(cli, newMockConn(), cookie); err != nil {
+		t.Fatal(err)
+	}
+	frozen = frozen.Add(unjoinedRendTTL + time.Second)
+	rend1 := append(append([]byte{}, cookie...), 0x11)
+	if err := h.forwarder.handleRendezvous1(svc, newMockConn(), rend1); err == nil {
+		t.Fatal("过期 cookie 不得会合")
+	}
+	if h.forwarder.HSStats().RendExpired != 1 {
+		t.Fatalf("RendExpired %d", h.forwarder.HSStats().RendExpired)
+	}
+	if _, ok := h.GetCircuit(cli.CircuitID); ok {
+		t.Fatal("过期未会合电路应被拆除")
+	}
 }
 
 func TestCreate2StoresCircNonceForIntro(t *testing.T) {

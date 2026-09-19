@@ -51,12 +51,14 @@ type ForwardingHandler struct {
 	rendByCookie map[string]*hsRoleSlot // hex(cookie) → 客户端会合电路
 	introDoSCons onion.IntroDoSParams
 	nowFn        func() time.Time
+	hsStats      HSRelayStats
 }
 
 type hsRoleSlot struct {
 	circ     *ServerCircuit
 	conn     net.Conn
 	introDoS *introDoSBucket
+	created  time.Time
 }
 
 // NewForwardingHandler creates a new forwarding handler
