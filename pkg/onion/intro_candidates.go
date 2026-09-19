@@ -8,12 +8,13 @@ import (
 	"github.com/opd-ai/go-tor/pkg/directory"
 )
 
-// IntroPointCandidatesFromRelays 选取适合做引言点的中继（Running/Valid/Fast/Stable，有扩展密钥）。
+// IntroPointCandidatesFromRelays 选取适合做引言点的中继（Running/Valid/Fast/Stable）。
+// 不要求此刻已有 ntor/Ed25519：微描述符在建 intro 电路时再拉，禁止用全零密钥顶上。
 func IntroPointCandidatesFromRelays(relays []*directory.Relay) []*HSDirectory {
 	out := make([]*HSDirectory, 0, 64)
 	seen := make(map[string]struct{})
 	for _, r := range relays {
-		if r == nil || !r.IsRunning() || !r.IsValid() || !r.HasExtendKeys() {
+		if r == nil || !r.IsRunning() || !r.IsValid() {
 			continue
 		}
 		if !r.HasFlag("Fast") || !r.HasFlag("Stable") {

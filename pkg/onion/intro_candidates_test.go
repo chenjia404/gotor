@@ -33,22 +33,16 @@ func TestShuffleHSDirectoriesPreservesSet(t *testing.T) {
 }
 
 func TestIntroPointCandidatesRequireFastStable(t *testing.T) {
-	ntor := make([]byte, 32)
-	id := make([]byte, 32)
-	rsa := make([]byte, 20)
-	ntor[0], id[0], rsa[0] = 1, 1, 1
 	relays := []*directory.Relay{
 		{
 			Fingerprint:    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			FingerprintHex: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			Flags:          []string{"Running", "Valid", "Fast", "Stable"},
-			NtorOnionKey:   ntor, IdentityKey: id, RSAIdentity: rsa,
 		},
 		{
 			Fingerprint:    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
 			FingerprintHex: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
 			Flags:          []string{"Running", "Valid", "HSDir"},
-			NtorOnionKey:   ntor, IdentityKey: id, RSAIdentity: rsa,
 		},
 	}
 	got := IntroPointCandidatesFromRelays(relays)
