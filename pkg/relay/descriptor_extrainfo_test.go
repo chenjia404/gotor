@@ -79,6 +79,8 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 		"conn-bi-direct":        "2026-08-21 12:00:00 (86400 s) 10,2,1,3",
 		"ipv6-conn-bi-direct":   "2026-08-21 12:00:00 (86400 s) 4,1,0,2",
 		"dirreq-stats-end":      "2026-08-21 12:00:00 (86400 s)",
+		"dirreq-v3-ips":         "??=8",
+		"dirreq-v3-reqs":        "??=8",
 		"dirreq-v3-resp":        "ok=4,not-found=4",
 		"dirreq-v3-direct-dl":   "complete=1",
 		"dirreq-v3-tunneled-dl": "complete=2",
@@ -115,9 +117,17 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 	if ds < 0 || ds < v6 {
 		t.Fatal("dirreq-stats-end 应在 ipv6-conn-bi-direct 后")
 	}
+	ips := strings.Index(raw, "dirreq-v3-ips ??=8\n")
+	if ips < 0 || ips < ds {
+		t.Fatal("dirreq-v3-ips 应在 dirreq-stats-end 后")
+	}
+	reqs := strings.Index(raw, "dirreq-v3-reqs ??=8\n")
+	if reqs < 0 || reqs < ips {
+		t.Fatal("dirreq-v3-reqs 应在 dirreq-v3-ips 后")
+	}
 	dr := strings.Index(raw, "dirreq-v3-resp ok=4,not-found=4\n")
-	if dr < 0 || dr < ds {
-		t.Fatal("dirreq-v3-resp 应在 dirreq-stats-end 后")
+	if dr < 0 || dr < reqs {
+		t.Fatal("dirreq-v3-resp 应在 dirreq-v3-reqs 后")
 	}
 	dd := strings.Index(raw, "dirreq-v3-direct-dl complete=1\n")
 	if dd < 0 || dd < dr {

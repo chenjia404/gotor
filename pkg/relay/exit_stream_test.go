@@ -680,7 +680,7 @@ func TestOriginateRelayTagLengths(t *testing.T) {
 func TestHandleBeginDirHonorsStreamLimit(t *testing.T) {
 	p := NewExitPolicyFromConfig(true, []string{"accept *:*"}, false, false, logger.NewDefault())
 	m := NewExitStreamManager(p, logger.NewDefault())
-	m.dirDial = func() (net.Conn, error) {
+	m.dirDial = func(string) (net.Conn, error) {
 		t.Fatal("超限后不得 dirDial")
 		return nil, nil
 	}

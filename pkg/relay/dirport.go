@@ -76,7 +76,7 @@ func (d *DirCacheServer) handler() http.Handler {
 		if d.dirreq != nil && isV3NetworkStatusPath(req.URL.Path) {
 			cap := &dirreqCapture{ResponseWriter: w}
 			mux.ServeHTTP(cap, req)
-			d.dirreq.NoteHTTP(cap.code(), isDirreqTunneled(req))
+			d.dirreq.NoteHTTP(cap.code(), isDirreqTunneled(req), dirreqRemote(req))
 			return
 		}
 		mux.ServeHTTP(w, req)
@@ -736,12 +736,17 @@ func (d *DirCacheServer) scheduleDiffLibraryRebuild() {
 
 // Dial 返回一对连接到本机目录处理器的连接（BEGIN_DIR）。
 func (d *DirCacheServer) Dial() (net.Conn, error) {
+	return d.DialFrom("")
+}
+
+// DialFrom 与 Dial 相同，并把相邻 OR 地址记入 dirreq ips（无 geoip 仍为 ??）。
+func (d *DirCacheServer) DialFrom(orAddr string) (net.Conn, error) {
 	client, server := net.Pipe()
-	go d.servePipe(server)
+	go d.servePipe(server, orAddr)
 	return client, nil
 }
 
-func (d *DirCacheServer) servePipe(c net.Conn) {
+func (d *DirCacheServer) servePipe(c net.Conn, orAddr string) {
 	defer func() { _ = c.Close() }()
 	_ = c.SetReadDeadline(time.Now().Add(15 * time.Second))
 	req, err := http.ReadRequest(bufio.NewReader(c))
@@ -749,7 +754,9 @@ func (d *DirCacheServer) servePipe(c net.Conn) {
 		return
 	}
 	rw := &pipeResponse{conn: c, header: make(http.Header)}
-	d.handler().ServeHTTP(rw, withDirreqTunneled(req))
+	req = withDirreqTunneled(req)
+	req = withDirreqRemote(req, orAddr)
+	d.handler().ServeHTTP(rw, req)
 	rw.finish()
 }
 
@@ -763,7 +770,7 @@ func (d *DirCacheServer) Close() error {
 	return nil
 }
 
-// StatsDirReq 已完成 24h 窗的 dirreq-stats-end / dirreq-v3-resp / *-dl；无观测则空。
+// StatsDirReq 已完成 24h 窗的 dirreq-stats-end / ips / reqs / resp / *-dl；无观测则空。
 func (d *DirCacheServer) StatsDirReq() map[string]string {
 	if d == nil || d.dirreq == nil {
 		return nil

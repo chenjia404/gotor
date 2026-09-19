@@ -116,7 +116,9 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 		}
 		if ln.circuitHandler != nil && ln.circuitHandler.exits != nil {
 			dc := s.dirCache
-			ln.circuitHandler.exits.SetDirDial(dc.Dial)
+			ln.circuitHandler.exits.SetDirDial(func(orAddr string) (net.Conn, error) {
+				return dc.DialFrom(orAddr)
+			})
 		}
 	}
 	s.logger.Info("relay configured",

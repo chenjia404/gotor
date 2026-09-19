@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -23,11 +24,14 @@ type dirreqCompleted struct {
 	busy        uint64
 	directOK    uint64
 	tunneledOK  uint64
+	uniqueIPs   uint64
+	reqs        uint64
 }
 
-// DirReqStats 统计 v3 网络状态请求的 HTTP 应答（dirreq-v3-resp）
-// 以及 DirPort / BEGIN_DIR 完成次数（dirreq-v3-*-dl 的 complete）。
-// 满 24h 且该窗有计数才写入 extra-info；无 geoip，不写 ips/reqs；不写下载分位数。
+// DirReqStats 统计 v3 网络状态请求的 HTTP 应答（dirreq-v3-resp）、
+// DirPort / BEGIN_DIR 完成次数（dirreq-v3-*-dl 的 complete），
+// 以及无法映射国家时的 ips/reqs（仅 ??）。
+// 满 24h 且该窗有计数才写入 extra-info；无 geoip，不写国家码；不写下载分位数。
 type DirReqStats struct {
 	mu          sync.Mutex
 	now         func() time.Time
@@ -41,6 +45,8 @@ type DirReqStats struct {
 	busy        uint64
 	directOK    uint64
 	tunneledOK  uint64
+	reqs        uint64
+	ips         map[string]struct{}
 	completed   *dirreqCompleted
 }
 
@@ -54,12 +60,20 @@ func newDirReqStats(now func() time.Time) *DirReqStats {
 }
 
 type dirreqTunneledKey struct{}
+type dirreqRemoteKey struct{}
 
 func withDirreqTunneled(r *http.Request) *http.Request {
 	if r == nil {
 		return r
 	}
 	return r.WithContext(context.WithValue(r.Context(), dirreqTunneledKey{}, true))
+}
+
+func withDirreqRemote(r *http.Request, remote string) *http.Request {
+	if r == nil || remote == "" {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), dirreqRemoteKey{}, remote))
 }
 
 func isDirreqTunneled(r *http.Request) bool {
@@ -70,8 +84,19 @@ func isDirreqTunneled(r *http.Request) bool {
 	return v
 }
 
+func dirreqRemote(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if v, ok := r.Context().Value(dirreqRemoteKey{}).(string); ok && v != "" {
+		return v
+	}
+	return r.RemoteAddr
+}
+
 // NoteHTTP 按应答状态计入当前 24h 窗。tunneled 为 BEGIN_DIR；非 v3 目录应答码忽略。
-func (s *DirReqStats) NoteHTTP(status int, tunneled bool) {
+// remote 为 DirPort 对端或 BEGIN_DIR 相邻 OR；无 geoip 一律记入 ??。
+func (s *DirReqStats) NoteHTTP(status int, tunneled bool, remote string) {
 	if s == nil {
 		return
 	}
@@ -96,9 +121,42 @@ func (s *DirReqStats) NoteHTTP(status int, tunneled bool) {
 	default:
 		return
 	}
+	s.reqs++
+	s.noteIPLocked(remote)
 }
 
-// StatsMap 返回已完成窗的 dirreq-stats-end、dirreq-v3-resp 以及有 complete 时的 *-dl。无观测则空。
+func (s *DirReqStats) noteIPLocked(remote string) {
+	key := dirreqIPKey(remote)
+	if key == "" {
+		return
+	}
+	if s.ips == nil {
+		s.ips = make(map[string]struct{})
+	}
+	s.ips[key] = struct{}{}
+}
+
+func dirreqIPKey(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		host = remote
+	}
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	return ip.String()
+}
+
+// StatsMap 返回已完成窗的 dirreq-stats-end、ips/reqs（仅 ??）、resp 以及有 complete 时的 *-dl。无观测则空。
 func (s *DirReqStats) StatsMap() map[string]string {
 	if s == nil {
 		return nil
@@ -118,6 +176,12 @@ func (s *DirReqStats) StatsMap() map[string]string {
 		"dirreq-stats-end": fmt.Sprintf("%s (%d s)",
 			c.end.UTC().Format("2006-01-02 15:04:05"), c.nsec),
 		"dirreq-v3-resp": resp,
+	}
+	if c.uniqueIPs > 0 {
+		out["dirreq-v3-ips"] = fmt.Sprintf("??=%d", roundUp8(c.uniqueIPs))
+	}
+	if c.reqs > 0 {
+		out["dirreq-v3-reqs"] = fmt.Sprintf("??=%d", roundUp8(c.reqs))
 	}
 	if c.directOK > 0 {
 		out["dirreq-v3-direct-dl"] = fmt.Sprintf("complete=%d", c.directOK)
@@ -150,6 +214,8 @@ func (s *DirReqStats) rotateLocked(now time.Time) {
 			busy:        s.busy,
 			directOK:    s.directOK,
 			tunneledOK:  s.tunneledOK,
+			uniqueIPs:   uint64(len(s.ips)),
+			reqs:        s.reqs,
 		}
 	}
 	// 空档不补零；当前窗对齐到 now。
@@ -162,10 +228,19 @@ func (s *DirReqStats) rotateLocked(now time.Time) {
 	s.served, s.ok, s.notEnough, s.unavailable = 0, 0, 0, 0
 	s.notFound, s.notModified, s.busy = 0, 0, 0
 	s.directOK, s.tunneledOK = 0, 0
+	s.reqs = 0
+	s.ips = nil
 }
 
 func (s *DirReqStats) hasCountsLocked() bool {
-	return s.served+s.ok+s.notEnough+s.unavailable+s.notFound+s.notModified+s.busy > 0
+	return s.served+s.ok+s.notEnough+s.unavailable+s.notFound+s.notModified+s.busy+s.reqs > 0
+}
+
+func roundUp8(n uint64) uint64 {
+	if n == 0 {
+		return 0
+	}
+	return ((n + 7) / 8) * 8
 }
 
 func formatDirReqResp(c *dirreqCompleted) string {

@@ -44,7 +44,7 @@ type ExitStreamManager struct {
 	dial    func(ctx context.Context, network, address string) (net.Conn, error)
 	bw      *bandwidthLimiter
 	gate    *exitConnGate
-	dirDial func() (net.Conn, error) // BEGIN_DIR：本机目录缓存
+	dirDial func(orAddr string) (net.Conn, error) // BEGIN_DIR：本机目录缓存
 
 	mu                 sync.Mutex
 	streams            map[streamKey]*exitStream
@@ -145,8 +145,8 @@ func (m *ExitStreamManager) SetMaxExitConns(n int) {
 	m.gate = newExitConnGate(n)
 }
 
-// SetDirDial 设置 BEGIN_DIR 本机目录缓存拨号。
-func (m *ExitStreamManager) SetDirDial(fn func() (net.Conn, error)) {
+// SetDirDial 设置 BEGIN_DIR 本机目录缓存拨号。orAddr 为相邻 OR 的 RemoteAddr。
+func (m *ExitStreamManager) SetDirDial(fn func(orAddr string) (net.Conn, error)) {
 	m.dirDial = fn
 }
 
@@ -439,7 +439,11 @@ func (m *ExitStreamManager) HandleBeginDir(ctx context.Context, circ *ServerCirc
 		releaseSlot()
 		return m.sendEnd(circ, clientConn, streamID, cell.EndReasonResourceLimit)
 	}
-	c, err := m.dirDial()
+	orAddr := ""
+	if clientConn != nil && clientConn.RemoteAddr() != nil {
+		orAddr = clientConn.RemoteAddr().String()
+	}
+	c, err := m.dirDial(orAddr)
 	if err != nil {
 		m.gate.release()
 		releaseSlot()
