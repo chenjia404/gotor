@@ -313,7 +313,7 @@ func TestConfluxProtocolErrorUnlinksSet(t *testing.T) {
 	if _, err := s.onRelayCell(a, &cell.RelayCell{Command: cell.RelayConfluxSwitch, Data: []byte{0, 0, 0, 0}}, testExitHop); err == nil {
 		t.Fatal("SWITCH rel=0 must fail")
 	}
-	s.failAndClose()
+	s.failAndClose(fmt.Errorf("test"))
 	if a.GetState() != StateClosed || b.GetState() != StateClosed {
 		t.Fatal("protocol error must close both legs")
 	}
@@ -441,5 +441,40 @@ func TestSingleCircuitNotMarkedConflux(t *testing.T) {
 	s.closed = true
 	if a.ConfluxLinked() {
 		t.Fatal("closed set must not report linked")
+	}
+}
+
+func TestConfluxSwitchCatchesUpToDeliveredSeq(t *testing.T) {
+	s, a, b, _, _ := newTestConfluxSet(t)
+	s.linked = true
+	for i := 0; i < 10; i++ {
+		rc, err := cell.NewRelayCell(1, cell.RelayData, []byte("x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.onRelayCell(a, rc, testExitHop); err != nil {
+			t.Fatalf("data %d: %v", i, err)
+		}
+	}
+	if s.lastRecv != 10 || s.legs[0].lastRecv != 10 {
+		t.Fatalf("after 10 cells lastRecv=%d legA=%d", s.lastRecv, s.legs[0].lastRecv)
+	}
+	// 发送端：10 格都在 A 上之后切到 B，相对序号 = 10 - 0。
+	sw, err := cell.NewRelayCell(0, cell.RelayConfluxSwitch, cell.EncodeConfluxSwitch(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.onRelayCell(b, sw, testExitHop); err != nil {
+		t.Fatalf("SWITCH that catches up must not tear down: %v", err)
+	}
+	data, err := cell.NewRelayCell(1, cell.RelayData, []byte("y"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.onRelayCell(b, data, testExitHop); err != nil {
+		t.Fatal(err)
+	}
+	if s.lastRecv != 11 {
+		t.Fatalf("next cell after catch-up SWITCH must be seq 11, got %d", s.lastRecv)
 	}
 }

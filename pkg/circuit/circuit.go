@@ -1569,7 +1569,7 @@ func (c *Circuit) DeliverRelayCell(cellData *cell.Cell) error {
 	if set := c.confluxSet(); set != nil {
 		handled, err := set.onRelayCell(c, relayCell, hopIdx)
 		if err != nil {
-			set.failAndClose()
+			set.failAndClose(err)
 			c.NotifyDestroyed(1)
 			return fmt.Errorf("conflux: %w", err)
 		}

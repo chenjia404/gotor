@@ -366,7 +366,10 @@ func (s *ConfluxSet) handleSwitch(from *Circuit, rc *cell.RelayCell) error {
 		return fmt.Errorf("SWITCH from current receive leg")
 	}
 	next := leg.lastRecv + uint64(rel)
-	if next <= s.lastRecv {
+	// 相对序号表示「切过来之前，其他腿已经发出的绝对序号」。
+	// next == lastRecv 只是把本腿追平，下一格 DATA 才是 lastRecv+1。
+	// 用 <= 会把正常换腿当成协议错误，两条腿一起拆掉。
+	if next < s.lastRecv {
 		return fmt.Errorf("SWITCH does not advance seq")
 	}
 	if next > s.lastRecv+uint64(confluxOOOLimit)+1 {
@@ -533,7 +536,7 @@ func (s *ConfluxSet) sendMultiplexed(rc *cell.RelayCell) error {
 	}
 	if err := circ.emitRelayCell(rc, recordSendme, reserved); err != nil {
 		if needSwitch {
-			s.failAndClose()
+			s.failAndClose(err)
 		}
 		return err
 	}
@@ -625,9 +628,15 @@ func (s *ConfluxSet) onLegClosed(c *Circuit) {
 	}
 }
 
-func (s *ConfluxSet) failAndClose() {
+func (s *ConfluxSet) failAndClose(reason error) {
 	if s.logger != nil {
-		s.logger.Warn("Conflux protocol error, tearing down both legs")
+		id := uint32(0)
+		if s.owner != nil {
+			id = s.owner.ID
+		}
+		s.logger.Warn("Conflux protocol error, tearing down both legs",
+			"error", reason,
+			"circuit_id", id)
 	}
 	s.teardown(true)
 }
