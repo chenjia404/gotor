@@ -1,7 +1,7 @@
 # 客户端与托管 vanguards（L2 + L3）
 
 **日期**：2026-09-20  
-**状态**：PARTIAL（客户端 HS 电路与托管 intro/rend 固定 L2+L3 并落盘；读共识参数；**托管未真网上线**）
+**状态**：PARTIAL（客户端 HS 电路与托管 intro/rend 固定 L2+L3 并落盘；读共识参数；托管已真网 HTTP 200，未核对 C Tor `Guard in=` 行）
 
 对照：[vanguards-spec Vanguards-lite](https://spec.torproject.org/vanguards-spec/vanguards-lite.html)、[Full Vanguards](https://spec.torproject.org/vanguards-spec/full-vanguards.html)、param-spec `guard-hs-l2-*` / `guard-hs-l3-*` 默认值。
 

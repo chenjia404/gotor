@@ -1,6 +1,6 @@
 # gotor 与官方 Tor 的兼容差距
 
-**日期**：2026-09-19  
+**日期**：2026-09-20  
 **对照官方版本**：C Tor **0.4.9.11**、Arti **2.6.0**（2026-09-01，[官方博文](https://blog.torproject.org/arti_2_6_0_released/)）  
 **说明**：C Tor **0.4.8 已 EOL**，不要再按 0.4.8 行为实现或宣称兼容。  
 **对照范围**：**同时**对照 C Tor 与 Arti，不能只盯 C Tor。官方新协议/新特性以 Arti changelog 为优先观察源，落地仍以共识与 mainnet 互操作为准。  
@@ -29,7 +29,7 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 
 ## 一句话定位
 
-**客户端接近官方推荐协议；中继实验性（描述符可被权威收下；入站握手 + self-test + 中间跳出站握手已接线，Running / 真网被选为中间跳仍取决于权威与可达性）；洋葱托管未上线。**
+**客户端接近官方推荐协议；中继实验性（描述符可被权威收下；入站握手 + self-test + 中间跳出站握手已接线，Running / 真网被选为中间跳仍取决于权威与可达性）；洋葱托管真网 HTTP 200（未宣告 HS*）。**
 
 ---
 
@@ -40,7 +40,7 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 | 角色 | Arti 2.5.1 | 对 gotor 的含义 |
 |------|------------|-----------------|
 | **客户端** | 可生产：1.0.0（2022-09）起 `arti-client` / SOCKS 即稳定路径；**2.6.0 起拥塞控制与 CGO 在 `arti` 中始终启用**（去掉 `flowctl-cc` / `counter-galois-onion` cargo feature） | gotor 客户端应对齐 **共识 recommended** 与 Arti/C Tor **都已在 mainnet 用的** 握手，而不是 Arti 实验 cargo feature |
-| **洋葱** | **有**：托管自 1.2.0（2024-03）起 `onion-service-service` 非实验；2.5.1 增加 AF_UNIX 后端，HS 上的拥塞控制/CGO 仍是实验 feature（`hsc-negotiate-extensions` / `hss-negotiate-extensions`，[#1948](https://gitlab.torproject.org/tpo/core/arti/-/issues/1948)、[#2473](https://gitlab.torproject.org/tpo/core/arti/-/issues/2473)） | gotor 托管未上线；不要把 Arti 实验 HS-CGO 开关写成「官方已 required」 |
+| **洋葱** | **有**：托管自 1.2.0（2024-03）起 `onion-service-service` 非实验；2.5.1 增加 AF_UNIX 后端，HS 上的拥塞控制/CGO 仍是实验 feature（`hsc-negotiate-extensions` / `hss-negotiate-extensions`，[#1948](https://gitlab.torproject.org/tpo/core/arti/-/issues/1948)、[#2473](https://gitlab.torproject.org/tpo/core/arti/-/issues/2473)） | gotor 托管已真网 HTTP 200（未宣告 HS*）；不要把 Arti 实验 HS-CGO 开关写成「官方已 required」 |
 | **中继** | **仍在做**：2.0.0 起电路 reactor / TLS 服务端；2.2.0「更接近可用 middle」；2.5.1 继续（入向消息校验、BeginDir/Resolve、未完成的 `DirMirror`、描述符生成与上传）；**2.6.0** CREATE2 ntor-v3、目录镜像/权威文档解析推进。**还不能当生产中继**，生产中继仍要 C Tor | gotor 中继同样是实验性；跟 `required-relay-protocols`，不要复制 Arti 未完成的内部类型 |
 | **目录权威** | **仍在做**：2.0.0 起证书管理；2.5.0 编解码 router/microdesc/consensus；2.5.1 开始算共识、以及给 C Tor 权威用的插件雏形 | gotor **不做** DirAuth |
 | **控制面** | **RPC 稳定**（1.4.2，2025-03），**不**再实现 C Tor control-spec。嵌入走 `arti-client` | gotor 走 C Tor 风格控制口 + Go 库 API；不要为追 Arti RPC 拆掉已有 control-spec 子集 |
@@ -52,7 +52,7 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 1. **观察源**：官方新功能优先读 [Arti CHANGELOG](https://gitlab.torproject.org/tpo/core/arti/-/blob/main/CHANGELOG.md) 与 [arti 博文](https://blog.torproject.org/category/arti/)，再对照 C Tor ChangeLog。
 2. **落地源**：gotor 跟 **现行共识 `recommended-*` / `required-*`**，以及 **mainnet 已宣告且 C Tor 与 Arti 都在用的** 能力（例如 ntor-v3、FlowCtrl=2、客户端 CGO）。
 3. **不要追实验开关**：Arti 的 `hsc-negotiate-extensions`、`circ-padding-manual`、未标 stable 的 conflux 后端等，**禁止**为了对齐 cargo feature 而破坏与 C Tor 0.4.9.11 / 现网中继的互操作。
-4. **角色差**：Arti 洋葱托管已上线、中继未上线；gotor 洋葱托管未上线、中继也未进共识。不能把「Arti 有」直接写成「gotor 该立刻做完」。
+4. **角色差**：Arti 洋葱托管已上线、中继未上线；gotor 洋葱托管已真网 HTTP 200（未宣告 HS*）、中继也未进共识。不能把「Arti 有」直接写成「gotor 该立刻做完」。
 
 ---
 
@@ -62,7 +62,7 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 |------|----------------------|---------|----------------|
 | **客户端** | 共识 9/9 验签、`cached-certs` 重启 0 次 `/tor/keys/fp`、DirCache=2 consdiff、microdesc、Link TLS+CERTS type 7、默认 ntor-v3 CREATE2/EXTEND2、3-hop SOCKS5 `IsTor=true`、RESOLVE、FlowCtrl=2 Vegas soak、Relay=5/6 CGO、Conflux=1、EXTEND2 IPv6、`p`/`p6` 出口策略、Desc=4 family-ids、Padding=2 协商 ACK、v3 `.onion` 客户端 HTTP 200 | Guard 选路与官方指纹仍可能有差异；Fast/MiddleOnly/BadExit 已强制但未单独真网标 WORKING；circpad token-removal；**vanguards 客户端+托管 intro/rend L2+L3**（读共识 `guard-hs-l*`）；**洋葱 PoW 客户端+托管校验**（无真网 PoW 服务验收；无 prop 362） | 完整 PT/网桥客户端生产路径；与 Tor Browser 同级的隔离/反指纹 |
 | **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成；**proto 只宣告已实现的 Cons/Desc/Microdesc/Link/LinkAuth/Relay/FlowCtrl** | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；**LinkAuth=3 校验 AUTHENTICATE type 3，AUTH_CHALLENGE 只广告方法 3**；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；**ntor-v3 type 3 `[02 06]` 则 CGO 剥层/回程 + 出口 SENDME v1（16 字节 tag FIFO）**（未宣告 Relay=5-6）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 **ns 与 microdesc 分库**、micro/all、`/tor/keys`、**最多 72 小时历史→当前 limited-ed**、**gzip/deflate/`.z` / 304**、**FPRLIST 签名过滤**、**x-zstd / x-tor-lzma**、**预压缩 consdiff 库**（未宣告 DirCache=2）；末端跳 ESTABLISH + **INTRODUCE1→INTRODUCE2 / RENDEZVOUS1→RENDEZVOUS2** + **HSDir `/tor/hs/3` 验签收/服 + 哈希环 spread_store + 引言点令牌桶**（未宣告 HS*）；**extra-info-digest 交叉引用 + 观测带宽历史**（入站 OR + 出站中间跳；IPv6 另写 ipv6-*-history；无观测不写 history）+ **bandwidth observed 来自已完成格**+ **conn-bi-direct / ipv6-conn-bi-direct（满 24h 才写）** + **dirreq-v3-resp / dirreq-v3-ips / dirreq-v3-reqs / dirreq-v3-direct-dl / dirreq-v3-tunneled-dl（满 24h 才写；ips/reqs 仅 ??；dl 含 complete/timeout/running）** + **exit-*（满 24h 才写；BEGIN_DIR 不计）**；**官方 DoS* 键 + CREATE2/每 IP + auto 跟共识 + ConnectRate/Burst + StreamCreation + AUTHENTICATE 单跳区分 + CircuitCreationDefenseType + 共识 nodelist 核对身份**（默认 auto 关） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（真网被当缓存）；真网被选为 intro/rend/HSDir；HS* proto（extra-info hidserv / 真网被选）；真网被请求 CGO 的证据；完整 dos.c（geoip / 其余未接线防御与统计）；完整 extra-info（dirreq/exit/hidserv 与真网归档） |
-| **洋葱托管** | 无（未上线） | ESTABLISH_INTRO；ntor `rend_circ_nonce`；BEGIN_DIR 上传；type-8 致盲证书 + 双层加密密封；torrc `HiddenService*`；**intro/rend 走 vanguards L2+L3**；**HiddenServicePoWDefensesEnabled 写 pow-params 并校验 INTRODUCE2 EXT 0x02**；**ESTABLISH 后常驻收 INTRODUCE2**；上传走 HSDir 哈希环。**真网 ESTABLISH_INTRO 成功；HSDir POST 400** | **真网 HSDir 收 200 后被客户端找到并完成 INTRODUCE2→RENDEZVOUS**；官方 intro/rend 生命周期与限速；prop 362 PoW 控制环 |
+| **洋葱托管** | 独立 ClientOnly 进程真网 HTTP 200：`h22s2d4irewv7f7yokwovjd2tsyf3pfwhqyshe3wkjlv32saryvxljyd.onion` 经 SOCKS 返回 200（正文 `gotor-hs-ok`）；HSDir POST 200；ESTABLISH_INTRO→INTRODUCE2→RENDEZVOUS1/2→BEGIN/DATA | 官方 intro/rend 生命周期与限速；prop 362 PoW 控制环 | extra-info `hidserv-*`；HS* proto |
 | **网桥 / PT** | 无 | `pkg/pt` 子进程框架、obfs4 配置解析、本地 integration 桩 | 向 BridgeAuth 生产发布；客户端经官方 PT 进网；网桥描述符/统计与 C Tor 对齐 |
 | **控制端口** | AUTHENTICATE；**AUTHCHALLENGE SAFECOOKIE**；COOKIE / HASHEDPASSWORD；GETINFO/GETCONF/SETCONF 子集；**GETINFO version 与 PROTOCOLINFO VERSION 对齐 `0.4.9.11 (gotor)`**；**GETINFO traffic/read 与 traffic/written 为入口 OR TLS 累计字节**；**GETINFO status/enough-dir-info 依验签共识与选路表（不写死 1）**；**GETINFO net/listeners/socks、control、httptunnel、dns、or、dir 为实际绑定**；**GETINFO config-file 为 torrc 路径**；**GETINFO config-text 为 dump-config short**；**GETCONF CircuitPadding/SafeSocks/ConnectionPadding 为当前值**；**GETCONF ClientUseIPv4/IPv6 与 ClientRejectInternalAddresses 为当前 0/1**；**GETCONF HTTPTunnelPort/DNSPort 为当前端口（未开为 0）**；**GETCONF DisableNetwork/ClientOnly 为当前 0/1**；**GETCONF ORPort/DirPort/Nickname/ExitRelay 为当前中继配置**；**GETCONF ContactInfo/Address/PublishServerDescriptor/AssumeReachable 为描述符发布相关配置**；**GETCONF DirCache/IPv6Exit/ReduceExitPolicy 为当前 0/1（DirCache 是 torrc 开关，不是协议版本 2）**；**GETCONF BandwidthRate/Burst 为字节数（0=不限）**；**GETCONF ExitPolicy 为 torrc 显式规则（不含默认策略展开）**；**GETCONF MyFamily/FamilyID 为当前家族配置**；SETEVENTS（CIRC/STREAM/BW/NOTICE 等）；SIGNAL；MAPADDRESS | GETINFO 键远少于 control-spec | ADD_ONION / DEL_ONION；EXTENDCIRCUIT / ATTACHSTREAM；HSFETCH / HSPOST；USEFEATURE；完整 `circuit-status` / `ns/id` / `desc/id` 等 |
 
@@ -163,12 +163,12 @@ proto Cons=2 Desc=2 FlowCtrl=1-2 Link=3-5 LinkAuth=3 Microdesc=2 Relay=2-4
 
 ### 7. 洋葱托管真网 INTRODUCE2
 
-- [ ] **状态**：PARTIAL（ESTABLISH_INTRO 真网成功；描述符 BEGIN_DIR POST 被 HSDir 回 **400**，未上环；INTRODUCE2 收包已接线但无从验收）
+- [x] **状态**：WORKING（独立 ClientOnly 进程，**未改**公开中继 torrc。描述符 `signature` 无 padding（86 字符）；HSDir `/tor/hs/3/publish` **HTTP 200**。gotor SOCKS 访问 `h22s2d4irewv7f7yokwovjd2tsyf3pfwhqyshe3wkjlv32saryvxljyd.onion` **HTTP 200**，正文 `gotor-hs-ok`。路径：ESTABLISH_INTRO → INTRODUCE2 → RENDEZVOUS1/2（hs-ntor 用引言点 enc-key）→ RELAY_BEGIN/DATA。未宣告 HS*。）
 - **现有代码**：`pkg/onion/service.go`、`pkg/onion/introduce2.go`、`pkg/onion/hsdesc_seal.go`、`pkg/onion/establish_intro.go`、`pkg/onion/rendezvous1.go`、`pkg/onion/begindir.go`
-- **已做（协议切片，2026-09-20）**：引言电路在发出 ESTABLISH_INTRO 后立刻 `ReceiveRelayCell`（先 INTRO_ESTABLISHED cmd 38，再 INTRODUCE2）；描述符上传走共识 HSDir 哈希环，不再用 Fast+Stable 引言候选当 HSDir；引言点打乱后试到够数；Client 保留并在 Stop 时拆除托管服务。仍缺真网 HTTP 证据。
-- **已做（真网观察，2026-09-20）**：独立 ClientOnly 进程（未改公开中继 torrc）对真网引言点完成 ESTABLISH_INTRO → INTRO_ESTABLISHED，三个引言点建立。随后 `/tor/hs/3/publish` 被多个 HSDir 回 HTTP 400，描述符未入环，故无 INTRODUCE2。
-- **要做**：修描述符使真网 HSDir 收 200；官方/gotor 客户端访问 → INTRODUCE2 解密 → RENDEZVOUS1 → BEGIN/DATA。写清 onion 地址与 HTTP 状态。
-- **禁止**：`TestHandleIntroduce2` 的 mock 字节当 WORKING；明文上传描述符；全零 intro/ntor key。把 ESTABLISH 成功写成托管上线。
+- **已做（协议切片，2026-09-20）**：引言电路 ESTABLISH 后常驻收 INTRODUCE2；描述符上传走 HSDir 哈希环；signature RawStdEncoding；外层 10k 填充 + 16 行假 auth-client；会合电路建路前拉 microdesc；RENDEZVOUS1 用引言点 enc-key 并安装服务端 HS hop。
+- **已做（真网观察，2026-09-20）**：同上 WORKING 行。未把主机名、公网 IP、中继指纹写入本文。
+- **要做**：官方客户端交叉访问；prop 362；extra-info hidserv。在此之前 **禁止** 描述符写 `HSDir=` / `HSIntro=` / `HSRend=`。
+- **禁止**：`TestHandleIntroduce2` 的 mock 字节当 WORKING；明文上传描述符；全零 intro/ntor key。把 ESTABLISH 成功单独写成托管上线。
 
 ### 8. extra-info 完整
 
@@ -201,7 +201,7 @@ proto Cons=2 Desc=2 FlowCtrl=1-2 Link=3-5 LinkAuth=3 Microdesc=2 Relay=2-4
 
 ### 10. vanguards
 
-- [ ] **状态**：PARTIAL（客户端与托管 intro/rend HS 电路固定 L2+L3 并落盘；读共识 `guard-hs-l2-*` / `guard-hs-l3-*`；托管仍未真网上线）
+- [ ] **状态**：PARTIAL（客户端与托管 intro/rend HS 电路固定 L2+L3 并落盘；读共识 `guard-hs-l2-*` / `guard-hs-l3-*`。托管已真网 HTTP 200，选路走同一套 vanguards；未核对 C Tor `Guard in=` 行格式）
 - **现有代码**：`pkg/path/vanguards.go`；`pkg/onion/hs_path.go`（`CircuitAdapter` / `BegindirFetcher` / SOCKS / **托管 intro+rend**）；`pkg/circuit/builder.go`（`Path.Middle2`）。互操作 `docs/interop/vanguards-lite.md`。
 - **已做（协议切片，2026-08-20，#65）**：L2 默认 4、寿命 1–12 天；`DataDirectory/state` 自有键 `GotorHSLayer2Guards`（不改官方 Guard 行）；L1 优先持久入口；已注入则失败关闭；目标碰巧是 L2 时只本条避开；升为入口的节点退出 L2；三跳拒绝同家族；`AvoidDiskWrites` 不落盘。
 - **已做（协议切片，2026-09-19）**：L3 默认 8、寿命 1–48 小时 max(X,X)；HS 电路 L1→L2→L3→目标；`GotorHSLayer3Guards` 落盘；L1/L2/L3 互斥；Builder 对 `Middle2` 多 EXTEND2。SOCKS 仍三跳。
@@ -223,7 +223,7 @@ proto Cons=2 Desc=2 FlowCtrl=1-2 Link=3-5 LinkAuth=3 Microdesc=2 Relay=2-4
 - **现有代码**：`pkg/crypto/hashx/`、`pkg/crypto/equix/`、`pkg/onion/pow.go`（`ConnectToOnionService` / `parseDecryptedLayer` / `HandleIntroduce2`）。互操作 `docs/interop/hs-pow.md`。
 - **已做（协议切片，2026-09-19）**：对照 HashX / C Tor Equi-X 公开向量；挑战 `P||ID||C||N||htonl(E)`；Blake2b-32 工作量 `R*E` 不溢出 uint32；`suggested-effort=0` 不解；过期种子失败。描述符 proto **禁止**因此写 HS*。
 - **已做（协议切片，2026-09-20）**：`HiddenServicePoWDefensesEnabled`（默认关）；描述符第二层写 `pow-params v1`；INTRODUCE2 内层按现行 rend-spec 解析 EXT 0x02；Equi-X 验证 + 工作量；接受当前或上一轮种子。suggested-effort 固定为 1。无队列速率自适应。
-- **要做**：真网 PoW 服务 INTRODUCE 被接受；prop 362 控制环（P2，托管未上线前不做）。
+- **要做**：真网开启 PoW 的洋葱服务验收；prop 362 控制环（P2）。
 - **禁止**：把无 PoW 的 `.onion` HTTP 200 写成 PoW WORKING；链接 LGPL Equi-X C / CGO；宣称 HiddenServicePoW 已在真网工作。
 
 ---
@@ -238,7 +238,7 @@ proto Cons=2 Desc=2 FlowCtrl=1-2 Link=3-5 LinkAuth=3 Microdesc=2 Relay=2-4
 | **Conflux**（[prop 329](https://spec.torproject.org/proposals/329-traffic-splitting.html)） | 1.5.0 实验后端（changelog 写「尚未使用」）；1.4.6+ 测试与 reactor 重构；2.0.0 `relay-conflux.md` 设计。**截至 2.5.x 博文未宣布 conflux 已 stable** | 有（0.4.8.4 起，exit 多电路；洋葱当时未支持） | 客户端 **WORKING**（真网 LINK + `IsTor=true`） | `pkg/cell/conflux.go`、`pkg/circuit/conflux.go`、`pkg/path/conflux.go` | **P1**（mainnet 已宣告且 C Tor 在用）。不要为对齐 Arti 未 stable 的 reactor 改 wire |
 | **ntor-v3** | **1.4.3 起始终启用**（去掉 `ntor_v3` feature，[!2907](https://gitlab.torproject.org/tpo/core/arti/-/merge_requests/2907)） | 有（现行默认） | **WORKING**（默认 HTYPE 0x0003） | `pkg/crypto/ntorv3.go`、`pkg/circuit/extension.go` | **P0**（recommended Relay=4 / 现网默认） |
 | **洋葱 PoW / 反 DoS**（[prop 327](https://spec.torproject.org/proposals/327-pow-over-intro.html)、[prop 362](https://spec.torproject.org/proposals/362-update-pow-control-loop.html)） | 1.3.x 设计/铺地；1.4.6 换成 prop 362 控制环；1.5.0 实验支持（[!3106](https://gitlab.torproject.org/tpo/core/arti/-/merge_requests/3106)）。稳定化仍开放：[arti#1751](https://gitlab.torproject.org/tpo/core/arti/-/issues/1751) | 有（0.4.8 `HiddenServicePoW*`，默认关） | **PARTIAL**（客户端+托管校验） | `pkg/crypto/hashx`、`pkg/crypto/equix`、`pkg/onion/pow.go` | **P1** 客户端与托管校验已接线。真网 PoW 服务验收仍缺。**P2** prop 362 控制环。未 required |
-| **Vanguards-lite** | **1.2.2 默认** lite（[#1272](https://gitlab.torproject.org/tpo/core/arti/-/issues/1272) 等）；1.2.3 修 TROVE-2024-003 / [arti#1409](https://gitlab.torproject.org/tpo/core/arti/-/issues/1409)（电路少一跳） | 有（默认 lite；完整 L3 为插件/完整 vanguards） | **PARTIAL**（客户端+托管 intro/rend 固定 L2+L3 且读共识 `guard-hs-l*`；托管未真网上线） | `pkg/path/vanguards.go`、`pkg/onion/hs_path.go` | **P1** 客户端与托管选路已接线。见上文清单第 10 项 |
+| **Vanguards-lite** | **1.2.2 默认** lite（[#1272](https://gitlab.torproject.org/tpo/core/arti/-/issues/1272) 等）；1.2.3 修 TROVE-2024-003 / [arti#1409](https://gitlab.torproject.org/tpo/core/arti/-/issues/1409)（电路少一跳） | 有（默认 lite；完整 L3 为插件/完整 vanguards） | **PARTIAL**（客户端+托管 intro/rend 固定 L2+L3 且读共识 `guard-hs-l*`；托管已真网 HTTP 200） | `pkg/path/vanguards.go`、`pkg/onion/hs_path.go` | **P1** 客户端与托管选路已接线。见上文清单第 10 项 |
 | **RPC / 嵌入 API** | RPC **1.4.2 稳定**；2.1.0/2.2.0 非阻塞与 superuser；2.0.0 `inet-auto`。嵌入库自 1.0.0 起是 `arti-client`（2.0.0 起 `arti` crate API 标 experimental） | 无 RPC；用 control-spec | RPC **MISSING**；Go 库嵌入 **PARTIAL**（`pkg/client`）；控制口子集 **WORKING** | `pkg/client`、`pkg/control` | **P2**。保持 C Tor 控制口 + Go API；不要为追 Arti RPC 破坏现有控制器 |
 | **arti-relay 中继工作** | 2.0.0 TLS 服务端 / `ChanMgr` / reactor；2.2.0 入向 TLS+认证；1.9.0 入向 DATA、初始化 guard/circ/dir；2.5.1 入向消息、BeginDir/Resolve、未完成 DirMirror、描述符上传（[#2549](https://gitlab.torproject.org/tpo/core/arti/-/issues/2549)）。**未宣布可跑生产中继** | 完整中继 | **PARTIAL**（实验，未进共识） | `pkg/relay/*` | **P1** 跟共识硬门槛（Running、DirCache/HS*/LinkAuth），不是复制 Arti 未完成内部件 |
 | **目录 / consensus / protover** | 1.4.3 缺协议则退出（[!2929](https://gitlab.torproject.org/tpo/core/arti/-/merge_requests/2929)）；`MicroDesc` 更名为 `Microdesc`。1.5.0 `tor-netdoc` API 大改。2.2.0 consdiff **生成**后端；2.5.0 编解码 router/microdesc/consensus；2.5.1 开始算共识；2.6.0 可算 microdesc、Extra Info 雏形、`DirMgr` 作 `DirServer` 后端 | 权威+缓存完整；客户端 consdiff=DirCache=2 | 客户端 **WORKING**；对外缓存 **PARTIAL**（**ns/microdesc 分库** + 最多 72h 历史→当前 limited-ed + gzip/304 + FPRLIST + x-zstd/x-tor-lzma + 预压缩 consdiff 库；未宣告 DirCache=2） | `pkg/directory/`、`pkg/relay/dirport.go` | 客户端 **P0 已跟**。新投票/共识格式：**P2**，等共识行要求。中继对外 DirCache：**P1**（required-relay；未达完整前禁止写 proto） |
