@@ -43,6 +43,10 @@ The following configuration parameters can be queried via GETCONF:
 - `DirPort` - 目录缓存 HTTP 端口（0=不监听）
 - `Nickname` - 中继昵称
 - `ExitRelay` - 是否作为出口中继（0/1）
+- `ContactInfo` - 中继联系信息
+- `Address` - 对外宣告地址
+- `PublishServerDescriptor` - 是否尝试发布描述符（0/1）
+- `AssumeReachable` - 跳过 ORPort 可达性探测（0/1）
 - `DataDirectory` - Directory for persistent state
 - `ConnLimit` - Max concurrent connections
 - `DormantTimeout` - Time before entering dormant mode
