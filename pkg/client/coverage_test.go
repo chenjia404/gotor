@@ -46,6 +46,8 @@ func TestStatsGetters(t *testing.T) {
 		EnoughDirInfo:       true,
 		SocksListener:       "0.0.0.0:9050",
 		ControlListener:     "127.0.0.1:9051",
+		HTTPTunnelListener:  "127.0.0.1:9080",
+		DNSListener:         "127.0.0.1:5353",
 		ConfigFile:          "/etc/tor/torrc",
 	}
 
@@ -107,6 +109,12 @@ func TestStatsGetters(t *testing.T) {
 	}
 	if stats.GetControlListener() != "127.0.0.1:9051" {
 		t.Errorf("GetControlListener() = %q", stats.GetControlListener())
+	}
+	if stats.GetHTTPTunnelListener() != "127.0.0.1:9080" {
+		t.Errorf("GetHTTPTunnelListener() = %q", stats.GetHTTPTunnelListener())
+	}
+	if stats.GetDNSListener() != "127.0.0.1:5353" {
+		t.Errorf("GetDNSListener() = %q", stats.GetDNSListener())
 	}
 	if stats.GetConfigFile() != "/etc/tor/torrc" {
 		t.Errorf("GetConfigFile() = %q", stats.GetConfigFile())
@@ -172,6 +180,12 @@ func TestStatsGettersZeroValues(t *testing.T) {
 	}
 	if stats.GetSocksListener() != "" {
 		t.Errorf("GetSocksListener() = %q, want empty", stats.GetSocksListener())
+	}
+	if stats.GetHTTPTunnelListener() != "" {
+		t.Errorf("GetHTTPTunnelListener() = %q, want empty", stats.GetHTTPTunnelListener())
+	}
+	if stats.GetDNSListener() != "" {
+		t.Errorf("GetDNSListener() = %q, want empty", stats.GetDNSListener())
 	}
 	if stats.GetConfigFile() != "" {
 		t.Errorf("GetConfigFile() = %q, want empty", stats.GetConfigFile())

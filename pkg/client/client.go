@@ -1068,6 +1068,8 @@ func (c *Client) GetStats() Stats {
 		UptimeSeconds:       metricsSnap.UptimeSeconds,
 		SocksListener:       listenerFromConfig(c.config.SocksListenAddr, c.config.SocksPort, c.config.SocksUnixPath, c.config.SocksUnixPath != ""),
 		ControlListener:     listenerFromConfig(c.config.ControlListenAddr, c.config.ControlPort, c.config.ControlSocket, c.config.ControlSocket != "" && c.config.ControlPort <= 0),
+		HTTPTunnelListener:  listenerFromConfig(c.config.HTTPTunnelListenAddr, c.config.HTTPTunnelPort, "", false),
+		DNSListener:         listenerFromConfig(c.config.DNSPortListenAddr, c.config.DNSPort, "", false),
 		ConfigFile:          c.config.ConfigFile,
 	}
 
@@ -1131,8 +1133,10 @@ type Stats struct {
 	EnoughDirInfo bool
 
 	// GETINFO net/listeners/*：实际绑定地址（TCP host:port 或 unix 路径）
-	SocksListener   string
-	ControlListener string
+	SocksListener      string
+	ControlListener    string
+	HTTPTunnelListener string
+	DNSListener        string
 
 	// GETINFO config-file：torrc 路径；未用文件则为空（不得用 DataDirectory 冒充）
 	ConfigFile string
@@ -1219,6 +1223,16 @@ func (s Stats) GetSocksListener() string {
 // GetControlListener 返回控制口实际绑定（TCP 或 unix 路径）。
 func (s Stats) GetControlListener() string {
 	return s.ControlListener
+}
+
+// GetHTTPTunnelListener 返回 HTTPTunnelPort 实际绑定；未开则为空。
+func (s Stats) GetHTTPTunnelListener() string {
+	return s.HTTPTunnelListener
+}
+
+// GetDNSListener 返回 DNSPort 实际绑定；未开则为空。
+func (s Stats) GetDNSListener() string {
+	return s.DNSListener
 }
 
 // GetConfigFile 返回实际 torrc 路径；空表示未从文件加载。

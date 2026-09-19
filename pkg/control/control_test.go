@@ -30,6 +30,8 @@ type mockClientGetter struct {
 	enoughDirInfo       bool
 	socksListener       string
 	controlListener     string
+	httpTunnelListener  string
+	dnsListener         string
 	configFile          string
 	config              map[string]string
 }
@@ -146,6 +148,14 @@ func (m *mockClientGetter) GetSocksListener() string {
 
 func (m *mockClientGetter) GetControlListener() string {
 	return m.controlListener
+}
+
+func (m *mockClientGetter) GetHTTPTunnelListener() string {
+	return m.httpTunnelListener
+}
+
+func (m *mockClientGetter) GetDNSListener() string {
+	return m.dnsListener
 }
 
 func (m *mockClientGetter) GetConfigFile() string {
@@ -859,6 +869,7 @@ func TestGetInfoNames(t *testing.T) {
 		"status/circuit-builds",
 		"status/guards/active",
 		"net/listeners/socks",
+		"net/listeners/httptunnel",
 		"info/names",
 	}
 
@@ -1005,6 +1016,52 @@ func TestGetInfoListenersUsesBindAddr(t *testing.T) {
 	got = readResponse(t, reader)
 	if !strings.HasPrefix(got, "250 net/listeners/control=/tmp/gotor.control") {
 		t.Fatalf("控制口 unix 应报路径: %s", got)
+	}
+}
+
+func TestGetInfoHTTPTunnelAndDNSListeners(t *testing.T) {
+	server, mock := setupTestServer(t)
+	conn := connectToServer(t, server)
+	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+	readResponse(t, reader)
+	writer.WriteString("AUTHENTICATE\r\n")
+	writer.Flush()
+	readResponse(t, reader)
+
+	writer.WriteString("GETINFO net/listeners/httptunnel\r\n")
+	writer.Flush()
+	got := readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 net/listeners/httptunnel=") {
+		t.Fatalf("未开 HTTPTunnel 也应识别键: %s", got)
+	}
+	if strings.Contains(got, "127.0.0.1") {
+		t.Fatalf("未监听不得编造 HTTPTunnel 地址: %s", got)
+	}
+
+	writer.WriteString("GETINFO net/listeners/dns\r\n")
+	writer.Flush()
+	got = readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 net/listeners/dns=") {
+		t.Fatalf("未开 DNSPort 也应识别键: %s", got)
+	}
+	if strings.Contains(got, "127.0.0.1") {
+		t.Fatalf("未监听不得编造 DNS 地址: %s", got)
+	}
+
+	mock.httpTunnelListener = "127.0.0.1:9080"
+	mock.dnsListener = "127.0.0.1:5353"
+	writer.WriteString("GETINFO net/listeners/httptunnel\r\n")
+	writer.Flush()
+	got = readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 net/listeners/httptunnel=127.0.0.1:9080") {
+		t.Fatalf("HTTPTunnel 应报绑定: %s", got)
+	}
+	writer.WriteString("GETINFO net/listeners/dns\r\n")
+	writer.Flush()
+	got = readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 net/listeners/dns=127.0.0.1:5353") {
+		t.Fatalf("DNSPort 应报绑定: %s", got)
 	}
 }
 

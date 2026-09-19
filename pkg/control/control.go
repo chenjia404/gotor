@@ -97,6 +97,8 @@ type StatsProvider interface {
 	GetEnoughDirInfo() bool
 	GetSocksListener() string
 	GetControlListener() string
+	GetHTTPTunnelListener() string
+	GetDNSListener() string
 	GetConfigFile() string
 }
 
@@ -652,6 +654,10 @@ func (s *Server) getInfoValue(key string, stats StatsProvider) (string, bool) {
 		return stats.GetSocksListener(), true
 	case "net/listeners/control":
 		return stats.GetControlListener(), true
+	case "net/listeners/httptunnel":
+		return stats.GetHTTPTunnelListener(), true
+	case "net/listeners/dns":
+		return stats.GetDNSListener(), true
 
 	// Help information
 	case "info/names":
@@ -687,6 +693,8 @@ func (s *Server) getInfoNames() string {
 		"config-file",
 		"net/listeners/socks",
 		"net/listeners/control",
+		"net/listeners/httptunnel",
+		"net/listeners/dns",
 		"info/names",
 		"events/names",
 	}

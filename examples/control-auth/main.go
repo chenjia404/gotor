@@ -173,6 +173,14 @@ func (m *mockClientGetter) GetConfigFile() string {
 	return ""
 }
 
+func (m *mockClientGetter) GetHTTPTunnelListener() string {
+	return ""
+}
+
+func (m *mockClientGetter) GetDNSListener() string {
+	return ""
+}
+
 func (m *mockClientGetter) GetConfig() control.ConfigProvider {
 	return nil // No config needed for this demo
 }
