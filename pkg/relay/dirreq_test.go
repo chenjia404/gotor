@@ -65,6 +65,8 @@ func TestDirReqEmitsAfter24h(t *testing.T) {
 	s.NoteHTTP(http.StatusOK, false, "192.0.2.1:1")
 	s.NoteHTTP(http.StatusNotFound, false, "192.0.2.1:1")
 	s.NoteHTTP(http.StatusNotModified, false, "192.0.2.1:1")
+	id := s.NoteStart(false)
+	s.NoteFinish(id, http.StatusOK)
 	clk.t = clk.t.Add(24 * time.Hour)
 	got := s.StatsMap()
 	end := got["dirreq-stats-end"]
@@ -148,8 +150,12 @@ func TestDirReq404OmitsDL(t *testing.T) {
 func TestDirReqDirectAndTunneledComplete(t *testing.T) {
 	clk := &dirreqClock{t: time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)}
 	s := newDirReqStats(clk.Now)
+	id1 := s.NoteStart(false)
 	s.NoteHTTP(http.StatusOK, false, "192.0.2.1:1")
+	s.NoteFinish(id1, http.StatusOK)
+	id2 := s.NoteStart(true)
 	s.NoteHTTP(http.StatusOK, true, "192.0.2.9:9001")
+	s.NoteFinish(id2, http.StatusOK)
 	clk.t = clk.t.Add(24 * time.Hour)
 	got := s.StatsMap()
 	if got["dirreq-v3-direct-dl"] != "complete=1" {
@@ -194,12 +200,18 @@ func TestDirCacheBeginDirNotesTunneled(t *testing.T) {
 	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 		t.Fatal(err)
 	}
-	s.dirreq.mu.Lock()
-	dOK, tOK := s.dirreq.directOK, s.dirreq.tunneledOK
-	s.dirreq.mu.Unlock()
-	if dOK != 1 || tOK != 1 {
-		t.Fatalf("DirPort complete=%d BEGIN_DIR complete=%d", dOK, tOK)
+	deadline := time.Now().Add(2 * time.Second)
+	var dOK, tOK uint64
+	for time.Now().Before(deadline) {
+		s.dirreq.mu.Lock()
+		dOK, tOK = s.dirreq.directOK, s.dirreq.tunneledOK
+		s.dirreq.mu.Unlock()
+		if dOK == 1 && tOK == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	t.Fatalf("DirPort complete=%d BEGIN_DIR complete=%d", dOK, tOK)
 }
 
 func TestRoundUp8(t *testing.T) {
@@ -298,11 +310,60 @@ func TestDirCacheDialFromNotesORAddr(t *testing.T) {
 	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 		t.Fatal(err)
 	}
-	s.dirreq.mu.Lock()
-	_, ok := s.dirreq.ips["198.51.100.9"]
-	nreq := s.dirreq.reqs
-	s.dirreq.mu.Unlock()
-	if !ok || nreq != 1 {
-		t.Fatalf("BEGIN_DIR 应对相邻 OR 计 unique IP, ok=%v reqs=%d", ok, nreq)
+	deadline := time.Now().Add(2 * time.Second)
+	var ok bool
+	var nreq uint64
+	for time.Now().Before(deadline) {
+		s.dirreq.mu.Lock()
+		_, ok = s.dirreq.ips["198.51.100.9"]
+		nreq = s.dirreq.reqs
+		s.dirreq.mu.Unlock()
+		if ok && nreq == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("BEGIN_DIR 应对相邻 OR 计 unique IP, ok=%v reqs=%d", ok, nreq)
+}
+
+func TestDirReqDLTimeoutAfter10min(t *testing.T) {
+	clk := &dirreqClock{t: time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)}
+	s := newDirReqStats(clk.Now)
+	id := s.NoteStart(false)
+	clk.t = clk.t.Add(10 * time.Minute)
+	s.NoteFinish(id, http.StatusOK)
+	clk.t = time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	got := s.StatsMap()
+	if got["dirreq-v3-direct-dl"] != "timeout=1" {
+		t.Fatalf("满 10 分钟未完成应 timeout: %q", got["dirreq-v3-direct-dl"])
+	}
+	if strings.Contains(got["dirreq-v3-direct-dl"], "complete=") {
+		t.Fatalf("已 timeout 不得再记 complete: %v", got)
+	}
+}
+
+func TestDirReqDLRunningAtPeriodEnd(t *testing.T) {
+	clk := &dirreqClock{t: time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)}
+	s := newDirReqStats(clk.Now)
+	clk.t = clk.t.Add(23*time.Hour + 55*time.Minute)
+	_ = s.NoteStart(true)
+	clk.t = time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	got := s.StatsMap()
+	if got["dirreq-v3-tunneled-dl"] != "running=1" {
+		t.Fatalf("期末未满 10 分钟应 running: %q", got["dirreq-v3-tunneled-dl"])
+	}
+	if _, ok := got["dirreq-v3-direct-dl"]; ok {
+		t.Fatalf("不得写 direct: %v", got)
+	}
+}
+
+func TestDirReqDLTimeoutNotRunning(t *testing.T) {
+	clk := &dirreqClock{t: time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)}
+	s := newDirReqStats(clk.Now)
+	_ = s.NoteStart(false)
+	clk.t = clk.t.Add(24 * time.Hour)
+	got := s.StatsMap()
+	if got["dirreq-v3-direct-dl"] != "timeout=1" {
+		t.Fatalf("跨窗仍在传且已满 10 分钟应 timeout 而非 running: %q", got["dirreq-v3-direct-dl"])
 	}
 }

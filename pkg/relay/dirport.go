@@ -74,9 +74,13 @@ func (d *DirCacheServer) handler() http.Handler {
 			req = clone
 		}
 		if d.dirreq != nil && isV3NetworkStatusPath(req.URL.Path) {
+			tunneled := isDirreqTunneled(req)
+			id := d.dirreq.NoteStart(tunneled)
 			cap := &dirreqCapture{ResponseWriter: w}
 			mux.ServeHTTP(cap, req)
-			d.dirreq.NoteHTTP(cap.code(), isDirreqTunneled(req), dirreqRemote(req))
+			code := cap.code()
+			d.dirreq.NoteHTTP(code, tunneled, dirreqRemote(req))
+			d.dirreq.NoteFinish(id, code)
 			return
 		}
 		mux.ServeHTTP(w, req)

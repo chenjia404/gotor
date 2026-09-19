@@ -11,43 +11,58 @@ import (
 )
 
 const dirreqPeriod = 24 * time.Hour
+const dirreqDLTimeout = 10 * time.Minute
+
+type dirreqInflight struct {
+	start    time.Time
+	tunneled bool
+	timedOut bool
+}
 
 type dirreqCompleted struct {
-	end         time.Time
-	nsec        int
-	served      uint64
-	ok          uint64
-	notEnough   uint64
-	unavailable uint64
-	notFound    uint64
-	notModified uint64
-	busy        uint64
-	directOK    uint64
-	tunneledOK  uint64
-	uniqueIPs   uint64
-	reqs        uint64
+	end             time.Time
+	nsec            int
+	served          uint64
+	ok              uint64
+	notEnough       uint64
+	unavailable     uint64
+	notFound        uint64
+	notModified     uint64
+	busy            uint64
+	directOK        uint64
+	tunneledOK      uint64
+	directTimeout   uint64
+	tunneledTimeout uint64
+	directRunning   uint64
+	tunneledRunning uint64
+	uniqueIPs       uint64
+	reqs            uint64
 }
 
 // DirReqStats 统计 v3 网络状态请求的 HTTP 应答（dirreq-v3-resp）、
-// DirPort / BEGIN_DIR 完成次数（dirreq-v3-*-dl 的 complete），
+// DirPort / BEGIN_DIR 下载 complete/timeout/running（dirreq-v3-*-dl），
 // 以及无法映射国家时的 ips/reqs（仅 ??）。
 // 满 24h 且该窗有计数才写入 extra-info；无 geoip，不写国家码；不写下载分位数。
 type DirReqStats struct {
-	mu          sync.Mutex
-	now         func() time.Time
-	periodStart time.Time
-	served      uint64
-	ok          uint64
-	notEnough   uint64
-	unavailable uint64
-	notFound    uint64
-	notModified uint64
-	busy        uint64
-	directOK    uint64
-	tunneledOK  uint64
-	reqs        uint64
-	ips         map[string]struct{}
-	completed   *dirreqCompleted
+	mu              sync.Mutex
+	now             func() time.Time
+	periodStart     time.Time
+	served          uint64
+	ok              uint64
+	notEnough       uint64
+	unavailable     uint64
+	notFound        uint64
+	notModified     uint64
+	busy            uint64
+	directOK        uint64
+	tunneledOK      uint64
+	directTimeout   uint64
+	tunneledTimeout uint64
+	reqs            uint64
+	ips             map[string]struct{}
+	inflight        map[uint64]*dirreqInflight
+	nextID          uint64
+	completed       *dirreqCompleted
 }
 
 func NewDirReqStats() *DirReqStats {
@@ -94,12 +109,12 @@ func dirreqRemote(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// NoteHTTP 按应答状态计入当前 24h 窗。tunneled 为 BEGIN_DIR；非 v3 目录应答码忽略。
-// remote 为 DirPort 对端或 BEGIN_DIR 相邻 OR；无 geoip 一律记入 ??。
+// NoteHTTP 按应答状态计入当前 24h 窗的 resp/ips/reqs。tunneled 保留以匹配调用方；下载 complete 由 NoteFinish 计。
 func (s *DirReqStats) NoteHTTP(status int, tunneled bool, remote string) {
 	if s == nil {
 		return
 	}
+	_ = tunneled
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rotateLocked(s.now())
@@ -107,11 +122,6 @@ func (s *DirReqStats) NoteHTTP(status int, tunneled bool, remote string) {
 	case http.StatusOK, 0:
 		s.served++
 		s.ok++
-		if tunneled {
-			s.tunneledOK++
-		} else {
-			s.directOK++
-		}
 	case http.StatusNotModified:
 		s.notModified++
 	case http.StatusNotFound:
@@ -123,6 +133,78 @@ func (s *DirReqStats) NoteHTTP(status int, tunneled bool, remote string) {
 	}
 	s.reqs++
 	s.noteIPLocked(remote)
+}
+
+// NoteStart 开始发送 v3 网络状态应答。返回 inflight id，供 NoteFinish。
+func (s *DirReqStats) NoteStart(tunneled bool) uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rotateLocked(s.now())
+	s.nextID++
+	id := s.nextID
+	if s.inflight == nil {
+		s.inflight = make(map[uint64]*dirreqInflight)
+	}
+	s.inflight[id] = &dirreqInflight{start: s.now(), tunneled: tunneled}
+	return id
+}
+
+// NoteFinish 结束一次下载。HTTP 200 且未满 10 分钟才记 complete；已 timeout 的不再记 complete。
+func (s *DirReqStats) NoteFinish(id uint64, status int) {
+	if s == nil || id == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rotateLocked(s.now())
+	inf := s.inflight[id]
+	if inf == nil {
+		return
+	}
+	delete(s.inflight, id)
+	if inf.timedOut {
+		return
+	}
+	if status == http.StatusOK || status == 0 {
+		if inf.tunneled {
+			s.tunneledOK++
+		} else {
+			s.directOK++
+		}
+	}
+}
+
+func (s *DirReqStats) scanTimeoutsLocked(now time.Time) {
+	for _, inf := range s.inflight {
+		if inf == nil || inf.timedOut {
+			continue
+		}
+		if now.Sub(inf.start) >= dirreqDLTimeout {
+			inf.timedOut = true
+			if inf.tunneled {
+				s.tunneledTimeout++
+			} else {
+				s.directTimeout++
+			}
+		}
+	}
+}
+
+func (s *DirReqStats) runningCountsLocked() (direct, tunneled uint64) {
+	for _, inf := range s.inflight {
+		if inf == nil || inf.timedOut {
+			continue
+		}
+		if inf.tunneled {
+			tunneled++
+		} else {
+			direct++
+		}
+	}
+	return
 }
 
 func (s *DirReqStats) noteIPLocked(remote string) {
@@ -156,7 +238,7 @@ func dirreqIPKey(remote string) string {
 	return ip.String()
 }
 
-// StatsMap 返回已完成窗的 dirreq-stats-end、ips/reqs（仅 ??）、resp 以及有 complete 时的 *-dl。无观测则空。
+// StatsMap 返回已完成窗的 dirreq-stats-end、ips/reqs（仅 ??）、resp 以及 *-dl（complete/timeout/running）。无观测则空。
 func (s *DirReqStats) StatsMap() map[string]string {
 	if s == nil {
 		return nil
@@ -169,13 +251,14 @@ func (s *DirReqStats) StatsMap() map[string]string {
 	}
 	c := s.completed
 	resp := formatDirReqResp(c)
-	if resp == "" {
+	direct := formatDirReqDL(c.directOK, c.directTimeout, c.directRunning)
+	tunneled := formatDirReqDL(c.tunneledOK, c.tunneledTimeout, c.tunneledRunning)
+	if resp == "" && direct == "" && tunneled == "" {
 		return nil
 	}
 	out := map[string]string{
 		"dirreq-stats-end": fmt.Sprintf("%s (%d s)",
 			c.end.UTC().Format("2006-01-02 15:04:05"), c.nsec),
-		"dirreq-v3-resp": resp,
 	}
 	if c.uniqueIPs > 0 {
 		out["dirreq-v3-ips"] = fmt.Sprintf("??=%d", roundUp8(c.uniqueIPs))
@@ -183,16 +266,20 @@ func (s *DirReqStats) StatsMap() map[string]string {
 	if c.reqs > 0 {
 		out["dirreq-v3-reqs"] = fmt.Sprintf("??=%d", roundUp8(c.reqs))
 	}
-	if c.directOK > 0 {
-		out["dirreq-v3-direct-dl"] = fmt.Sprintf("complete=%d", c.directOK)
+	if resp != "" {
+		out["dirreq-v3-resp"] = resp
 	}
-	if c.tunneledOK > 0 {
-		out["dirreq-v3-tunneled-dl"] = fmt.Sprintf("complete=%d", c.tunneledOK)
+	if direct != "" {
+		out["dirreq-v3-direct-dl"] = direct
+	}
+	if tunneled != "" {
+		out["dirreq-v3-tunneled-dl"] = tunneled
 	}
 	return out
 }
 
 func (s *DirReqStats) rotateLocked(now time.Time) {
+	s.scanTimeoutsLocked(now)
 	end := s.periodStart.Add(dirreqPeriod)
 	if now.Before(end) {
 		return
@@ -202,23 +289,28 @@ func (s *DirReqStats) rotateLocked(now time.Time) {
 		if nsec <= 0 {
 			nsec = int(dirreqPeriod.Seconds())
 		}
+		dRun, tRun := s.runningCountsLocked()
 		s.completed = &dirreqCompleted{
-			end:         end.UTC(),
-			nsec:        nsec,
-			served:      s.served,
-			ok:          s.ok,
-			notEnough:   s.notEnough,
-			unavailable: s.unavailable,
-			notFound:    s.notFound,
-			notModified: s.notModified,
-			busy:        s.busy,
-			directOK:    s.directOK,
-			tunneledOK:  s.tunneledOK,
-			uniqueIPs:   uint64(len(s.ips)),
-			reqs:        s.reqs,
+			end:             end.UTC(),
+			nsec:            nsec,
+			served:          s.served,
+			ok:              s.ok,
+			notEnough:       s.notEnough,
+			unavailable:     s.unavailable,
+			notFound:        s.notFound,
+			notModified:     s.notModified,
+			busy:            s.busy,
+			directOK:        s.directOK,
+			tunneledOK:      s.tunneledOK,
+			directTimeout:   s.directTimeout,
+			tunneledTimeout: s.tunneledTimeout,
+			directRunning:   dRun,
+			tunneledRunning: tRun,
+			uniqueIPs:       uint64(len(s.ips)),
+			reqs:            s.reqs,
 		}
 	}
-	// 空档不补零；当前窗对齐到 now。
+	// 空档不补零；当前窗对齐到 now。inflight 跨窗保留。
 	unix := now.Unix()
 	nsec := int64(dirreqPeriod.Seconds())
 	s.periodStart = time.Unix((unix/nsec)*nsec, 0).UTC()
@@ -228,12 +320,29 @@ func (s *DirReqStats) rotateLocked(now time.Time) {
 	s.served, s.ok, s.notEnough, s.unavailable = 0, 0, 0, 0
 	s.notFound, s.notModified, s.busy = 0, 0, 0
 	s.directOK, s.tunneledOK = 0, 0
+	s.directTimeout, s.tunneledTimeout = 0, 0
 	s.reqs = 0
 	s.ips = nil
 }
 
 func (s *DirReqStats) hasCountsLocked() bool {
-	return s.served+s.ok+s.notEnough+s.unavailable+s.notFound+s.notModified+s.busy+s.reqs > 0
+	dRun, tRun := s.runningCountsLocked()
+	return s.served+s.ok+s.notEnough+s.unavailable+s.notFound+s.notModified+s.busy+s.reqs+
+		s.directOK+s.tunneledOK+s.directTimeout+s.tunneledTimeout+dRun+tRun > 0
+}
+
+func formatDirReqDL(complete, timeout, running uint64) string {
+	parts := make([]string, 0, 3)
+	if complete > 0 {
+		parts = append(parts, fmt.Sprintf("complete=%d", complete))
+	}
+	if timeout > 0 {
+		parts = append(parts, fmt.Sprintf("timeout=%d", timeout))
+	}
+	if running > 0 {
+		parts = append(parts, fmt.Sprintf("running=%d", running))
+	}
+	return strings.Join(parts, ",")
 }
 
 func roundUp8(n uint64) uint64 {
