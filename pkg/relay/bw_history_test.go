@@ -238,3 +238,22 @@ func TestBandwidthHistoryEmptyPersistLeavesOfficialKeys(t *testing.T) {
 		t.Fatalf("无新观测时不得覆盖官方 BWHistory: %q", v)
 	}
 }
+
+func TestORListenerSetBandwidthHistoryWiresExtender(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := NewORListener(DefaultORListenerConfig("127.0.0.1:0", keys), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hist := NewBandwidthHistory()
+	ln.SetBandwidthHistory(hist)
+	if ln.circuitHandler == nil || ln.circuitHandler.extender == nil {
+		t.Fatal("listener 应有 EXTEND 处理")
+	}
+	if ln.circuitHandler.extender.bwHist != hist {
+		t.Fatal("出站中间跳应与入站共用同一份带宽历史")
+	}
+}

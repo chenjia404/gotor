@@ -431,3 +431,43 @@ func TestBuildExtend2Data(t *testing.T) {
 		t.Error("Handshake data mismatch")
 	}
 }
+
+func TestWrapOutboundConnCountsWhenHistorySet(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewCircuitHandler(keys, nil)
+	hist := NewBandwidthHistory()
+	h.SetBandwidthHistory(hist)
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	wrapped := h.extender.wrapOutboundConn(a)
+	done := make(chan struct{})
+	go func() {
+		_, _ = b.Read(make([]byte, 8))
+		close(done)
+	}()
+	if _, err := wrapped.Write([]byte("or")); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if hist.curWrite != 2 {
+		t.Fatalf("出站写出应计入带宽历史, got %d", hist.curWrite)
+	}
+}
+
+func TestWrapOutboundConnNilHistoryIsIdentity(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewExtensionHandler(keys, nil, nil)
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	if h.wrapOutboundConn(a) != a {
+		t.Fatal("无历史时不得改包连接")
+	}
+}

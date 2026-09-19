@@ -439,6 +439,9 @@ func (l *ORListener) SetBandwidthHistory(h *BandwidthHistory) {
 		return
 	}
 	l.bwHist = h
+	if l.circuitHandler != nil {
+		l.circuitHandler.SetBandwidthHistory(h)
+	}
 }
 
 // countingConn 在 TLS 之下统计 socket 读写。

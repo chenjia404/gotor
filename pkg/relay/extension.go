@@ -180,6 +180,7 @@ type ExtensionHandler struct {
 	linkReaders   map[string]bool                       // address → 读循环已启动
 	pendingCreate map[string]map[uint32]chan *cell.Cell // addr → circID → waiter
 	pendingMu     sync.Mutex
+	bwHist        *BandwidthHistory
 }
 
 // NewExtensionHandler creates a new extension handler
@@ -201,6 +202,21 @@ func NewExtensionHandler(keys *RelayKeys, circuits *CircuitHandler, log *logger.
 // SetForwarder 注入转发器以便 EXTEND 成功后注册扩展电路。
 func (h *ExtensionHandler) SetForwarder(f *ForwardingHandler) {
 	h.forwarder = f
+}
+
+// SetBandwidthHistory 把出站中间跳 OR 套接字计入 extra-info 读写历史。nil 则不计。
+func (h *ExtensionHandler) SetBandwidthHistory(hist *BandwidthHistory) {
+	if h == nil {
+		return
+	}
+	h.bwHist = hist
+}
+
+func (h *ExtensionHandler) wrapOutboundConn(c net.Conn) net.Conn {
+	if h == nil || h.bwHist == nil || c == nil {
+		return c
+	}
+	return &countingConn{Conn: c, hist: h.bwHist}
 }
 
 // HandleExtend2 processes a RELAY_EXTEND2 cell
@@ -339,6 +355,9 @@ func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string,
 	}
 	if ident.hasIdentity() {
 		cfg.RequireCERTS = true
+	}
+	if h.bwHist != nil {
+		cfg.WrapConn = h.wrapOutboundConn
 	}
 
 	// Connect to next hop

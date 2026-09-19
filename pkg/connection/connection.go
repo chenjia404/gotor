@@ -88,6 +88,8 @@ type Config struct {
 	ExpectedIdentity    []byte        // Expected relay Ed25519 identity key (32 bytes) - for certificate pinning (AUDIT-004)
 	ExpectedFingerprint string        // Expected relay fingerprint - for additional validation (AUDIT-004)
 	RequireCERTS        bool          // If true, fail handshake on CERTS validation failure (strict mode)
+	// WrapConn 在 TCP 拨通后、TLS 之前包一层。中继用来统计出站 OR 套接字字节。nil 则不包。
+	WrapConn func(net.Conn) net.Conn
 }
 
 // DefaultConfig returns a connection config with sensible defaults
@@ -318,6 +320,15 @@ func (c *Connection) Connect(ctx context.Context, cfg *Config) error {
 	if err != nil {
 		c.setState(StateFailed)
 		return fmt.Errorf("failed to connect: %w", err)
+	}
+	if cfg.WrapConn != nil {
+		wrapped := cfg.WrapConn(conn)
+		if wrapped == nil {
+			_ = conn.Close()
+			c.setState(StateFailed)
+			return fmt.Errorf("WrapConn returned nil")
+		}
+		conn = wrapped
 	}
 	c.conn = conn
 

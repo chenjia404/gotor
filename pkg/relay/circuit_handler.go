@@ -121,6 +121,14 @@ func (h *CircuitHandler) SetDoS(g *DoSGuard) {
 	h.dos = g
 }
 
+// SetBandwidthHistory 把出站中间跳 OR 字节交给 EXTEND 拨号（与入站 countingConn 同一份历史）。
+func (h *CircuitHandler) SetBandwidthHistory(hist *BandwidthHistory) {
+	if h == nil || h.extender == nil {
+		return
+	}
+	h.extender.SetBandwidthHistory(hist)
+}
+
 // handleCreate2 processes a CREATE2 cell and sends CREATED2 response
 // Per tor-spec.txt §5.1:
 //

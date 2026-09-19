@@ -1,7 +1,7 @@
 # extra-info 与 extra-info-digest
 
 **日期**：2026-08-20  
-**状态**：PARTIAL（离线单测；权威曾对无 digest 的单独 extra-info 回 400）
+**状态**：PARTIAL（离线单测；权威曾对无 digest 的单独 extra-info 回 400；出站中间跳 OR 已计入）
 
 对照：[dir-spec extra-info](https://spec.torproject.org/dir-spec/extra-info-document-format.html)、[server descriptor extra-info-digest](https://spec.torproject.org/dir-spec/server-descriptor-format.html)、C Tor `router.c` / `rephist.c`。
 
@@ -14,11 +14,10 @@
 - Ed25519 + RSA 双签名；发布前自检。
 - 与 C Tor 一样把 router + extra-info **拼成一次 POST**（不再先发无 digest 的描述符再单独 POST extra-info）。
 - 带宽历史只写**已完成**的 900s 观测格；停机空档不补零。无观测则不写 `write-history` / `read-history`。
-- 观测来自 OR 入站 TCP 套接字读写；可读写 C Tor `DataDirectory/state` 的 `BWHistoryReadValues` / `BWHistoryWriteValues` / `*Ends`。**最后一值是未完成桶**，`*Ends` 是该桶结束时刻；未到点不写入 extra-info。`AvoidDiskWrites` 时不落盘。
+- 观测来自 **入站 OR TCP** 与 **出站中间跳 OR TCP**（TLS 之下的套接字）；可读写 C Tor `DataDirectory/state` 的 `BWHistoryReadValues` / `BWHistoryWriteValues` / `*Ends`。**最后一值是未完成桶**，`*Ends` 是该桶结束时刻；未到点不写入 extra-info。`AvoidDiskWrites` 时不落盘。出口流 TCP 不计入本项。
 
 ## 明确未做
 
-- 出站中间跳 OR 连接字节（尚未计入）
 - `conn-bi-direct` / `dirreq-*` / `exit-*` / `hidserv-*` / `padding-counts`（无 24h 观测不写）
 - 进程空闲但在跑时的全零格（无心跳；有流量的格才入列）
 - 真网权威归档 extra-info 的观察证据

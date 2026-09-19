@@ -351,6 +351,36 @@ func TestConnectionConnect(t *testing.T) {
 	}
 }
 
+func TestConnectionWrapConnSeesTLSBytes(t *testing.T) {
+	address, cleanup := setupMockTLSServer(t)
+	defer cleanup()
+
+	var w *wrapCountConn
+	cfg := DefaultConfig(address)
+	cfg.Timeout = 2 * time.Second
+	cfg.WrapConn = func(c net.Conn) net.Conn {
+		w = &wrapCountConn{Conn: c}
+		return w
+	}
+	conn := New(cfg, logger.NewDefault())
+	_ = conn.Connect(context.Background(), cfg)
+	_ = conn.Close()
+	if w == nil || w.wrote == 0 {
+		t.Fatal("TLS 握手应在 WrapConn 之下写出字节")
+	}
+}
+
+type wrapCountConn struct {
+	net.Conn
+	wrote int
+}
+
+func (c *wrapCountConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	c.wrote += n
+	return n, err
+}
+
 func TestConnectionConnectTimeout(t *testing.T) {
 	// Use a non-routable IP to trigger timeout
 	cfg := DefaultConfig("192.0.2.1:9001") // TEST-NET-1, guaranteed to timeout
