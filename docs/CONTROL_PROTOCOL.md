@@ -82,6 +82,8 @@ GETINFO key [key ...]
 | `net/listeners/control` | 控制口实际绑定（TCP 或 unix 路径） | `127.0.0.1:9051` |
 | `net/listeners/httptunnel` | HTTPTunnelPort 实际绑定；未开为空 | `127.0.0.1:9080` |
 | `net/listeners/dns` | DNSPort 实际绑定；未开为空 | `127.0.0.1:5353` |
+| `net/listeners/or` | ORPort 实际绑定；未开或 ClientOnly 为空 | `0.0.0.0:9001` |
+| `net/listeners/dir` | DirPort 实际绑定；未开或 ClientOnly 为空 | `0.0.0.0:9030` |
 | `config-file` | 实际 torrc 路径；未从文件加载则为空（不用 DataDirectory 冒充） | `/etc/tor/torrc` |
 
 **Example:**

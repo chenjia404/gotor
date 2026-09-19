@@ -32,6 +32,8 @@ type mockClientGetter struct {
 	controlListener     string
 	httpTunnelListener  string
 	dnsListener         string
+	orListener          string
+	dirListener         string
 	configFile          string
 	config              map[string]string
 }
@@ -156,6 +158,14 @@ func (m *mockClientGetter) GetHTTPTunnelListener() string {
 
 func (m *mockClientGetter) GetDNSListener() string {
 	return m.dnsListener
+}
+
+func (m *mockClientGetter) GetORListener() string {
+	return m.orListener
+}
+
+func (m *mockClientGetter) GetDirListener() string {
+	return m.dirListener
 }
 
 func (m *mockClientGetter) GetConfigFile() string {
@@ -870,6 +880,7 @@ func TestGetInfoNames(t *testing.T) {
 		"status/guards/active",
 		"net/listeners/socks",
 		"net/listeners/httptunnel",
+		"net/listeners/or",
 		"info/names",
 	}
 
@@ -1062,6 +1073,52 @@ func TestGetInfoHTTPTunnelAndDNSListeners(t *testing.T) {
 	got = readResponse(t, reader)
 	if !strings.HasPrefix(got, "250 net/listeners/dns=127.0.0.1:5353") {
 		t.Fatalf("DNSPort 应报绑定: %s", got)
+	}
+}
+
+func TestGetInfoORAndDirListeners(t *testing.T) {
+	server, mock := setupTestServer(t)
+	conn := connectToServer(t, server)
+	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+	readResponse(t, reader)
+	writer.WriteString("AUTHENTICATE\r\n")
+	writer.Flush()
+	readResponse(t, reader)
+
+	writer.WriteString("GETINFO net/listeners/or\r\n")
+	writer.Flush()
+	got := readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 net/listeners/or=") {
+		t.Fatalf("未开 ORPort 也应识别键: %s", got)
+	}
+	if strings.Contains(got, "9001") {
+		t.Fatalf("未监听不得编造 OR 地址: %s", got)
+	}
+
+	writer.WriteString("GETINFO net/listeners/dir\r\n")
+	writer.Flush()
+	got = readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 net/listeners/dir=") {
+		t.Fatalf("未开 DirPort 也应识别键: %s", got)
+	}
+	if strings.Contains(got, "9030") {
+		t.Fatalf("未监听不得编造 Dir 地址: %s", got)
+	}
+
+	mock.orListener = "0.0.0.0:9001"
+	mock.dirListener = "0.0.0.0:9030"
+	writer.WriteString("GETINFO net/listeners/or\r\n")
+	writer.Flush()
+	got = readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 net/listeners/or=0.0.0.0:9001") {
+		t.Fatalf("ORPort 应报绑定: %s", got)
+	}
+	writer.WriteString("GETINFO net/listeners/dir\r\n")
+	writer.Flush()
+	got = readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 net/listeners/dir=0.0.0.0:9030") {
+		t.Fatalf("DirPort 应报绑定: %s", got)
 	}
 }
 

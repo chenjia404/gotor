@@ -1051,6 +1051,12 @@ func (c *Client) GetStats() Stats {
 	// Get metrics snapshot
 	metricsSnap := c.metrics.Snapshot()
 
+	orPort, dirPort := 0, 0
+	if c.config != nil && !c.config.ClientOnly {
+		orPort = c.config.ORPort
+		dirPort = c.config.DirPort
+	}
+
 	stats := Stats{
 		ActiveCircuits:      len(c.circuits),
 		SocksPort:           c.config.SocksPort,
@@ -1070,6 +1076,8 @@ func (c *Client) GetStats() Stats {
 		ControlListener:     listenerFromConfig(c.config.ControlListenAddr, c.config.ControlPort, c.config.ControlSocket, c.config.ControlSocket != "" && c.config.ControlPort <= 0),
 		HTTPTunnelListener:  listenerFromConfig(c.config.HTTPTunnelListenAddr, c.config.HTTPTunnelPort, "", false),
 		DNSListener:         listenerFromConfig(c.config.DNSPortListenAddr, c.config.DNSPort, "", false),
+		ORListener:          orDirListener(c.config.ORListenAddr, orPort),
+		DirListener:         orDirListener(c.config.DirListenAddr, dirPort),
 		ConfigFile:          c.config.ConfigFile,
 	}
 
@@ -1137,6 +1145,8 @@ type Stats struct {
 	ControlListener    string
 	HTTPTunnelListener string
 	DNSListener        string
+	ORListener         string
+	DirListener        string
 
 	// GETINFO config-file：torrc 路径；未用文件则为空（不得用 DataDirectory 冒充）
 	ConfigFile string
@@ -1235,9 +1245,27 @@ func (s Stats) GetDNSListener() string {
 	return s.DNSListener
 }
 
+// GetORListener 返回 ORPort 实际绑定；未开或 ClientOnly 则为空。
+func (s Stats) GetORListener() string {
+	return s.ORListener
+}
+
+// GetDirListener 返回 DirPort 实际绑定；未开或 ClientOnly 则为空。
+func (s Stats) GetDirListener() string {
+	return s.DirListener
+}
+
 // GetConfigFile 返回实际 torrc 路径；空表示未从文件加载。
 func (s Stats) GetConfigFile() string {
 	return s.ConfigFile
+}
+
+// orDirListener 生成 GETINFO net/listeners/or 与 dir。空 host 视为 0.0.0.0（C Tor OR/Dir 默认）。
+func orDirListener(host string, port int) string {
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	return listenerFromConfig(host, port, "", false)
 }
 
 // listenerFromConfig 生成 GETINFO net/listeners 值。unix 优先时只写路径；TCP 空 host 视为 127.0.0.1。

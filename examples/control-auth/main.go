@@ -181,6 +181,14 @@ func (m *mockClientGetter) GetDNSListener() string {
 	return ""
 }
 
+func (m *mockClientGetter) GetORListener() string {
+	return ""
+}
+
+func (m *mockClientGetter) GetDirListener() string {
+	return ""
+}
+
 func (m *mockClientGetter) GetConfig() control.ConfigProvider {
 	return nil // No config needed for this demo
 }

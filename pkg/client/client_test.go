@@ -99,6 +99,38 @@ func TestGetStats(t *testing.T) {
 	}
 }
 
+func TestGetStatsORAndDirListeners(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DataDirectory = t.TempDir()
+	cfg.SocksPort = 0
+	cfg.ControlPort = 0
+	cfg.ORPort = 9001
+	cfg.DirPort = 9030
+	cfg.ORListenAddr = ""
+	cfg.DirListenAddr = ""
+	log := logger.NewDefault()
+
+	client, err := New(cfg, log)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Stop()
+
+	stats := client.GetStats()
+	if stats.ORListener != "0.0.0.0:9001" {
+		t.Fatalf("OR 空 host 应报 0.0.0.0:9001，得到 %q", stats.ORListener)
+	}
+	if stats.DirListener != "0.0.0.0:9030" {
+		t.Fatalf("Dir 空 host 应报 0.0.0.0:9030，得到 %q", stats.DirListener)
+	}
+
+	client.config.ClientOnly = true
+	stats = client.GetStats()
+	if stats.ORListener != "" || stats.DirListener != "" {
+		t.Fatalf("ClientOnly 不得报 OR/Dir 监听: or=%q dir=%q", stats.ORListener, stats.DirListener)
+	}
+}
+
 func TestStopWithoutStart(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.DataDirectory = t.TempDir() // Use temporary directory for tests
