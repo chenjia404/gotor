@@ -3,6 +3,7 @@ package relay
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"net"
@@ -50,8 +51,10 @@ type ExitStreamManager struct {
 	circInCount   map[uint32]int
 	circStreams   map[uint32]int
 	circCC        map[uint32]circFlow
-	// 最近一次入向 digest（20 字节），供电路级 SENDME v1
+	// 最近一次入向 digest/tag（20 或 16 字节），供电路级 SENDME v1
 	lastFwdDigest map[uint32][]byte
+	// 出口发出 DATA 后记录的 tag FIFO，供客户端电路级 SENDME 校验
+	circExpectedSendme map[uint32][][]byte
 }
 
 type circFlow struct {
@@ -79,15 +82,16 @@ func NewExitStreamManager(policy *ExitPolicy, log *logger.Logger) *ExitStreamMan
 		log = logger.NewDefault()
 	}
 	return &ExitStreamManager{
-		policy:        policy,
-		logger:        log.Component("exit-stream"),
-		streams:       make(map[streamKey]*exitStream),
-		circOutWindow: make(map[uint32]int),
-		circInCount:   make(map[uint32]int),
-		circStreams:   make(map[uint32]int),
-		circCC:        make(map[uint32]circFlow),
-		lastFwdDigest: make(map[uint32][]byte),
-		gate:          newExitConnGate(1024),
+		policy:             policy,
+		logger:             log.Component("exit-stream"),
+		streams:            make(map[streamKey]*exitStream),
+		circOutWindow:      make(map[uint32]int),
+		circInCount:        make(map[uint32]int),
+		circStreams:        make(map[uint32]int),
+		circCC:             make(map[uint32]circFlow),
+		lastFwdDigest:      make(map[uint32][]byte),
+		circExpectedSendme: make(map[uint32][][]byte),
+		gate:               newExitConnGate(1024),
 	}
 }
 
@@ -121,9 +125,9 @@ func (m *ExitStreamManager) dialTCP(ctx context.Context, address string) (net.Co
 	return d.DialContext(ctx, "tcp", address)
 }
 
-// NoteFwdDigest 在成功解密入向 cell 后记录滚动摘要（供电路 SENDME v1）。
+// NoteFwdDigest 在成功解密入向 cell 后记录滚动摘要或 CGO tag（供电路 SENDME v1）。
 func (m *ExitStreamManager) NoteFwdDigest(circID uint32, digest []byte) {
-	if len(digest) != 20 {
+	if len(digest) != cell.SendmeV1DigestLen && len(digest) != cell.SendmeCGOTagLen {
 		return
 	}
 	m.mu.Lock()
@@ -163,6 +167,7 @@ func (m *ExitStreamManager) CloseCircuit(circID uint32) {
 	delete(m.circStreams, circID)
 	delete(m.lastFwdDigest, circID)
 	delete(m.circCC, circID)
+	delete(m.circExpectedSendme, circID)
 	m.mu.Unlock()
 	for _, es := range toClose {
 		m.teardown(es)
@@ -182,6 +187,7 @@ func (m *ExitStreamManager) CloseAll() {
 	m.circStreams = make(map[uint32]int)
 	m.lastFwdDigest = make(map[uint32][]byte)
 	m.circCC = make(map[uint32]circFlow)
+	m.circExpectedSendme = make(map[uint32][][]byte)
 	m.mu.Unlock()
 	for _, es := range all {
 		m.teardown(es)
@@ -487,7 +493,7 @@ func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn,
 		sendCirc = true
 		circDigest = append([]byte(nil), m.lastFwdDigest[circ.CircuitID]...)
 	}
-	if es != nil && !flow.cc {
+	if es != nil && !flow.cc && !(circ != nil && circ.crypto != nil && circ.crypto.usesCGO()) {
 		es.deliverCount++
 		if es.deliverCount >= exitStreamSendmeInc {
 			es.deliverCount = 0
@@ -497,8 +503,8 @@ func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn,
 			}
 			sendStream = true
 		}
-	} else if es != nil && flow.cc {
-		// FlowCtrl=2：不发流级 SENDME，恢复本端防灌窗口
+	} else if es != nil && (flow.cc || (circ != nil && circ.crypto != nil && circ.crypto.usesCGO())) {
+		// FlowCtrl=2 / CGO：不发流级 SENDME，恢复本端防灌窗口
 		es.deliverWindow++
 		if es.deliverWindow > exitMaxStreamOutWindow {
 			es.deliverWindow = exitMaxStreamOutWindow
@@ -506,7 +512,7 @@ func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn,
 	}
 	m.mu.Unlock()
 
-	if sendCirc && len(circDigest) == 20 {
+	if sendCirc && (len(circDigest) == cell.SendmeV1DigestLen || len(circDigest) == cell.SendmeCGOTagLen) {
 		payload, err := cell.EncodeSendmeV1(circDigest)
 		if err == nil {
 			_ = m.sendRelay(circ, clientConn, 0, cell.RelaySendme, payload)
@@ -518,43 +524,58 @@ func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn,
 	return nil
 }
 
-// HandleSendme 客户端 SENDME：恢复出向窗口。电路级校验载荷；已满窗口的多余 SENDME 丢弃，防止放大。
-func (m *ExitStreamManager) HandleSendme(circID uint32, streamID uint16, payload []byte) {
+// HandleSendme 客户端 SENDME：电路级必须 v1 且 FIFO 匹配发出 DATA 的 tag；已满窗口的多余 SENDME 丢弃，防止放大。
+func (m *ExitStreamManager) HandleSendme(circID uint32, streamID uint16, payload []byte) error {
+	if streamID != 0 {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if es := m.streams[streamKey{circID, streamID}]; es != nil {
+			if es.packageWindow >= exitStreamWindowInit {
+				return nil
+			}
+			es.packageWindow += exitStreamSendmeInc
+			if es.packageWindow > exitStreamWindowInit {
+				es.packageWindow = exitStreamWindowInit
+			}
+		}
+		return nil
+	}
+	version, digest, err := cell.DecodeSendme(payload)
+	if err != nil {
+		return err
+	}
+	if version < cell.SendmeVersion1 {
+		return fmt.Errorf("SENDME v0 rejected")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	q := m.circExpectedSendme[circID]
+	if len(q) == 0 {
+		return fmt.Errorf("unexpected circuit SENDME")
+	}
+	if subtle.ConstantTimeCompare(q[0], digest) != 1 {
+		return fmt.Errorf("SENDME digest mismatch")
+	}
+	m.circExpectedSendme[circID] = q[1:]
 	flow := m.flowOf(circID)
-	if streamID == 0 {
-		if _, _, err := cell.DecodeSendme(payload); err != nil {
-			return
-		}
-		initW := exitCircWindowInit
-		if flow.cc {
-			initW = ccCwndInit
-		}
-		cur := m.circOutWindow[circID]
-		if cur >= initW {
-			return
-		}
-		inc := flow.sendmeInc
-		if inc <= 0 {
-			inc = exitCircSendmeInc
-		}
-		cur += inc
-		if cur > initW {
-			cur = initW
-		}
-		m.circOutWindow[circID] = cur
-		return
+	initW := exitCircWindowInit
+	if flow.cc {
+		initW = ccCwndInit
 	}
-	if es := m.streams[streamKey{circID, streamID}]; es != nil {
-		if es.packageWindow >= exitStreamWindowInit {
-			return
-		}
-		es.packageWindow += exitStreamSendmeInc
-		if es.packageWindow > exitStreamWindowInit {
-			es.packageWindow = exitStreamWindowInit
-		}
+	cur := m.circOutWindow[circID]
+	if cur >= initW {
+		return nil
 	}
+	inc := flow.sendmeInc
+	if inc <= 0 {
+		inc = exitCircSendmeInc
+	}
+	cur += inc
+	if cur > initW {
+		cur = initW
+	}
+	m.circOutWindow[circID] = cur
+	return nil
 }
 
 // HandleEnd 半关闭出口流（只关写侧，仍可读）。
@@ -629,7 +650,6 @@ func (m *ExitStreamManager) pumpRemoteToClient(ctx context.Context, circ *Server
 			if err := m.sendRelay(circ, clientConn, streamID, cell.RelayData, buf[:n]); err != nil {
 				return
 			}
-			m.consumeOutWindow(circ.CircuitID, streamID)
 		}
 		if err != nil {
 			reason := cell.EndReasonDone
@@ -671,17 +691,6 @@ func (m *ExitStreamManager) waitOutWindow(ctx context.Context, circID uint32, st
 	}
 }
 
-func (m *ExitStreamManager) consumeOutWindow(circID uint32, streamID uint16) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.circOutWindow[circID] > 0 {
-		m.circOutWindow[circID]--
-	}
-	if es := m.streams[streamKey{circID, streamID}]; es != nil && es.packageWindow > 0 {
-		es.packageWindow--
-	}
-}
-
 func exitRelayDataChunk(circ *ServerCircuit) int {
 	if circ != nil && circ.crypto != nil && circ.crypto.usesCGO() {
 		return cell.RelayCellMaxDataV1(cell.RelayData)
@@ -699,16 +708,49 @@ func (m *ExitStreamManager) sendRelay(circ *ServerCircuit, clientConn net.Conn, 
 		return err
 	}
 	circ.mu.Lock()
-	defer circ.mu.Unlock()
 	if circ.crypto == nil {
+		circ.mu.Unlock()
 		return fmt.Errorf("circuit crypto gone")
 	}
-	enc, err := circ.crypto.originateRelay(rc)
+	enc, tag, err := circ.crypto.originateRelayTag(rc)
+	circ.mu.Unlock()
 	if err != nil {
 		return err
 	}
 	c := &cell.Cell{CircID: circ.CircuitID, Command: cell.CmdRelay, Payload: enc}
-	return c.Encode(clientConn)
+	if err := c.Encode(clientConn); err != nil {
+		return err
+	}
+	if cmd == cell.RelayData {
+		m.afterOutboundDATA(circ.CircuitID, streamID, tag)
+	}
+	return nil
+}
+
+// afterOutboundDATA 减出向窗；落到 increment 倍数时记下 tag，供对端电路级 SENDME v1。
+func (m *ExitStreamManager) afterOutboundDATA(circID uint32, streamID uint16, tag []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.circOutWindow[circID] > 0 {
+		m.circOutWindow[circID]--
+	}
+	if es := m.streams[streamKey{circID, streamID}]; es != nil && es.packageWindow > 0 {
+		es.packageWindow--
+	}
+	flow := m.flowOf(circID)
+	inc := flow.sendmeInc
+	if inc <= 0 {
+		inc = exitCircSendmeInc
+	}
+	initW := exitCircWindowInit
+	if flow.cc {
+		initW = ccCwndInit
+	}
+	sent := initW - m.circOutWindow[circID]
+	if sent > 0 && inc > 0 && sent%inc == 0 &&
+		(len(tag) == cell.SendmeV1DigestLen || len(tag) == cell.SendmeCGOTagLen) {
+		m.circExpectedSendme[circID] = append(m.circExpectedSendme[circID], append([]byte(nil), tag...))
+	}
 }
 
 func parseBeginAddr(data []byte) (host string, port uint16, flags uint32, flagsPresent bool, err error) {

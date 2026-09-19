@@ -97,7 +97,14 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 
 	case cell.RelaySendme:
 		if h.circuits.exits != nil {
-			h.circuits.exits.HandleSendme(circuitID, relayCell.StreamID, relayCell.Data)
+			if err := h.circuits.exits.HandleSendme(circuitID, relayCell.StreamID, relayCell.Data); err != nil {
+				h.logger.Warn("circuit SENDME rejected", "circuit_id", circuitID, "error", err)
+				if clientConn != nil {
+					_ = h.circuits.sendDestroyCell(clientConn, circuitID, cell.DestroyReasonProtocol)
+				}
+				h.circuits.CloseCircuit(circuitID)
+				return err
+			}
 		}
 		return nil
 

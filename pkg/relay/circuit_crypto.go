@@ -156,19 +156,21 @@ func (cc *circuitCrypto) decryptInboundWithAD(payload []byte, ad byte) (plain []
 }
 
 // encryptOutbound 本跳发出一条消息（填 digest / CGO originate）。AD=RELAY(3)。
-func (cc *circuitCrypto) encryptOutbound(payload []byte) ([]byte, error) {
+// 返回 SENDME v1 用的 tag：tor1 为 20 字节滚动 SHA-1，CGO 为 16 字节 T。
+func (cc *circuitCrypto) encryptOutbound(payload []byte) ([]byte, []byte, error) {
 	if cc == nil || len(payload) != 509 {
-		return nil, fmt.Errorf("invalid outbound payload")
+		return nil, nil, fmt.Errorf("invalid outbound payload")
 	}
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
 
 	if cc.cgo != nil {
 		out := append([]byte(nil), payload...)
-		if _, err := cc.cgo.Back.RelayOriginate(cgoADRelay, out); err != nil {
-			return nil, err
+		tag, err := cc.cgo.Back.RelayOriginate(cgoADRelay, out)
+		if err != nil {
+			return nil, nil, err
 		}
-		return out, nil
+		return out, tag, nil
 	}
 
 	out := append([]byte(nil), payload...)
@@ -176,12 +178,12 @@ func (cc *circuitCrypto) encryptOutbound(payload []byte) ([]byte, error) {
 	out[5], out[6], out[7], out[8] = 0, 0, 0, 0
 	cellCopy := append([]byte(nil), out...)
 	if _, err := cc.bwdDigest.Write(cellCopy); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sum := cc.bwdDigest.Sum(nil)
 	copy(out[5:9], sum[:4])
 	cc.bwdCipher.XORKeyStream(out, out)
-	return out, nil
+	return out, append([]byte(nil), sum...), nil
 }
 
 // wrapOutbound 中间跳回程只加一层，不 originate（不改 nonce / digest）。
@@ -211,8 +213,13 @@ func (cc *circuitCrypto) decodeRelay(peeled []byte) (*cell.RelayCell, error) {
 }
 
 func (cc *circuitCrypto) originateRelay(rc *cell.RelayCell) ([]byte, error) {
+	enc, _, err := cc.originateRelayTag(rc)
+	return enc, err
+}
+
+func (cc *circuitCrypto) originateRelayTag(rc *cell.RelayCell) ([]byte, []byte, error) {
 	if cc == nil || rc == nil {
-		return nil, fmt.Errorf("nil circuit crypto or relay cell")
+		return nil, nil, fmt.Errorf("nil circuit crypto or relay cell")
 	}
 	var plain []byte
 	var err error
@@ -227,7 +234,7 @@ func (cc *circuitCrypto) originateRelay(rc *cell.RelayCell) ([]byte, error) {
 		}
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return cc.encryptOutbound(plain)
 }

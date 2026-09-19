@@ -11,6 +11,7 @@ import (
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/circuit"
+	"github.com/opd-ai/go-tor/pkg/crypto"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
@@ -495,19 +496,184 @@ func TestHandleBeginRejectsOnionFQDN(t *testing.T) {
 func TestHandleSendmeDoesNotInflateFullWindow(t *testing.T) {
 	p := NewExitPolicyFromConfig(true, []string{"accept *:*"}, false, false, logger.NewDefault())
 	m := NewExitStreamManager(p, logger.NewDefault())
+	tag := bytes.Repeat([]byte{0xaa}, cell.SendmeV1DigestLen)
+	payload, err := cell.EncodeSendmeV1(tag)
+	if err != nil {
+		t.Fatal(err)
+	}
 	m.circOutWindow[1] = exitCircWindowInit
-	m.HandleSendme(1, 0, nil)
+	m.circExpectedSendme[1] = [][]byte{append([]byte(nil), tag...)}
+	if err := m.HandleSendme(1, 0, payload); err != nil {
+		t.Fatal(err)
+	}
 	if m.circOutWindow[1] != exitCircWindowInit {
 		t.Fatalf("满窗多余 SENDME 不得放大: %d", m.circOutWindow[1])
 	}
 	m.circOutWindow[1] = exitCircWindowInit - 20
-	m.HandleSendme(1, 0, nil)
+	m.circExpectedSendme[1] = [][]byte{append([]byte(nil), tag...)}
+	if err := m.HandleSendme(1, 0, payload); err != nil {
+		t.Fatal(err)
+	}
 	if m.circOutWindow[1] != exitCircWindowInit {
 		t.Fatalf("SENDME 应补到初值: %d", m.circOutWindow[1])
 	}
-	m.HandleSendme(1, 0, []byte{0x01})
+	if err := m.HandleSendme(1, 0, nil); err == nil {
+		t.Fatal("v0 SENDME 应拒绝")
+	}
+	if m.circOutWindow[1] != exitCircWindowInit {
+		t.Fatalf("v0 不得改窗口: %d", m.circOutWindow[1])
+	}
+	if err := m.HandleSendme(1, 0, []byte{0x01}); err == nil {
+		t.Fatal("非法 SENDME 应拒绝")
+	}
 	if m.circOutWindow[1] != exitCircWindowInit {
 		t.Fatalf("非法 SENDME 不得改窗口: %d", m.circOutWindow[1])
+	}
+}
+
+func TestNoteFwdDigestAcceptsCGOTag(t *testing.T) {
+	m := NewExitStreamManager(NewExitPolicy(logger.NewDefault()), logger.NewDefault())
+	tag := bytes.Repeat([]byte{0xbb}, cell.SendmeCGOTagLen)
+	m.NoteFwdDigest(3, tag)
+	if !bytes.Equal(m.lastFwdDigest[3], tag) {
+		t.Fatal("16 字节 CGO tag 必须记入入向摘要")
+	}
+	m.NoteFwdDigest(3, []byte{1, 2, 3})
+	if !bytes.Equal(m.lastFwdDigest[3], tag) {
+		t.Fatal("非法长度不得覆盖")
+	}
+}
+
+func TestExitSendsCircuitSendmeV1WithCGOTag(t *testing.T) {
+	m := NewExitStreamManager(NewExitPolicy(logger.NewDefault()), logger.NewDefault())
+	keys := bytes.Repeat([]byte{0x33}, 160)
+	relayCC, err := newCircuitCrypto(keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientHop, err := crypto.NewCGOPairFromKeyMaterial(keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, peer := net.Pipe()
+	defer remote.Close()
+	defer peer.Close()
+	go func() {
+		buf := make([]byte, 64)
+		_, _ = peer.Read(buf)
+	}()
+	circ := &ServerCircuit{CircuitID: 4, ctx: context.Background(), crypto: relayCC}
+	orClient, orServer := net.Pipe()
+	defer orClient.Close()
+	defer orServer.Close()
+	done := make(chan *cell.Cell, 1)
+	go func() {
+		_ = orServer.SetReadDeadline(time.Now().Add(3 * time.Second))
+		c, err := cell.DecodeCell(orServer)
+		if err != nil {
+			done <- nil
+			return
+		}
+		done <- c
+	}()
+	tag := bytes.Repeat([]byte{0xcc}, cell.SendmeCGOTagLen)
+	m.NoteFwdDigest(circ.CircuitID, tag)
+	m.mu.Lock()
+	m.streams[streamKey{circ.CircuitID, 1}] = &exitStream{
+		conn:          remote,
+		deliverWindow: exitStreamWindowInit,
+		packageWindow: exitStreamWindowInit,
+	}
+	m.circInCount[circ.CircuitID] = exitCircSendmeInc - 1
+	m.mu.Unlock()
+	if err := m.HandleData(circ, orClient, 1, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got == nil {
+		t.Fatal("应收电路级 SENDME")
+	}
+	rec, _, err := clientHop.Back.ClientBackward(cgoADRelay, got.Payload)
+	if err != nil || !rec {
+		t.Fatalf("客户端应识别 SENDME: rec=%v err=%v", rec, err)
+	}
+	rc, err := cell.DecodeRelayCellV1(got.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.Command != cell.RelaySendme || rc.StreamID != 0 {
+		t.Fatalf("cmd=%d sid=%d", rc.Command, rc.StreamID)
+	}
+	ver, digest, err := cell.DecodeSendme(rc.Data)
+	if err != nil || ver != cell.SendmeVersion1 || !bytes.Equal(digest, tag) {
+		t.Fatalf("ver=%d digest=%x err=%v", ver, digest, err)
+	}
+}
+
+func TestExitSendmeFIFOMatchAndMismatch(t *testing.T) {
+	m := NewExitStreamManager(NewExitPolicy(logger.NewDefault()), logger.NewDefault())
+	good := bytes.Repeat([]byte{0x11}, cell.SendmeV1DigestLen)
+	bad := bytes.Repeat([]byte{0x22}, cell.SendmeV1DigestLen)
+	m.circOutWindow[5] = exitCircWindowInit - 100
+	m.circExpectedSendme[5] = [][]byte{append([]byte(nil), good...)}
+	payload, _ := cell.EncodeSendmeV1(bad)
+	if err := m.HandleSendme(5, 0, payload); err == nil {
+		t.Fatal("digest 不匹配应失败")
+	}
+	if m.circOutWindow[5] != exitCircWindowInit-100 {
+		t.Fatal("不匹配不得改窗")
+	}
+	payload, _ = cell.EncodeSendmeV1(good)
+	if err := m.HandleSendme(5, 0, payload); err != nil {
+		t.Fatal(err)
+	}
+	if m.circOutWindow[5] != exitCircWindowInit {
+		t.Fatalf("匹配后应补窗: %d", m.circOutWindow[5])
+	}
+}
+
+func TestAfterOutboundDATARecordsSendmeTag(t *testing.T) {
+	m := NewExitStreamManager(NewExitPolicy(logger.NewDefault()), logger.NewDefault())
+	m.circOutWindow[2] = exitCircWindowInit
+	tag := bytes.Repeat([]byte{0x33}, cell.SendmeV1DigestLen)
+	for i := 0; i < exitCircSendmeInc-1; i++ {
+		m.afterOutboundDATA(2, 1, tag)
+	}
+	if len(m.circExpectedSendme[2]) != 0 {
+		t.Fatal("未到 increment 不得入队")
+	}
+	m.afterOutboundDATA(2, 1, tag)
+	if len(m.circExpectedSendme[2]) != 1 || !bytes.Equal(m.circExpectedSendme[2][0], tag) {
+		t.Fatal("第 100 个 DATA 应记下 tag")
+	}
+}
+
+func TestOriginateRelayTagLengths(t *testing.T) {
+	tor1, err := newCircuitCrypto(bytes.Repeat([]byte{7}, 72))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := cell.NewRelayCell(1, cell.RelayData, []byte("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tag, err := tor1.originateRelayTag(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tag) != cell.SendmeV1DigestLen {
+		t.Fatalf("tor1 tag %d", len(tag))
+	}
+	cgoCC, err := newCircuitCrypto(bytes.Repeat([]byte{8}, 160))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tag, err = cgoCC.originateRelayTag(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tag) != cell.SendmeCGOTagLen {
+		t.Fatalf("CGO tag %d", len(tag))
 	}
 }
 
