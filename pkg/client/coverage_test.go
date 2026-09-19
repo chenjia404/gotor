@@ -51,6 +51,7 @@ func TestStatsGetters(t *testing.T) {
 		ORListener:          "0.0.0.0:9001",
 		DirListener:         "0.0.0.0:9030",
 		ConfigFile:          "/etc/tor/torrc",
+		ConfigText:          "Nickname gotorRelay\n",
 	}
 
 	if stats.GetActiveCircuits() != 5 {
@@ -126,6 +127,9 @@ func TestStatsGetters(t *testing.T) {
 	}
 	if stats.GetConfigFile() != "/etc/tor/torrc" {
 		t.Errorf("GetConfigFile() = %q", stats.GetConfigFile())
+	}
+	if stats.GetConfigText() != "Nickname gotorRelay\n" {
+		t.Errorf("GetConfigText() = %q", stats.GetConfigText())
 	}
 }
 
@@ -203,6 +207,9 @@ func TestStatsGettersZeroValues(t *testing.T) {
 	}
 	if stats.GetConfigFile() != "" {
 		t.Errorf("GetConfigFile() = %q, want empty", stats.GetConfigFile())
+	}
+	if stats.GetConfigText() != "" {
+		t.Errorf("GetConfigText() = %q, want empty", stats.GetConfigText())
 	}
 }
 

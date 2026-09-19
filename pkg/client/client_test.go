@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,6 +129,26 @@ func TestGetStatsORAndDirListeners(t *testing.T) {
 	stats = client.GetStats()
 	if stats.ORListener != "" || stats.DirListener != "" {
 		t.Fatalf("ClientOnly 不得报 OR/Dir 监听: or=%q dir=%q", stats.ORListener, stats.DirListener)
+	}
+}
+
+func TestGetStatsConfigTextDumpShort(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DataDirectory = t.TempDir()
+	cfg.SocksPort = 0
+	cfg.ControlPort = 0
+	cfg.Nickname = "gotorRelay"
+	log := logger.NewDefault()
+
+	client, err := New(cfg, log)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Stop()
+
+	stats := client.GetStats()
+	if !strings.Contains(stats.ConfigText, "Nickname gotorRelay") {
+		t.Fatalf("config-text 应为 dump-config short，得到 %q", stats.ConfigText)
 	}
 }
 

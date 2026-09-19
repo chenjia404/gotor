@@ -35,6 +35,7 @@ type mockClientGetter struct {
 	orListener          string
 	dirListener         string
 	configFile          string
+	configText          string
 	config              map[string]string
 }
 
@@ -170,6 +171,10 @@ func (m *mockClientGetter) GetDirListener() string {
 
 func (m *mockClientGetter) GetConfigFile() string {
 	return m.configFile
+}
+
+func (m *mockClientGetter) GetConfigText() string {
+	return m.configText
 }
 
 // Helper to create test server
@@ -831,6 +836,7 @@ func TestGetInfoExtendedKeys(t *testing.T) {
 		{"SOCKS listener", "net/listeners/socks", "127.0.0.1:9050"},
 		{"Control listener", "net/listeners/control", "127.0.0.1:9051"},
 		{"Config file", "config-file", ""},
+		{"Config text", "config-text", ""},
 	}
 
 	for _, tt := range tests {
@@ -881,6 +887,7 @@ func TestGetInfoNames(t *testing.T) {
 		"net/listeners/socks",
 		"net/listeners/httptunnel",
 		"net/listeners/or",
+		"config-text",
 		"info/names",
 	}
 
@@ -1141,5 +1148,36 @@ func TestGetInfoConfigFileIsTorrcNotDataDir(t *testing.T) {
 	}
 	if strings.Contains(got, mock.dataDir) {
 		t.Fatalf("不得用 DataDirectory 冒充 config-file: %s", got)
+	}
+}
+
+func TestGetInfoConfigTextDumpShort(t *testing.T) {
+	server, mock := setupTestServer(t)
+	mock.configText = "Nickname gotorRelay\nORPort 9001\n"
+	conn := connectToServer(t, server)
+	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+	readResponse(t, reader)
+	writer.WriteString("AUTHENTICATE\r\n")
+	writer.Flush()
+	readResponse(t, reader)
+
+	writer.WriteString("GETINFO config-text\r\n")
+	writer.Flush()
+	header := readResponse(t, reader)
+	if header != "250+config-text=" {
+		t.Fatalf("config-text 应为 250+ 数据块: %s", header)
+	}
+	var body []string
+	for {
+		line := readResponse(t, reader)
+		if line == "." {
+			break
+		}
+		body = append(body, line)
+	}
+	got := strings.Join(body, "\n")
+	if !strings.Contains(got, "Nickname gotorRelay") || !strings.Contains(got, "ORPort 9001") {
+		t.Fatalf("config-text 应含 dump-config short: %q", got)
 	}
 }

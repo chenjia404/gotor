@@ -1079,6 +1079,7 @@ func (c *Client) GetStats() Stats {
 		ORListener:          orDirListener(c.config.ORListenAddr, orPort),
 		DirListener:         orDirListener(c.config.DirListenAddr, dirPort),
 		ConfigFile:          c.config.ConfigFile,
+		ConfigText:          config.DumpConfig(c.config, "short"),
 	}
 
 	if c.pathSelector != nil {
@@ -1150,6 +1151,8 @@ type Stats struct {
 
 	// GETINFO config-file：torrc 路径；未用文件则为空（不得用 DataDirectory 冒充）
 	ConfigFile string
+	// GETINFO config-text：--dump-config short（非默认项），不是编造完整 torrc
+	ConfigText string
 
 	// System metrics
 	UptimeSeconds int64
@@ -1258,6 +1261,11 @@ func (s Stats) GetDirListener() string {
 // GetConfigFile 返回实际 torrc 路径；空表示未从文件加载。
 func (s Stats) GetConfigFile() string {
 	return s.ConfigFile
+}
+
+// GetConfigText 返回 dump-config short 文本；全为默认时可能为空。
+func (s Stats) GetConfigText() string {
+	return s.ConfigText
 }
 
 // orDirListener 生成 GETINFO net/listeners/or 与 dir。空 host 视为 0.0.0.0（C Tor OR/Dir 默认）。

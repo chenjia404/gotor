@@ -173,6 +173,10 @@ func (m *mockClientGetter) GetConfigFile() string {
 	return ""
 }
 
+func (m *mockClientGetter) GetConfigText() string {
+	return ""
+}
+
 func (m *mockClientGetter) GetHTTPTunnelListener() string {
 	return ""
 }

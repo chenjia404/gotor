@@ -102,6 +102,7 @@ type StatsProvider interface {
 	GetORListener() string
 	GetDirListener() string
 	GetConfigFile() string
+	GetConfigText() string
 }
 
 // ConfigProvider provides access to configuration values
@@ -584,21 +585,40 @@ func (s *Server) handleGetInfo(conn *connection, args []string) {
 	stats := s.clientGetter.GetStats()
 
 	var replies []string
-	for _, key := range args {
+	for i, key := range args {
 		value, ok := s.getInfoValue(key, stats)
 		if !ok {
 			conn.writeReply(552, fmt.Sprintf("Unrecognized key %q", key))
 			return
 		}
-		replies = append(replies, fmt.Sprintf("250-%s=%s", key, value))
-	}
-
-	// Last reply without dash
-	if len(replies) > 0 {
-		replies[len(replies)-1] = strings.Replace(replies[len(replies)-1], "250-", "250 ", 1)
+		if strings.Contains(value, "\n") {
+			replies = append(replies, plusDataReply(key, value)...)
+			continue
+		}
+		code := "250-"
+		if i == len(args)-1 {
+			code = "250 "
+		}
+		replies = append(replies, fmt.Sprintf("%s%s=%s", code, key, value))
 	}
 
 	conn.writeDataReply(replies)
+}
+
+// plusDataReply 按 control-spec 把含换行的 GETINFO 值写成 250+ ... .
+func plusDataReply(key, value string) []string {
+	body := strings.ReplaceAll(value, "\r\n", "\n")
+	body = strings.TrimRight(body, "\n")
+	out := []string{fmt.Sprintf("250+%s=", key)}
+	if body != "" {
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, ".") {
+				line = "." + line
+			}
+			out = append(out, line)
+		}
+	}
+	return append(out, ".")
 }
 
 // getInfoValue gets the value for a GETINFO key
@@ -648,8 +668,7 @@ func (s *Server) getInfoValue(key string, stats StatsProvider) (string, bool) {
 	case "config-file":
 		return stats.GetConfigFile(), true
 	case "config-text":
-		// Not implemented - would require full config serialization
-		return "", false
+		return stats.GetConfigText(), true
 
 	// Port information
 	case "net/listeners/socks":
@@ -697,6 +716,7 @@ func (s *Server) getInfoNames() string {
 		"status/connection-attempts",
 		"status/uptime",
 		"config-file",
+		"config-text",
 		"net/listeners/socks",
 		"net/listeners/control",
 		"net/listeners/httptunnel",
