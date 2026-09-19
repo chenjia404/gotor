@@ -207,16 +207,14 @@ func (d *ServerDescriptor) build() error {
 	fmt.Fprintf(&buf, "master-key-ed25519 %s\n",
 		base64.RawStdEncoding.EncodeToString(d.Ed25519Identity))
 	fmt.Fprintf(&buf, "platform %s\n", d.Platform)
-	// proto 只写已实现能力。
-	// DirCache 已能对外按 flavor 分库提供 ns（cached-consensus）与
-	// microdesc（cached-microdesc-consensus）、最多 72 小时历史→当前的 limited-ed、
-	// gzip/deflate/x-zstd/x-tor-lzma 与 304，但仍缺预压缩 diff 库与真网被当缓存的证据，
-	// 禁止写 DirCache=2。
-	// HS 中继可转发 INTRODUCE1→INTRODUCE2、RENDEZVOUS1→RENDEZVOUS2，
-	// 以及 BEGIN_DIR /tor/hs/3 收/服外层描述符；仍缺限速/生命周期/真网被选，
-	// 禁止写 HSDir= / HSIntro= / HSRend=。
-	// LinkAuth=3：入站已校验 AUTHENTICATE type 3（SLOG/CLOG/SCERT/TLSSECRETS/SIG）。
-	fmt.Fprintf(&buf, "proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1\n")
+	// proto 只写已实现能力，按协议名排序。
+	// Cons/Desc/Microdesc=2：能验签并理解现行共识/描述符/microdesc（含对外按 flavor 分库）。
+	// Link=3-5：VERSIONS 仍宣告 3/4/5；LinkAuth=3 已校验 AUTH0003。
+	// Relay=2-4：CREATE2/EXTEND2 经典 ntor 与 ntor-v3。无 TAP/CREATE_FAST（Relay=1）。
+	// FlowCtrl=1-2：经典窗口 + 出口 Vegas。
+	// 禁止：Circuit=（不是现行 proto 名）；Padding=2 / Conflux（中继侧未实现机/LINK）；
+	// DirCache=2（缺真网被当缓存）；HS*（缺 extra-info hidserv / 真网被选）；Relay=5-6。
+	fmt.Fprintf(&buf, "proto Cons=2 Desc=2 FlowCtrl=1-2 Link=3-5 LinkAuth=3 Microdesc=2 Relay=2-4\n")
 	fmt.Fprintf(&buf, "published %s\n",
 		d.PublishedTime.Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(&buf, "fingerprint %s\n", formatFingerprintGroups(d.Fingerprint()))

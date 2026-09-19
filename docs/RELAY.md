@@ -37,6 +37,7 @@ gotor ORPort 9001 ExitRelay 1 ReduceExitPolicy 1 SocksPort 0 \
 - 无匹配规则时默认 accept（C Tor）；`ExitPolicyRejectPrivate 1` 前置拒绝私网
 - `ReduceExitPolicy 1` 追加 C Tor 精简端口表；未写绝对 `accept *:*` / `reject *:*` 时追加默认或精简策略
 - server descriptor 写入真实 `accept`/`reject` 与 `ipv6-policy`；**不**自己宣告 Exit/BadExit
+- 描述符 `proto` 只宣告已实现：`Cons=2 Desc=2 FlowCtrl=1-2 Link=3-5 LinkAuth=3 Microdesc=2 Relay=2-4`。不写 `Circuit=`、中继侧未实现的 Padding/Conflux、DirCache=2 / HS* / Relay=5-6
 - 可读 C Tor `DataDirectory/keys` 身份文件，避免换二进制丢身份
 - 默认 `go test` 不访问公网；出口解析仅在运行时发生
 

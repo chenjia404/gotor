@@ -165,7 +165,7 @@ func TestGenerateServerDescriptor(t *testing.T) {
 				"router " + desc.Nickname,
 				desc.Address,
 				"platform",
-				"proto Link=",
+				"proto Cons=",
 				"published",
 				"fingerprint",
 				"bandwidth",
@@ -214,13 +214,18 @@ func TestDescriptorDoesNotAdvertiseDirCache2(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := string(desc.RawDescriptor)
-	for _, tok := range []string{"DirCache=", "HSDir=", "HSIntro=", "HSRend=", "Relay=5", "Relay=6"} {
+	for _, tok := range []string{
+		"DirCache=", "HSDir=", "HSIntro=", "HSRend=",
+		"Relay=5", "Relay=6", "Relay=1",
+		"Circuit=", "Padding=", "Conflux=",
+	} {
 		if strings.Contains(raw, tok) {
-			t.Fatalf("未达对外验收前禁止在 proto 宣告 %s，得到:\n%s", tok, protoLineOf(raw))
+			t.Fatalf("未达对外验收或未实现前禁止在 proto 宣告 %s，得到:\n%s", tok, protoLineOf(raw))
 		}
 	}
-	if !strings.Contains(raw, "LinkAuth=3") {
-		t.Fatalf("已校验 AUTHENTICATE type 3 时应宣告 LinkAuth=3，得到:\n%s", protoLineOf(raw))
+	want := "proto Cons=2 Desc=2 FlowCtrl=1-2 Link=3-5 LinkAuth=3 Microdesc=2 Relay=2-4"
+	if got := protoLineOf(raw); got != want {
+		t.Fatalf("proto 应只宣告已实现能力\nwant %s\ngot  %s", want, got)
 	}
 }
 

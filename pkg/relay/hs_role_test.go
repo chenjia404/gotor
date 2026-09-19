@@ -535,7 +535,7 @@ func TestDescriptorDoesNotAdvertiseHSRoles(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := string(desc.RawDescriptor)
-	for _, tok := range []string{"HSDir=", "HSIntro=", "HSRend=", "Relay=5", "Relay=6"} {
+	for _, tok := range []string{"HSDir=", "HSIntro=", "HSRend=", "Relay=5", "Relay=6", "Circuit=", "Padding=", "Conflux="} {
 		if bytes.Contains([]byte(raw), []byte(tok)) {
 			t.Fatalf("未实现完整 HS 中继角色前禁止 proto 含 %s", tok)
 		}

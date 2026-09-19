@@ -61,7 +61,7 @@ gotor **不是** Tor Project 官方实现，也未受其监督或背书。
 | 角色 | 已对齐（含真网证据） | PARTIAL | 官方有我们没有 |
 |------|----------------------|---------|----------------|
 | **客户端** | 共识 9/9 验签、`cached-certs` 重启 0 次 `/tor/keys/fp`、DirCache=2 consdiff、microdesc、Link TLS+CERTS type 7、默认 ntor-v3 CREATE2/EXTEND2、3-hop SOCKS5 `IsTor=true`、RESOLVE、FlowCtrl=2 Vegas soak、Relay=5/6 CGO、Conflux=1、EXTEND2 IPv6、`p`/`p6` 出口策略、Desc=4 family-ids、Padding=2 协商 ACK、v3 `.onion` 客户端 HTTP 200 | Guard 选路与官方指纹仍可能有差异；Fast/MiddleOnly/BadExit 已强制但未单独真网标 WORKING；circpad token-removal；**vanguards 客户端 L2+L3**（读共识 `guard-hs-l*`；无托管侧）；**洋葱 PoW 客户端**（无真网 PoW 服务验收） | 托管侧 vanguards；完整 PT/网桥客户端生产路径；与 Tor Browser 同级的隔离/反指纹 |
-| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成 | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；**ntor-v3 type 3 `[02 06]` 则 CGO 剥层/回程 + 出口 SENDME v1（16 字节 tag FIFO）**（未宣告 Relay=5-6）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 **ns 与 microdesc 分库**、micro/all、`/tor/keys`、**最多 72 小时历史→当前 limited-ed**、**gzip/deflate/`.z` / 304**、**FPRLIST 签名过滤**、**x-zstd / x-tor-lzma**、**预压缩 consdiff 库**（未宣告 DirCache=2）；末端跳 ESTABLISH + **INTRODUCE1→INTRODUCE2 / RENDEZVOUS1→RENDEZVOUS2** + **HSDir `/tor/hs/3` 验签收/服 + 哈希环 spread_store + 引言点令牌桶**（未宣告 HS*）；**extra-info-digest 交叉引用 + 观测带宽历史**（无观测不写 history）；**官方 DoS* 键 + CREATE2/每 IP + auto 跟共识 + ConnectRate/Burst + StreamCreation + AUTHENTICATE 单跳区分 + CircuitCreationDefenseType + 共识 nodelist 核对身份**（默认 auto 关） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（真网被当缓存）；真网被选为 intro/rend/HSDir；HS* proto（extra-info hidserv / 真网被选）；真网被请求 CGO 的证据；完整 dos.c（geoip / 其余未接线防御与统计）；完整 extra-info（dirreq/exit/conn-bi-direct 与真网归档） |
+| **中继** | 描述符可 POST 到权威并获 HTTP 200；交叉证书（onion-key-crosscert / ntor-onion-key-crosscert）与 Ed25519 摘要签名按 dir-spec 生成；**proto 只宣告已实现的 Cons/Desc/Microdesc/Link/LinkAuth/Relay/FlowCtrl** | ORPort 监听；入站握手 CERTS/AUTH_CHALLENGE/NETINFO；**LinkAuth=3 校验 AUTHENTICATE type 3**；ORPort self-test 门闩（未测活不发布；`AssumeReachable` 跳过探测）；CREATE2 经典 ntor / ntor-v3；**ntor-v3 type 3 `[02 06]` 则 CGO 剥层/回程 + 出口 SENDME v1（16 字节 tag FIFO）**（未宣告 Relay=5-6）；中间跳出站握手（VERSIONS/CERTS/NETINFO）+ CircID MSB + 按身份入池；EXTEND2 剥层转发与回程加密（离线单测）；出口策略解码与 EXIT 流（实验）；DirPort/BEGIN_DIR 可服务 **ns 与 microdesc 分库**、micro/all、`/tor/keys`、**最多 72 小时历史→当前 limited-ed**、**gzip/deflate/`.z` / 304**、**FPRLIST 签名过滤**、**x-zstd / x-tor-lzma**、**预压缩 consdiff 库**（未宣告 DirCache=2）；末端跳 ESTABLISH + **INTRODUCE1→INTRODUCE2 / RENDEZVOUS1→RENDEZVOUS2** + **HSDir `/tor/hs/3` 验签收/服 + 哈希环 spread_store + 引言点令牌桶**（未宣告 HS*）；**extra-info-digest 交叉引用 + 观测带宽历史**（无观测不写 history）；**官方 DoS* 键 + CREATE2/每 IP + auto 跟共识 + ConnectRate/Burst + StreamCreation + AUTHENTICATE 单跳区分 + CircuitCreationDefenseType + 共识 nodelist 核对身份**（默认 auto 关） | **进共识 `Running`**；真网被官方客户端选为中间跳的证据；对外宣告 DirCache=2（真网被当缓存）；真网被选为 intro/rend/HSDir；HS* proto（extra-info hidserv / 真网被选）；真网被请求 CGO 的证据；完整 dos.c（geoip / 其余未接线防御与统计）；完整 extra-info（dirreq/exit/conn-bi-direct 与真网归档） |
 | **洋葱托管** | 无（未上线） | ESTABLISH_INTRO；ntor `rend_circ_nonce`；BEGIN_DIR 上传；type-8 致盲证书 + 双层加密密封；torrc `HiddenService*` | **真网发布后被客户端找到并完成 INTRODUCE2→RENDEZVOUS**；官方 intro/rend 生命周期与限速；vanguards |
 | **网桥 / PT** | 无 | `pkg/pt` 子进程框架、obfs4 配置解析、本地 integration 桩 | 向 BridgeAuth 生产发布；客户端经官方 PT 进网；网桥描述符/统计与 C Tor 对齐 |
 | **控制端口** | AUTHENTICATE；**AUTHCHALLENGE SAFECOOKIE**；COOKIE / HASHEDPASSWORD；GETINFO/GETCONF/SETCONF 子集；SETEVENTS（CIRC/STREAM/BW/NOTICE 等）；SIGNAL；MAPADDRESS | GETINFO 键远少于 control-spec；`version` 仍回 `go-tor 0.1.0`（CLI `--version` 已报 `0.4.9.11 (gotor)`） | ADD_ONION / DEL_ONION；EXTENDCIRCUIT / ATTACHSTREAM；HSFETCH / HSPOST；USEFEATURE；完整 `circuit-status` / `ns/id` / `desc/id` 等 |
@@ -96,10 +96,10 @@ required-relay-protocols      Cons=2 Desc=2 DirCache=2 FlowCtrl=1-2 HSDir=2 HSIn
 当前描述符写的是：
 
 ```
-proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
+proto Cons=2 Desc=2 FlowCtrl=1-2 Link=3-5 LinkAuth=3 Microdesc=2 Relay=2-4
 ```
 
-问题：缺 DirCache/HSDir/HSIntro/HSRend/Cons/Desc/Microdesc；`Circuit=` 不是现行 proto 名；Link 从 3 起、Conflux=1（mainnet 常见只写 2）。**禁止**在未实现时把 required 行写进 `proto` 骗权威。
+问题：缺 **DirCache=2 / HSDir / HSIntro / HSRend**（代码已有切片，缺真网被当缓存 / 被选 / extra-info hidserv，**禁止**写进 `proto`）；仍发 Link 3。**禁止**在未实现时把 required 行写进 `proto` 骗权威。
 
 ---
 
@@ -109,9 +109,10 @@ proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ### 1. 中继进共识（Running / self-test）
 
-- [ ] **状态**：PARTIAL（入站握手已修：VERSIONS 后 CERTS type 1/2/4/5/7 + AUTH_CHALLENGE + NETINFO，CircID 协商后切 4 字节。self-test 已接到发布门闩：未成功且未 `AssumeReachable` 则不 POST；成功经已有客户端电路 EXTEND2 到本 ORPort。实验中继仍仅 Valid/V2Dir，**缺真网 Running**，未进共识）
+- [ ] **状态**：PARTIAL（入站握手已修：VERSIONS 后 CERTS type 1/2/4/5/7 + AUTH_CHALLENGE + NETINFO，CircID 协商后切 4 字节。self-test 已接到发布门闩：未成功且未 `AssumeReachable` 则不 POST；成功经已有客户端电路 EXTEND2 到本 ORPort。描述符 `proto` 只宣告已实现的 Cons/Desc/Microdesc/Link/LinkAuth/Relay/FlowCtrl。实验中继仍仅 Valid/V2Dir，**缺真网 Running**，未进共识）
 - **现有代码**：`pkg/relay/selftest.go`、`pkg/client/selftest.go`、`pkg/relay/or_handler.go`、`pkg/relay/or_certs.go`、`pkg/relay/descriptor.go`、`pkg/relay/publisher.go`、`pkg/relay/server.go`（`startPublisher`）、`pkg/relay/descriptor_verify.go`
-- **要做**：观察权威投票是否出现 `Running` 并进入共识 `r` 行；修复 `proto` 只宣告已实现能力。self-test 成功或权威 200 **仍不等于** Running。
+- **已做（协议切片，2026-09-19）**：去掉非现行名 `Circuit=`、未实现的中继侧 `Padding=2`/`Conflux=1`、以及 TAP 时代的 `Relay=1`。补上已实现的 `Cons=2` `Desc=2` `Microdesc=2`；`Relay=2-4`。仍禁止 `DirCache=2` / HS* / `Relay=5-6`。
+- **要做**：观察权威投票是否出现 `Running` 并进入共识 `r` 行。self-test 成功或权威 200 **仍不等于** Running。
 - **禁止**：把权威 200、Valid 或本端 self-test 成功写成「已进共识」；伪造 Running；全零 identity / ntor key。
 
 ### 2. 真网当中间跳
@@ -150,7 +151,7 @@ proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ### 6. relay 侧 CGO
 
-- [ ] **状态**：PARTIAL（服务端识别 ntor-v3 type 3 `[02 06]`，KDF 160，AES-128 ENC_UIV + v1 剥层/回程；出口 DATA 按 488 分片；**出口电路级 SENDME v1 FIFO**；**FlowCtrl=2 出口 TOR_VEGAS（`cwnd-inflight` + orconn_blocked）**。描述符仍 `Relay=1-4`。**无**真网被请求 CGO 的观察；无中继出口真网 soak）
+- [ ] **状态**：PARTIAL（服务端识别 ntor-v3 type 3 `[02 06]`，KDF 160，AES-128 ENC_UIV + v1 剥层/回程；出口 DATA 按 488 分片；**出口电路级 SENDME v1 FIFO**；**FlowCtrl=2 出口 TOR_VEGAS（`cwnd-inflight` + orconn_blocked）**。描述符仍 `Relay=2-4`。**无**真网被请求 CGO 的观察；无中继出口真网 soak）
 - **现有代码**：客户端 `pkg/crypto/cgo.go`、`pkg/circuit` CGO 路径；中继 `pkg/relay/circuit_crypto.go`、`pkg/crypto/ntorv3_server.go`。互操作 `docs/interop/cgo-relay.md`。
 - **已做（协议切片，2026-08-20）**：畸形 type 3 失败握手；末端 `RelayForward` + `RelayOriginate`；中间跳 peel + `wrapOutbound`（不误 originate）。**禁止** `Relay=5-6`。
 - **已做（协议切片，2026-09-19）**：入向 DATA 凑满 increment 后发电路级 SENDME v1，tag 为 20 字节 tor1 digest 或 16 字节 CGO T；出口发出 DATA 后 FIFO 记下 tag，客户端电路级 SENDME 必须 v1 且匹配，否则 DESTROY TORPROTOCOL。CGO 电路不发流级 SENDME。
