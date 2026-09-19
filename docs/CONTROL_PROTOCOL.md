@@ -127,7 +127,7 @@ SETCONF key=value [key=value ...]
 < 250 OK
 ```
 
-运行时可写键立即生效；`SocksPort`/`ORPort`/`DirPort`/`Address`/`PublishServerDescriptor`/`AssumeReachable` 等需重启，会报错而非假装已改。
+运行时可写键立即生效；`SocksPort`/`ORPort`/`DirPort`/`DirCache`/`IPv6Exit`/`ReduceExitPolicy` 等需重启，会报错而非假装已改。
 
 ### SETEVENTS
 

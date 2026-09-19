@@ -47,6 +47,9 @@ The following configuration parameters can be queried via GETCONF:
 - `Address` - 对外宣告地址
 - `PublishServerDescriptor` - 是否尝试发布描述符（0/1）
 - `AssumeReachable` - 跳过 ORPort 可达性探测（0/1）
+- `DirCache` - torrc 目录缓存开关（0/1，不是协议版本 DirCache=2）
+- `IPv6Exit` - 是否允许 IPv6 出口（0/1）
+- `ReduceExitPolicy` - 精简默认出口策略（0/1）
 - `DataDirectory` - Directory for persistent state
 - `ConnLimit` - Max concurrent connections
 - `DormantTimeout` - Time before entering dormant mode
