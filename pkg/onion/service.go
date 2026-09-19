@@ -347,6 +347,7 @@ func NewService(config *ServiceConfig, log *logger.Logger) (*Service, error) {
 			log,
 		)
 		service.rendezvousBuilder.SetVanguards(config.Vanguards, config.GuardManager)
+		service.rendezvousBuilder.SetMicrodescLoader(config.MicrodescLoader)
 	}
 
 	return service, nil

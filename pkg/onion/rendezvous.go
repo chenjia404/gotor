@@ -31,6 +31,7 @@ type RendezvousCircuitBuilder struct {
 	pathSelector   PathSelectorInterface
 	vanguards      *path.VanguardSet
 	guards         *path.GuardManager
+	keys           PathMicrodescLoader
 	logger         *logger.Logger
 }
 
@@ -54,6 +55,14 @@ func (r *RendezvousCircuitBuilder) SetVanguards(v *path.VanguardSet, gm *path.Gu
 	}
 	r.vanguards = v
 	r.guards = gm
+}
+
+// SetMicrodescLoader 在 CREATE2 前补齐会合路径 ntor/Ed25519。禁止全零密钥。
+func (r *RendezvousCircuitBuilder) SetMicrodescLoader(loader PathMicrodescLoader) {
+	if r == nil {
+		return
+	}
+	r.keys = loader
 }
 
 // BuildRendezvousCircuit builds a 3-hop circuit to a rendezvous point
@@ -106,6 +115,10 @@ func (r *RendezvousCircuitBuilder) BuildRendezvousCircuit(ctx context.Context, l
 		"middle", p.Middle.Nickname,
 		"l3", hopNick(p.Middle2),
 		"exit", p.Exit.Nickname)
+
+	if err := ensurePathKeys(ctx, r.keys, p); err != nil {
+		return nil, fmt.Errorf("microdescriptors for rendezvous path: %w", err)
+	}
 
 	// Build the circuit
 	circ, err := r.circuitBuilder.BuildCircuit(ctx, p, timeout)

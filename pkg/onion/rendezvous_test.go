@@ -418,6 +418,41 @@ func TestBuildRendezvousCircuit_Success(t *testing.T) {
 	}
 }
 
+func TestBuildRendezvousCircuitFetchesKeysBeforeBuild(t *testing.T) {
+	relays := createTestRelays()
+	fp := make([]byte, 32)
+	for i := range fp {
+		fp[i] = 0xCC
+	}
+	relays[2].IdentityKey = fp
+	for _, r := range relays {
+		r.NtorOnionKey = nil
+		r.RSAIdentity = nil
+	}
+	loader := &recordingKeyLoader{}
+	sawKeys := false
+	builder := &mockCircuitBuilder{
+		buildFunc: func(ctx context.Context, p *path.Path, timeout time.Duration) (*circuit.Circuit, error) {
+			if p.Guard.HasNtorKeys() && p.Middle.HasNtorKeys() && p.Exit.HasNtorKeys() {
+				sawKeys = true
+			}
+			return &circuit.Circuit{ID: 7}, nil
+		},
+	}
+	rcb := NewRendezvousCircuitBuilder(builder, &mockPathSelector{relays: relays}, nil)
+	rcb.SetMicrodescLoader(loader)
+	_, err := rcb.BuildRendezvousCircuit(context.Background(), createLinkSpecifiersWithFingerprint("10.0.0.1", 443, fp), time.Second)
+	if err != nil {
+		t.Fatalf("BuildRendezvousCircuit: %v", err)
+	}
+	if loader.called == 0 {
+		t.Fatal("会合电路必须先拉 microdesc")
+	}
+	if !sawKeys {
+		t.Fatal("建路时 hops 应已有 ntor 密钥")
+	}
+}
+
 func TestBuildRendezvousCircuit_NoBuilder(t *testing.T) {
 	selector := &mockPathSelector{relays: createTestRelays()}
 	rcb := NewRendezvousCircuitBuilder(nil, selector, nil)
