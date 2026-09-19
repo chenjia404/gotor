@@ -1590,6 +1590,14 @@ func (p *clientConfigProvider) GetConfigValue(key string) (string, bool) {
 		return boolStr(cfg.SafeSocks), true
 	case "TestSocks":
 		return boolStr(cfg.TestSocks), true
+	case "ClientUseIPv4":
+		return boolStr(cfg.ClientUseIPv4), true
+	case "ClientUseIPv6":
+		return boolStr(cfg.ClientUseIPv6), true
+	case "ClientPreferIPv6ORPort":
+		return boolStr(cfg.ClientPreferIPv6ORPort), true
+	case "ClientRejectInternalAddresses":
+		return boolStr(cfg.ClientRejectInternalAddresses), true
 	case "PaddingStrategy":
 		return cfg.PaddingStrategy, true
 	case "PaddingMinInterval":
@@ -1986,6 +1994,7 @@ func (p *clientConfigProvider) SetConfigValue(key, value string) error {
 		"IsolateDestinations", "IsolateSOCKSAuth", "IsolateClientPort",
 		"IsolateClientProtocol", "PaddingDummyTraffic", "RateLimitCleanupInterval",
 		"SafeSocks", "TestSocks", "ReducedCircuitPadding", "ConnectionPadding",
+		"ClientUseIPv4", "ClientUseIPv6", "ClientPreferIPv6ORPort", "ClientRejectInternalAddresses",
 		"GuardStateBackupCount", "GuardStateSnapshotInterval", "GuardStateLockTimeout",
 		"TracingEndpoint", "TracingExporter", "TracingInsecure", "TracingTimeout",
 		"MemoryHighWaterMark", "MemoryCriticalMark", "MemoryMaxGoroutines",

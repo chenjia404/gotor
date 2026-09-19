@@ -39,6 +39,10 @@ The following configuration parameters can be queried via GETCONF:
 - `DNSPort` - UDP DNS 端口（0=关闭）
 - `DisableNetwork` - 起监听但不拉共识/不建电路（0/1）
 - `ClientOnly` - 禁止作为中继/出口运行（0/1）
+- `ClientUseIPv4` - 是否用 IPv4 连 OR（0/1）
+- `ClientUseIPv6` - 是否用 IPv6 连 OR（0/1）
+- `ClientPreferIPv6ORPort` - 优先 IPv6 ORPort（0/1）
+- `ClientRejectInternalAddresses` - 拒绝内网目标（0/1）
 - `ORPort` - OR 监听端口（0=不启用中继）
 - `DirPort` - 目录缓存 HTTP 端口（0=不监听）
 - `Nickname` - 中继昵称
