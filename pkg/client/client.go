@@ -1496,6 +1496,12 @@ func (p *clientConfigProvider) GetConfigValue(key string) (string, bool) {
 		return fmt.Sprintf("%d", cfg.RelayBandwidthRate), true
 	case "BandwidthBurst", "RelayBandwidthBurst":
 		return fmt.Sprintf("%d", cfg.RelayBandwidthBurst), true
+	case "ExitPolicy":
+		return strings.Join(cfg.ExitPolicyLines, ","), true
+	case "ExitPolicyRejectPrivate":
+		return boolStr(cfg.ExitPolicyRejectPrivate), true
+	case "ExitPolicyRejectLocalInterfaces":
+		return boolStr(cfg.ExitPolicyRejectLocalInterfaces), true
 	case "DataDirectory":
 		return cfg.DataDirectory, true
 	case "ConnLimit":
@@ -1952,7 +1958,7 @@ func (p *clientConfigProvider) SetConfigValue(key, value string) error {
 		return nil
 
 	// Settings that require restart
-	case "SocksPort", "ControlPort", "HTTPTunnelPort", "DNSPort", "DisableNetwork", "ClientOnly", "ORPort", "DirPort", "Nickname", "ExitRelay", "ContactInfo", "Address", "PublishServerDescriptor", "AssumeReachable", "DirCache", "IPv6Exit", "ReduceExitPolicy", "BandwidthRate", "BandwidthBurst", "RelayBandwidthRate", "RelayBandwidthBurst", "DataDirectory", "NumEntryGuards",
+	case "SocksPort", "ControlPort", "HTTPTunnelPort", "DNSPort", "DisableNetwork", "ClientOnly", "ORPort", "DirPort", "Nickname", "ExitRelay", "ContactInfo", "Address", "PublishServerDescriptor", "AssumeReachable", "DirCache", "IPv6Exit", "ReduceExitPolicy", "BandwidthRate", "BandwidthBurst", "RelayBandwidthRate", "RelayBandwidthBurst", "ExitPolicy", "ExitPolicyRejectPrivate", "ExitPolicyRejectLocalInterfaces", "DataDirectory", "NumEntryGuards",
 		"UseEntryGuards", "UseBridges", "MetricsPort", "EnableMetrics",
 		"ConnLimit", "EnableConnectionPooling", "ConnectionPoolMaxIdle",
 		"ConnectionPoolMaxLife", "EnableCircuitPrebuilding", "CircuitPoolMinSize",

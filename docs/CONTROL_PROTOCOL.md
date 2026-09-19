@@ -127,7 +127,7 @@ SETCONF key=value [key=value ...]
 < 250 OK
 ```
 
-运行时可写键立即生效；`SocksPort`/`ORPort`/`BandwidthRate`/`BandwidthBurst` 等需重启，会报错而非假装已改限速。
+运行时可写键立即生效；`SocksPort`/`ORPort`/`BandwidthRate`/`ExitPolicy` 等需重启，会报错而非假装已改限速或出口策略。
 
 ### SETEVENTS
 

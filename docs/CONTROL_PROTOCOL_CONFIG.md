@@ -52,6 +52,9 @@ The following configuration parameters can be queried via GETCONF:
 - `ReduceExitPolicy` - 精简默认出口策略（0/1）
 - `BandwidthRate` / `RelayBandwidthRate` - 中继带宽上限（字节/秒，0=不限；两键读同一存储）
 - `BandwidthBurst` / `RelayBandwidthBurst` - 突发上限（字节，0=不限；两键读同一存储）
+- `ExitPolicy` - torrc 中显式规则（逗号拼接；空表示未写行，不含编译期默认策略）
+- `ExitPolicyRejectPrivate` - 拒绝私网/环回等（0/1）
+- `ExitPolicyRejectLocalInterfaces` - 拒绝本机网卡地址（0/1）
 - `DataDirectory` - Directory for persistent state
 - `ConnLimit` - Max concurrent connections
 - `DormantTimeout` - Time before entering dormant mode
