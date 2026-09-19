@@ -245,6 +245,7 @@ func run(ctx context.Context, cfg *config.Config, log *logger.Logger) error {
 		relaySrv.SetHSDirRing(relays, cur, prev, params)
 		relaySrv.SetHSIntroDoSParams(params)
 		relaySrv.SetDoSConsensusParams(params)
+		relaySrv.SetCCParamsFromConsensus(params)
 	}
 
 	sigCh := make(chan os.Signal, 1)

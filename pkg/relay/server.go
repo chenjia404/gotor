@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/opd-ai/go-tor/pkg/circuit"
 	"github.com/opd-ai/go-tor/pkg/config"
 	"github.com/opd-ai/go-tor/pkg/datadir"
 	"github.com/opd-ai/go-tor/pkg/directory"
@@ -250,6 +251,14 @@ func (s *Server) SetDoSConsensusParams(params map[string]int) {
 	if s.listener.dos != nil {
 		s.listener.dos.ApplyConsensus(params)
 	}
+}
+
+// SetCCParamsFromConsensus 把共识 cc_* 交给出口 Vegas。不是完整 congestion_control.c。
+func (s *Server) SetCCParamsFromConsensus(params map[string]int) {
+	if s == nil || s.listener == nil || s.listener.circuitHandler == nil || s.listener.circuitHandler.exits == nil {
+		return
+	}
+	s.listener.circuitHandler.exits.SetCCParams(circuit.CCParamsFromConsensus(params))
 }
 
 // SetHSDirRing 把最近共识的 HSDir 哈希环交给 DirCache（POST 责任判定）。未宣告 HSDir=2。

@@ -150,11 +150,12 @@ proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ### 6. relay 侧 CGO
 
-- [ ] **状态**：PARTIAL（服务端识别 ntor-v3 type 3 `[02 06]`，KDF 160，AES-128 ENC_UIV + v1 剥层/回程；出口 DATA 按 488 分片；**出口电路级 SENDME v1（20 字节 digest / 16 字节 CGO tag）FIFO 校验**。描述符仍 `Relay=1-4`。**无**真网被请求 CGO 的观察；中继侧 Vegas 不完整）
+- [ ] **状态**：PARTIAL（服务端识别 ntor-v3 type 3 `[02 06]`，KDF 160，AES-128 ENC_UIV + v1 剥层/回程；出口 DATA 按 488 分片；**出口电路级 SENDME v1 FIFO**；**FlowCtrl=2 出口 TOR_VEGAS（`cwnd-inflight`，不是 `+sendme_inc`）**。描述符仍 `Relay=1-4`。**无**真网被请求 CGO 的观察；无中继出口真网 soak）
 - **现有代码**：客户端 `pkg/crypto/cgo.go`、`pkg/circuit` CGO 路径；中继 `pkg/relay/circuit_crypto.go`、`pkg/crypto/ntorv3_server.go`。互操作 `docs/interop/cgo-relay.md`。
 - **已做（协议切片，2026-08-20）**：畸形 type 3 失败握手；末端 `RelayForward` + `RelayOriginate`；中间跳 peel + `wrapOutbound`（不误 originate）。**禁止** `Relay=5-6`。
-- **已做（协议切片，2026-09-19）**：入向 DATA 凑满 increment 后发电路级 SENDME v1，tag 为 20 字节 tor1 digest 或 16 字节 CGO T；出口发出 DATA 后 FIFO 记下 tag，客户端电路级 SENDME 必须 v1 且匹配，否则 DESTROY TORPROTOCOL。CGO 电路不发流级 SENDME。仍用 `+sendme_inc` 补窗，不是完整 Vegas。
-- **要做**：真网被官方客户端请求 CGO 的证据；中继侧 Vegas。在此之前 **禁止** 在 `proto` 写 `Relay=5-6`。
+- **已做（协议切片，2026-09-19）**：入向 DATA 凑满 increment 后发电路级 SENDME v1，tag 为 20 字节 tor1 digest 或 16 字节 CGO T；出口发出 DATA 后 FIFO 记下 tag，客户端电路级 SENDME 必须 v1 且匹配，否则 DESTROY TORPROTOCOL。CGO 电路不发流级 SENDME。
+- **已做（协议切片，2026-09-19）**：出口 FlowCtrl=2 接到 `circuit.Vegas`：发出 DATA 记 `inflight`，电路级 SENDME 跑 Slow Start / 拥塞避免，额度是 `cwnd-inflight`。共识 `cc_*` 经 `SetCCParamsFromConsensus` 注入。BEGIN 不得覆盖已有 Vegas。CC 电路不看流级窗口。本切片不采样 orconn_blocked。
+- **要做**：真网被官方客户端请求 CGO 的证据；中继出口真网 soak。在此之前 **禁止** 在 `proto` 写 `Relay=5-6`。
 - **禁止**：AES-256 当 CGO；未协商偷偷用 tor1 还宣称 CGO；`CGO_AES_BITS` 与 C Tor 不一致。
 
 ### 7. 洋葱托管真网 INTRODUCE2

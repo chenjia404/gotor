@@ -502,7 +502,7 @@ func TestHandleSendmeDoesNotInflateFullWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.circOutWindow[1] = exitCircWindowInit
-	m.circExpectedSendme[1] = [][]byte{append([]byte(nil), tag...)}
+	m.circExpectedSendme[1] = []exitSendmePending{{digest: append([]byte(nil), tag...)}}
 	if err := m.HandleSendme(1, 0, payload); err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +510,7 @@ func TestHandleSendmeDoesNotInflateFullWindow(t *testing.T) {
 		t.Fatalf("满窗多余 SENDME 不得放大: %d", m.circOutWindow[1])
 	}
 	m.circOutWindow[1] = exitCircWindowInit - 20
-	m.circExpectedSendme[1] = [][]byte{append([]byte(nil), tag...)}
+	m.circExpectedSendme[1] = []exitSendmePending{{digest: append([]byte(nil), tag...)}}
 	if err := m.HandleSendme(1, 0, payload); err != nil {
 		t.Fatal(err)
 	}
@@ -615,7 +615,7 @@ func TestExitSendmeFIFOMatchAndMismatch(t *testing.T) {
 	good := bytes.Repeat([]byte{0x11}, cell.SendmeV1DigestLen)
 	bad := bytes.Repeat([]byte{0x22}, cell.SendmeV1DigestLen)
 	m.circOutWindow[5] = exitCircWindowInit - 100
-	m.circExpectedSendme[5] = [][]byte{append([]byte(nil), good...)}
+	m.circExpectedSendme[5] = []exitSendmePending{{digest: append([]byte(nil), good...)}}
 	payload, _ := cell.EncodeSendmeV1(bad)
 	if err := m.HandleSendme(5, 0, payload); err == nil {
 		t.Fatal("digest 不匹配应失败")
@@ -643,7 +643,7 @@ func TestAfterOutboundDATARecordsSendmeTag(t *testing.T) {
 		t.Fatal("未到 increment 不得入队")
 	}
 	m.afterOutboundDATA(2, 1, tag)
-	if len(m.circExpectedSendme[2]) != 1 || !bytes.Equal(m.circExpectedSendme[2][0], tag) {
+	if len(m.circExpectedSendme[2]) != 1 || !bytes.Equal(m.circExpectedSendme[2][0].digest, tag) {
 		t.Fatal("第 100 个 DATA 应记下 tag")
 	}
 }
@@ -696,5 +696,80 @@ func TestHandleBeginDirHonorsStreamLimit(t *testing.T) {
 	go func() { _, _ = cell.DecodeCell(server) }()
 	if err := m.HandleBeginDir(context.Background(), circ, client, 1); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestExitVegasRecordsEverySendmeInc(t *testing.T) {
+	m := NewExitStreamManager(NewExitPolicy(logger.NewDefault()), logger.NewDefault())
+	m.NoteCircuitFlow(3, true, 31)
+	tag := bytes.Repeat([]byte{0x44}, cell.SendmeV1DigestLen)
+	for i := 0; i < 30; i++ {
+		m.afterOutboundDATA(3, 1, tag)
+	}
+	if len(m.circExpectedSendme[3]) != 0 {
+		t.Fatal("未到 sendme_inc 不得入队")
+	}
+	m.afterOutboundDATA(3, 1, tag)
+	if len(m.circExpectedSendme[3]) != 1 || !bytes.Equal(m.circExpectedSendme[3][0].digest, tag) {
+		t.Fatal("第 31 个 DATA 应记下 tag")
+	}
+	snap := m.circCC[3].vegas.Snapshot()
+	if snap.Inflight != 31 {
+		t.Fatalf("inflight=%d want 31", snap.Inflight)
+	}
+	if m.circCC[3].vegas.PackageWindow() != 93 {
+		t.Fatalf("package_window=%d want 93", m.circCC[3].vegas.PackageWindow())
+	}
+}
+
+func TestExitVegasProcessSendmeGrowsCwnd(t *testing.T) {
+	m := NewExitStreamManager(NewExitPolicy(logger.NewDefault()), logger.NewDefault())
+	m.NoteCircuitFlow(3, true, 31)
+	tag := bytes.Repeat([]byte{0x55}, cell.SendmeV1DigestLen)
+	for i := 0; i < 31; i++ {
+		m.afterOutboundDATA(3, 1, tag)
+	}
+	time.Sleep(2 * time.Millisecond)
+	payload, err := cell.EncodeSendmeV1(tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.HandleSendme(3, 0, payload); err != nil {
+		t.Fatal(err)
+	}
+	snap := m.circCC[3].vegas.Snapshot()
+	if snap.Inflight != 0 {
+		t.Fatalf("ack 后 inflight=%d want 0", snap.Inflight)
+	}
+	if snap.Cwnd <= 124 {
+		t.Fatalf("有效 RTT 的 Slow Start 应涨窗, cwnd=%d", snap.Cwnd)
+	}
+	if m.circOutWindow[3] != snap.Cwnd {
+		t.Fatalf("出口窗应等于 cwnd-inflight=%d, got %d", snap.Cwnd, m.circOutWindow[3])
+	}
+}
+
+func TestNoteCircuitFlowDoesNotClobberVegas(t *testing.T) {
+	m := NewExitStreamManager(NewExitPolicy(logger.NewDefault()), logger.NewDefault())
+	m.NoteCircuitFlow(9, true, 31)
+	tag := bytes.Repeat([]byte{0x66}, cell.SendmeV1DigestLen)
+	m.afterOutboundDATA(9, 1, tag)
+	if m.circCC[9].vegas.Snapshot().Inflight != 1 {
+		t.Fatal("应记下 inflight")
+	}
+	m.NoteCircuitFlow(9, true, 31)
+	if m.circCC[9].vegas.Snapshot().Inflight != 1 {
+		t.Fatal("BEGIN/再次 NoteCircuitFlow 不得重建 Vegas")
+	}
+}
+
+func TestSetCCParamsAppliedOnNewVegas(t *testing.T) {
+	m := NewExitStreamManager(NewExitPolicy(logger.NewDefault()), logger.NewDefault())
+	p := circuit.DefaultCCParams()
+	p.CwndInit = 186
+	m.SetCCParams(p)
+	m.NoteCircuitFlow(1, true, 31)
+	if got := m.circCC[1].vegas.Snapshot().Cwnd; got != 186 {
+		t.Fatalf("cwnd_init from SetCCParams: %d", got)
 	}
 }

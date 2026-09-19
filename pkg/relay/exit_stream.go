@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
+	"github.com/opd-ai/go-tor/pkg/circuit"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
@@ -30,7 +31,6 @@ const (
 	beginFlagIPv4NotOK     = 2
 	beginFlagIPv6Preferred = 4
 	ccSendmeIncDefault     = 31
-	ccCwndInit             = 124
 )
 
 // ExitStreamManager 管理出口 TCP 流。
@@ -44,22 +44,27 @@ type ExitStreamManager struct {
 	gate    *exitConnGate
 	dirDial func() (net.Conn, error) // BEGIN_DIR：本机目录缓存
 
-	mu      sync.Mutex
-	streams map[streamKey]*exitStream
-	// 每电路：出向窗、入向计数、流数量
-	circOutWindow map[uint32]int
-	circInCount   map[uint32]int
-	circStreams   map[uint32]int
-	circCC        map[uint32]circFlow
-	// 最近一次入向 digest/tag（20 或 16 字节），供电路级 SENDME v1
-	lastFwdDigest map[uint32][]byte
-	// 出口发出 DATA 后记录的 tag FIFO，供客户端电路级 SENDME 校验
-	circExpectedSendme map[uint32][][]byte
+	mu                 sync.Mutex
+	streams            map[streamKey]*exitStream
+	circOutWindow      map[uint32]int
+	circInCount        map[uint32]int
+	circStreams        map[uint32]int
+	circCC             map[uint32]circFlow
+	lastFwdDigest      map[uint32][]byte
+	circExpectedSendme map[uint32][]exitSendmePending
+	ccParams           circuit.CCParams
 }
 
 type circFlow struct {
 	cc        bool
 	sendmeInc int
+	vegas     *circuit.Vegas
+}
+
+// exitSendmePending 出口发出 DATA 后记下的 tag 与时刻，供客户端电路级 SENDME 校验并估 RTT。
+type exitSendmePending struct {
+	digest []byte
+	sentAt time.Time
 }
 
 type streamKey struct {
@@ -90,7 +95,8 @@ func NewExitStreamManager(policy *ExitPolicy, log *logger.Logger) *ExitStreamMan
 		circStreams:        make(map[uint32]int),
 		circCC:             make(map[uint32]circFlow),
 		lastFwdDigest:      make(map[uint32][]byte),
-		circExpectedSendme: make(map[uint32][][]byte),
+		circExpectedSendme: make(map[uint32][]exitSendmePending),
+		ccParams:           circuit.DefaultCCParams(),
 		gate:               newExitConnGate(1024),
 	}
 }
@@ -108,6 +114,16 @@ func (m *ExitStreamManager) SetMaxExitConns(n int) {
 // SetDirDial 设置 BEGIN_DIR 本机目录缓存拨号。
 func (m *ExitStreamManager) SetDirDial(fn func() (net.Conn, error)) {
 	m.dirDial = fn
+}
+
+// SetCCParams 写入已验签共识的 FlowCtrl=2 参数。只影响之后新建的 Vegas。
+func (m *ExitStreamManager) SetCCParams(p circuit.CCParams) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.ccParams = p
+	m.mu.Unlock()
 }
 
 func (m *ExitStreamManager) lookupIP(ctx context.Context, host string) ([]net.IP, error) {
@@ -135,14 +151,33 @@ func (m *ExitStreamManager) NoteFwdDigest(circID uint32, digest []byte) {
 	m.mu.Unlock()
 }
 
-// NoteCircuitFlow 记录该电路是否协商了 FlowCtrl=2。
+// NoteCircuitFlow 记录该电路是否协商了 FlowCtrl=2；协商后立刻建 Vegas，BEGIN 不得覆盖。
 func (m *ExitStreamManager) NoteCircuitFlow(circID uint32, cc bool, sendmeInc int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cc {
+		m.ensureCCLocked(circID, sendmeInc)
+		return
+	}
 	if sendmeInc <= 0 {
 		sendmeInc = exitCircSendmeInc
 	}
-	m.mu.Lock()
-	m.circCC[circID] = circFlow{cc: cc, sendmeInc: sendmeInc}
-	m.mu.Unlock()
+	m.circCC[circID] = circFlow{cc: false, sendmeInc: sendmeInc}
+}
+
+// ensureCCLocked 在已持锁时为电路挂上 Vegas。已有状态机则不重建。
+func (m *ExitStreamManager) ensureCCLocked(circID uint32, sendmeInc int) {
+	if sendmeInc <= 0 {
+		sendmeInc = ccSendmeIncDefault
+	}
+	if f, ok := m.circCC[circID]; ok && f.vegas != nil {
+		return
+	}
+	v := circuit.NewVegas(m.ccParams, sendmeInc)
+	m.circCC[circID] = circFlow{cc: true, sendmeInc: sendmeInc, vegas: v}
+	if _, ok := m.circOutWindow[circID]; !ok {
+		m.circOutWindow[circID] = v.PackageWindow()
+	}
 }
 
 func (m *ExitStreamManager) flowOf(circID uint32) circFlow {
@@ -187,7 +222,7 @@ func (m *ExitStreamManager) CloseAll() {
 	m.circStreams = make(map[uint32]int)
 	m.lastFwdDigest = make(map[uint32][]byte)
 	m.circCC = make(map[uint32]circFlow)
-	m.circExpectedSendme = make(map[uint32][][]byte)
+	m.circExpectedSendme = make(map[uint32][]exitSendmePending)
 	m.mu.Unlock()
 	for _, es := range all {
 		m.teardown(es)
@@ -306,28 +341,18 @@ func (m *ExitStreamManager) HandleBegin(ctx context.Context, circ *ServerCircuit
 
 	sctx, cancel := context.WithCancel(rctx)
 	m.mu.Lock()
-	initCirc := exitCircWindowInit
-	initStream := exitStreamWindowInit
-	if circ != nil && circ.ccEnabled {
-		initCirc = ccCwndInit
-	}
 	m.streams[key] = &exitStream{
 		conn:          c,
 		cancel:        cancel,
-		packageWindow: initStream,
-		deliverWindow: initStream,
+		packageWindow: exitStreamWindowInit,
+		deliverWindow: exitStreamWindowInit,
 		held:          true,
 	}
 	m.circStreams[circ.CircuitID]++
-	if _, ok := m.circOutWindow[circ.CircuitID]; !ok {
-		m.circOutWindow[circ.CircuitID] = initCirc
-	}
 	if circ != nil && circ.ccEnabled {
-		inc := circ.sendmeInc
-		if inc <= 0 {
-			inc = ccSendmeIncDefault
-		}
-		m.circCC[circ.CircuitID] = circFlow{cc: true, sendmeInc: inc}
+		m.ensureCCLocked(circ.CircuitID, circ.sendmeInc)
+	} else if _, ok := m.circOutWindow[circ.CircuitID]; !ok {
+		m.circOutWindow[circ.CircuitID] = exitCircWindowInit
 	}
 	m.mu.Unlock()
 	held = false
@@ -379,7 +404,9 @@ func (m *ExitStreamManager) HandleBeginDir(ctx context.Context, circ *ServerCirc
 		deliverWindow: exitStreamWindowInit,
 		held:          true,
 	}
-	if _, ok := m.circOutWindow[circ.CircuitID]; !ok {
+	if circ != nil && circ.ccEnabled {
+		m.ensureCCLocked(circ.CircuitID, circ.sendmeInc)
+	} else if _, ok := m.circOutWindow[circ.CircuitID]; !ok {
 		m.circOutWindow[circ.CircuitID] = exitCircWindowInit
 	}
 	m.mu.Unlock()
@@ -524,11 +551,15 @@ func (m *ExitStreamManager) HandleData(circ *ServerCircuit, clientConn net.Conn,
 	return nil
 }
 
-// HandleSendme 客户端 SENDME：电路级必须 v1 且 FIFO 匹配发出 DATA 的 tag；已满窗口的多余 SENDME 丢弃，防止放大。
+// HandleSendme 客户端 SENDME：电路级必须 v1 且 FIFO 匹配发出 DATA 的 tag。
+// 经典电路：已满窗口的多余 SENDME 丢弃，防止放大。FlowCtrl=2：跑 Vegas，不得 +sendme_inc。
 func (m *ExitStreamManager) HandleSendme(circID uint32, streamID uint16, payload []byte) error {
 	if streamID != 0 {
 		m.mu.Lock()
 		defer m.mu.Unlock()
+		if m.flowOf(circID).vegas != nil {
+			return nil
+		}
 		if es := m.streams[streamKey{circID, streamID}]; es != nil {
 			if es.packageWindow >= exitStreamWindowInit {
 				return nil
@@ -553,15 +584,22 @@ func (m *ExitStreamManager) HandleSendme(circID uint32, streamID uint16, payload
 	if len(q) == 0 {
 		return fmt.Errorf("unexpected circuit SENDME")
 	}
-	if subtle.ConstantTimeCompare(q[0], digest) != 1 {
+	pending := q[0]
+	if len(pending.digest) != len(digest) || subtle.ConstantTimeCompare(pending.digest, digest) != 1 {
 		return fmt.Errorf("SENDME digest mismatch")
 	}
 	m.circExpectedSendme[circID] = q[1:]
 	flow := m.flowOf(circID)
-	initW := exitCircWindowInit
-	if flow.cc {
-		initW = ccCwndInit
+	if flow.vegas != nil {
+		rtt := int64(0)
+		if !pending.sentAt.IsZero() {
+			rtt = time.Since(pending.sentAt).Microseconds()
+		}
+		flow.vegas.ProcessSendme(rtt)
+		m.circOutWindow[circID] = flow.vegas.PackageWindow()
+		return nil
 	}
+	initW := exitCircWindowInit
 	cur := m.circOutWindow[circID]
 	if cur >= initW {
 		return nil
@@ -670,7 +708,11 @@ func (m *ExitStreamManager) pumpRemoteToClient(ctx context.Context, circ *Server
 func (m *ExitStreamManager) waitOutWindow(ctx context.Context, circID uint32, streamID uint16) bool {
 	for {
 		m.mu.Lock()
+		flow := m.flowOf(circID)
 		cw := m.circOutWindow[circID]
+		if flow.vegas != nil {
+			cw = flow.vegas.PackageWindow()
+		}
 		es := m.streams[streamKey{circID, streamID}]
 		sw := 0
 		if es != nil {
@@ -680,7 +722,11 @@ func (m *ExitStreamManager) waitOutWindow(ctx context.Context, circID uint32, st
 		if es == nil {
 			return false
 		}
-		if cw > 0 && sw > 0 {
+		if flow.vegas != nil {
+			if cw > 0 {
+				return true
+			}
+		} else if cw > 0 && sw > 0 {
 			return true
 		}
 		select {
@@ -731,25 +777,35 @@ func (m *ExitStreamManager) sendRelay(circ *ServerCircuit, clientConn net.Conn, 
 func (m *ExitStreamManager) afterOutboundDATA(circID uint32, streamID uint16, tag []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	flow := m.flowOf(circID)
+	tagOK := len(tag) == cell.SendmeV1DigestLen || len(tag) == cell.SendmeCGOTagLen
+	if flow.vegas != nil {
+		flow.vegas.OnDataSent()
+		m.circOutWindow[circID] = flow.vegas.PackageWindow()
+		if tagOK && flow.vegas.ShouldRecordSendme() {
+			m.circExpectedSendme[circID] = append(m.circExpectedSendme[circID], exitSendmePending{
+				digest: append([]byte(nil), tag...),
+				sentAt: time.Now(),
+			})
+		}
+		return
+	}
 	if m.circOutWindow[circID] > 0 {
 		m.circOutWindow[circID]--
 	}
 	if es := m.streams[streamKey{circID, streamID}]; es != nil && es.packageWindow > 0 {
 		es.packageWindow--
 	}
-	flow := m.flowOf(circID)
 	inc := flow.sendmeInc
 	if inc <= 0 {
 		inc = exitCircSendmeInc
 	}
-	initW := exitCircWindowInit
-	if flow.cc {
-		initW = ccCwndInit
-	}
-	sent := initW - m.circOutWindow[circID]
-	if sent > 0 && inc > 0 && sent%inc == 0 &&
-		(len(tag) == cell.SendmeV1DigestLen || len(tag) == cell.SendmeCGOTagLen) {
-		m.circExpectedSendme[circID] = append(m.circExpectedSendme[circID], append([]byte(nil), tag...))
+	sent := exitCircWindowInit - m.circOutWindow[circID]
+	if sent > 0 && inc > 0 && sent%inc == 0 && tagOK {
+		m.circExpectedSendme[circID] = append(m.circExpectedSendme[circID], exitSendmePending{
+			digest: append([]byte(nil), tag...),
+			sentAt: time.Now(),
+		})
 	}
 }
 

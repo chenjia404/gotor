@@ -313,3 +313,53 @@ func (s *vegasState) snapshot() VegasSnapshot {
 		EWMA:        time.Duration(s.ewmaRTTUsec) * time.Microsecond,
 	}
 }
+
+// Vegas 是一条电路上的 TOR_VEGAS 状态（客户端或出口共用）。
+type Vegas struct {
+	s *vegasState
+}
+
+// NewVegas 构造 FlowCtrl=2 出口/客户端用的 Vegas。sendmeInc 必须是握手结果。
+func NewVegas(p CCParams, sendmeInc int) *Vegas {
+	return &Vegas{s: newVegasState(p, sendmeInc)}
+}
+
+// OnDataSent 在发出一格 DATA 后增加 inflight。
+func (v *Vegas) OnDataSent() {
+	if v == nil || v.s == nil {
+		return
+	}
+	v.s.inflight++
+}
+
+// ShouldRecordSendme 在 inflight 落到 sendme_inc 倍数时为真（与客户端 maybeRecordSendmeTag 对齐）。
+func (v *Vegas) ShouldRecordSendme() bool {
+	if v == nil || v.s == nil || v.s.sendmeInc < 1 {
+		return false
+	}
+	return v.s.inflight%v.s.sendmeInc == 0
+}
+
+// ProcessSendme 在校验过的电路级 SENDME 上跑一轮 Vegas。
+func (v *Vegas) ProcessSendme(rttUsec int64) {
+	if v == nil || v.s == nil {
+		return
+	}
+	v.s.processSendme(rttUsec)
+}
+
+// PackageWindow 是还可再发的 DATA 格数（cwnd-inflight）。
+func (v *Vegas) PackageWindow() int {
+	if v == nil || v.s == nil {
+		return 0
+	}
+	return v.s.packageWindow()
+}
+
+// Snapshot 供测试观察，不是协议的一部分。
+func (v *Vegas) Snapshot() VegasSnapshot {
+	if v == nil || v.s == nil {
+		return VegasSnapshot{}
+	}
+	return v.s.snapshot()
+}

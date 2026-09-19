@@ -47,6 +47,7 @@ ntor-v3 `CC_FIELD_REQUEST` / `CC_FIELD_RESPONSE` 只交换 `sendme_inc`（mainne
 - `pkg/circuit/sendme.go`：SENDME v1 digest 仍强制校验，然后跑 Vegas
 - `pkg/directory.Client.LastConsensusParams()`：验签成功后缓存 `params`
 - `pkg/client` 建路前 `builder.SetCCParams(...)`
+- 出口：`pkg/relay/exit_stream.go` 同一套 `circuit.Vegas`；`cmd/gotor` bootstrap 后 `SetCCParamsFromConsensus`。orconn_blocked 未采样。无中继出口真网 soak。
 
 ## 真实网络（2026-08-19）
 

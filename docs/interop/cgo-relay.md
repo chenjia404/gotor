@@ -17,14 +17,15 @@
 ## 明确未做
 
 - 描述符 `proto` 写 `Relay=5-6`（缺真网被请求证据）
-- 中继侧完整 Vegas（出口仍按 `+sendme_inc` 补窗）
 - 真网官方客户端对本中继发出 type 3 并完成 CGO 电路的观察
+- 中继出口真网 soak；orconn_blocked 采样（出口本切片不读 OR 写阻塞）
 
 ## 本切片已做（2026-09-19）
 
 - 入向 DATA 凑满 increment 后发电路级 SENDME v1：tor1 用 20 字节滚动 SHA-1，CGO 用 16 字节 tag T。
 - 出口发出 DATA 后 FIFO 记下 originate tag；客户端电路级 SENDME 必须 v1 且匹配，否则 DESTROY TORPROTOCOL。
 - CGO 电路不发流级 SENDME（v1 `relay_cmd_expects_streamid_in_v1` 不含 SENDME）。
+- 出口 FlowCtrl=2 接到 `circuit.Vegas`：`inflight` / `cwnd-inflight`，共识 `cc_*` 经 `SetCCParamsFromConsensus`。BEGIN 不得覆盖已有 Vegas。
 - **禁止** `Relay=5-6`。
 
 ## 禁止
