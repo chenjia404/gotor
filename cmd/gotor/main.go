@@ -243,6 +243,7 @@ func run(ctx context.Context, cfg *config.Config, log *logger.Logger) error {
 	if relaySrv != nil {
 		relays, cur, prev, params := torClient.HSDirRingSnapshot()
 		relaySrv.SetHSDirRing(relays, cur, prev, params)
+		relaySrv.SetHSIntroDoSParams(params)
 	}
 
 	sigCh := make(chan os.Signal, 1)

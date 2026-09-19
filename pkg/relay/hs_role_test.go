@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"testing"
+	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/crypto"
@@ -179,6 +180,117 @@ func TestHandleIntroduce1ForwardsAndAcks(t *testing.T) {
 	}
 	if !bytes.Equal(ack.Data, introAckPayload(introAckSuccess)) {
 		t.Fatalf("ack %x", ack.Data)
+	}
+}
+
+func TestHandleIntroduce1DoSTokenBucket(t *testing.T) {
+	keys, err := onion.GenerateEstablishIntroKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := bytesRepeatHS(0x11, 20)
+	est, err := onion.BuildEstablishIntroPayloadWithDoS(keys.AuthPublic, keys.AuthPrivate, nonce, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kmSvc := bytesRepeatHS(0x22, 72)
+	kmCli := bytesRepeatHS(0x23, 72)
+	svcCC, err := newCircuitCrypto(kmSvc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cliCC, err := newCircuitCrypto(kmCli)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &ServerCircuit{CircuitID: 41, crypto: svcCC, circNonce: nonce}
+	cli := &ServerCircuit{CircuitID: 42, crypto: cliCC}
+	h := NewCircuitHandler(&RelayKeys{NtorOnionKey: bytesRepeatHS(0x33, 32)}, nil)
+	frozen := time.Unix(1_700_000_000, 0)
+	h.forwarder.nowFn = func() time.Time { return frozen }
+	svcConn := newMockConn()
+	cliConn := newMockConn()
+	if err := h.forwarder.handleEstablishIntro(svc, svcConn, est); err != nil {
+		t.Fatal(err)
+	}
+	intro1 := testIntroduce1Payload(keys.AuthPublic)
+	if err := h.forwarder.handleIntroduce1(cli, cliConn, intro1); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.forwarder.handleIntroduce1(cli, cliConn, intro1); err != nil {
+		t.Fatal(err)
+	}
+	svcCells := decodeAllRelays(t, svcConn, kmSvc)
+	if len(svcCells) != 2 {
+		t.Fatalf("限速后服务侧只应再收到一格 INTRODUCE2，got %d", len(svcCells))
+	}
+	if svcCells[1].Command != cell.RelayIntroduce2 {
+		t.Fatalf("cmd %d", svcCells[1].Command)
+	}
+	acks := decodeAllRelays(t, cliConn, kmCli)
+	if len(acks) != 2 {
+		t.Fatalf("acks %d", len(acks))
+	}
+	if !bytes.Equal(acks[0].Data, introAckPayload(introAckSuccess)) {
+		t.Fatalf("first ack %x", acks[0].Data)
+	}
+	if !bytes.Equal(acks[1].Data, introAckPayload(introAckNotRecognized)) {
+		t.Fatalf("rate-limited ack 应对齐 C Tor UNKNOWN_ID, got %x", acks[1].Data)
+	}
+	frozen = frozen.Add(2 * time.Second)
+	if err := h.forwarder.handleIntroduce1(cli, cliConn, intro1); err != nil {
+		t.Fatal(err)
+	}
+	svcCells = decodeAllRelays(t, svcConn, kmSvc)
+	if len(svcCells) != 3 {
+		t.Fatalf("令牌恢复后应再转发 INTRODUCE2，got %d", len(svcCells))
+	}
+}
+
+func TestHandleIntroduce1DoSConsensusDefault(t *testing.T) {
+	keys, err := onion.GenerateEstablishIntroKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := bytesRepeatHS(0x11, 20)
+	est, err := onion.BuildEstablishIntroPayload(keys.AuthPublic, keys.AuthPrivate, nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kmSvc := bytesRepeatHS(0x52, 72)
+	kmCli := bytesRepeatHS(0x53, 72)
+	svcCC, err := newCircuitCrypto(kmSvc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cliCC, err := newCircuitCrypto(kmCli)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &ServerCircuit{CircuitID: 51, crypto: svcCC, circNonce: nonce}
+	cli := &ServerCircuit{CircuitID: 52, crypto: cliCC}
+	h := NewCircuitHandler(&RelayKeys{NtorOnionKey: bytesRepeatHS(0x33, 32)}, nil)
+	h.SetIntroDoSParams(onion.IntroDoSParamsFromConsensus(map[string]int{
+		"HiddenServiceEnableIntroDoSDefense":     1,
+		"HiddenServiceEnableIntroDoSRatePerSec":  1,
+		"HiddenServiceEnableIntroDoSBurstPerSec": 1,
+	}))
+	frozen := time.Unix(1_700_000_000, 0)
+	h.forwarder.nowFn = func() time.Time { return frozen }
+	svcConn := newMockConn()
+	cliConn := newMockConn()
+	if err := h.forwarder.handleEstablishIntro(svc, svcConn, est); err != nil {
+		t.Fatal(err)
+	}
+	intro1 := testIntroduce1Payload(keys.AuthPublic)
+	if err := h.forwarder.handleIntroduce1(cli, cliConn, intro1); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.forwarder.handleIntroduce1(cli, cliConn, intro1); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(decodeAllRelays(t, svcConn, kmSvc)); n != 2 {
+		t.Fatalf("共识开启后第二格不得转发，got %d", n)
 	}
 }
 

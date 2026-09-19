@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/onion"
 )
 
 // ORListener listens for incoming OR (Onion Router) connections
@@ -414,6 +415,14 @@ func (l *ORListener) Address() string {
 type ORListenerStats struct {
 	TotalConnections  uint64
 	ActiveConnections int
+}
+
+// SetIntroDoSParams 把共识引言点 INTRODUCE2 限速交给电路处理（未宣告 HSIntro=5）。
+func (l *ORListener) SetIntroDoSParams(p onion.IntroDoSParams) {
+	if l == nil || l.circuitHandler == nil {
+		return
+	}
+	l.circuitHandler.SetIntroDoSParams(p)
 }
 
 // SetDoS 注入官方 DoS 守卫（同时接到 CircuitHandler）。

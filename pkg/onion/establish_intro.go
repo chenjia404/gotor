@@ -73,9 +73,38 @@ func BuildEstablishIntroPayload(authPub ed25519.PublicKey, authPriv ed25519.Priv
 	body = append(body, authPub...)
 	body = append(body, 0) // N_EXTENSIONS
 
+	return signEstablishIntro(body, authPriv, circNonce)
+}
+
+// BuildEstablishIntroPayloadWithDoS 附带 ESTABLISH_INTRO DOS_PARAMS（type 0x01）。
+// 中继未宣告 HSIntro=5；有扩展则按 rend-spec 覆盖共识默认。
+func BuildEstablishIntroPayloadWithDoS(authPub ed25519.PublicKey, authPriv ed25519.PrivateKey, circNonce []byte, rate, burst uint64) ([]byte, error) {
+	if len(authPub) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("auth public key length %d", len(authPub))
+	}
+	if len(authPriv) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("auth private key length %d", len(authPriv))
+	}
+	if len(circNonce) != 20 {
+		return nil, fmt.Errorf("circ_nonce length %d, want 20", len(circNonce))
+	}
+	field := encodeIntroDoSField(rate, burst)
+	body := make([]byte, 0, 1+2+32+1+2+len(field)+introMACLen+2+64)
+	body = append(body, introAuthKeyTypeEd)
+	lenBuf := make([]byte, 2)
+	binary.BigEndian.PutUint16(lenBuf, 32)
+	body = append(body, lenBuf...)
+	body = append(body, authPub...)
+	body = append(body, 1) // N_EXTENSIONS
+	body = append(body, introDoSExtType, byte(len(field)))
+	body = append(body, field...)
+	return signEstablishIntro(body, authPriv, circNonce)
+}
+
+func signEstablishIntro(body []byte, authPriv ed25519.PrivateKey, circNonce []byte) ([]byte, error) {
 	mac := sha3MAC(circNonce, body)
 	body = append(body, mac...)
-
+	lenBuf := make([]byte, 2)
 	signMsg := append([]byte(establishIntroPrefix), body...)
 	sig := ed25519.Sign(authPriv, signMsg)
 	binary.BigEndian.PutUint16(lenBuf, uint16(len(sig)))

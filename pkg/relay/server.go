@@ -12,6 +12,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/datadir"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/onion"
 )
 
 // Server 是中继运行时（非出口或出口）。
@@ -228,6 +229,14 @@ func (s *Server) ReachabilityStatus() ReachabilityStatus {
 		return ReachabilityStatus{}
 	}
 	return s.reach.Status()
+}
+
+// SetHSIntroDoSParams 把共识 HiddenServiceEnableIntroDoS* 交给引言点令牌桶。未宣告 HSIntro=5。
+func (s *Server) SetHSIntroDoSParams(params map[string]int) {
+	if s == nil || s.listener == nil {
+		return
+	}
+	s.listener.SetIntroDoSParams(onion.IntroDoSParamsFromConsensus(params))
 }
 
 // SetHSDirRing 把最近共识的 HSDir 哈希环交给 DirCache（POST 责任判定）。未宣告 HSDir=2。

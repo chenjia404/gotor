@@ -13,6 +13,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/crypto"
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/onion"
 )
 
 // ServerCircuit represents a server-side circuit
@@ -90,6 +91,14 @@ func (h *CircuitHandler) HandleCellFromConnection(conn net.Conn, c *cell.Cell) e
 		h.logger.Debug("Ignoring cell command", "command", c.Command)
 		return nil
 	}
+}
+
+// SetIntroDoSParams 注入共识引言点 INTRODUCE2 限速（未宣告 HSIntro=5）。
+func (h *CircuitHandler) SetIntroDoSParams(p onion.IntroDoSParams) {
+	if h == nil || h.forwarder == nil {
+		return
+	}
+	h.forwarder.SetIntroDoSParams(p)
 }
 
 // SetDoS 注入官方 DoS 守卫（nil 则关闭）。

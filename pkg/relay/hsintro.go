@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/onion"
@@ -20,6 +21,65 @@ const (
 	introduce1AuthKeyTypeV3 = 0x02
 	ed25519AuthKeyLen       = 32
 )
+
+func (h *ForwardingHandler) now() time.Time {
+	if h != nil && h.nowFn != nil {
+		return h.nowFn()
+	}
+	return time.Now()
+}
+
+// SetIntroDoSParams 注入共识 HiddenServiceEnableIntroDoS*（无 ESTABLISH_INTRO 扩展时用）。
+func (h *ForwardingHandler) SetIntroDoSParams(p onion.IntroDoSParams) {
+	if h == nil {
+		return
+	}
+	h.hsMu.Lock()
+	h.introDoSCons = p
+	h.hsMu.Unlock()
+}
+
+type introDoSBucket struct {
+	enabled bool
+	rate    float64
+	burst   float64
+	tokens  float64
+	last    time.Time
+}
+
+func newIntroDoSBucket(p onion.IntroDoSParams, now time.Time) *introDoSBucket {
+	ok, rate, burst := p.Effective()
+	if !ok {
+		return nil
+	}
+	return &introDoSBucket{
+		enabled: true,
+		rate:    float64(rate),
+		burst:   float64(burst),
+		tokens:  float64(burst),
+		last:    now,
+	}
+}
+
+func (s *hsRoleSlot) allowIntro2(now time.Time) bool {
+	if s == nil || s.introDoS == nil || !s.introDoS.enabled {
+		return true
+	}
+	b := s.introDoS
+	elapsed := now.Sub(b.last).Seconds()
+	if elapsed > 0 {
+		b.tokens += elapsed * b.rate
+		if b.tokens > b.burst {
+			b.tokens = b.burst
+		}
+		b.last = now
+	}
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
 
 // handleEstablishIntro 校验 ESTABLISH_INTRO 并回 INTRO_ESTABLISHED。
 // 对照 rend-spec-v3 §3.1.1；未宣告 HSIntro=*。
@@ -46,14 +106,15 @@ func (h *ForwardingHandler) handleEstablishIntro(circ *ServerCircuit, clientConn
 		return h.destroyHSCircuit(circ, clientConn, "ESTABLISH_INTRO too short")
 	}
 	auth := append([]byte(nil), payload[3:35]...)
-	if err := h.registerIntro(circ, clientConn, auth); err != nil {
+	ext := onion.ParseEstablishIntroDoSExtension(payload)
+	if err := h.registerIntro(circ, clientConn, auth, ext); err != nil {
 		return h.destroyHSCircuit(circ, clientConn, err.Error())
 	}
 	// INTRO_ESTABLISHED 可为空扩展；StreamID=0。
 	return sendRelayToClient(circ, clientConn, 0, cell.RelayIntroEstablished, nil)
 }
 
-func (h *ForwardingHandler) registerIntro(circ *ServerCircuit, conn net.Conn, auth []byte) error {
+func (h *ForwardingHandler) registerIntro(circ *ServerCircuit, conn net.Conn, auth []byte, ext onion.IntroDoSExtension) error {
 	if circ == nil || len(auth) != ed25519AuthKeyLen {
 		return fmt.Errorf("invalid intro auth")
 	}
@@ -76,7 +137,8 @@ func (h *ForwardingHandler) registerIntro(circ *ServerCircuit, conn net.Conn, au
 	}
 	circ.introAuth = append([]byte(nil), auth...)
 	circ.mu.Unlock()
-	h.introByAuth[key] = &hsRoleSlot{circ: circ, conn: conn}
+	dos := onion.ResolveIntroDoS(ext, h.introDoSCons)
+	h.introByAuth[key] = &hsRoleSlot{circ: circ, conn: conn, introDoS: newIntroDoSBucket(dos, h.now())}
 	return nil
 }
 
@@ -90,8 +152,13 @@ func (h *ForwardingHandler) handleIntroduce1(circ *ServerCircuit, clientConn net
 	}
 	h.hsMu.Lock()
 	slot := h.introByAuth[hex.EncodeToString(auth)]
+	limited := slot != nil && !slot.allowIntro2(h.now())
 	h.hsMu.Unlock()
 	if slot == nil || slot.circ == nil || slot.conn == nil {
+		return sendRelayToClient(circ, clientConn, 0, cell.RelayIntroduceAck, introAckPayload(introAckNotRecognized))
+	}
+	if limited {
+		// C Tor hs_dos_can_send_intro2 失败时发 UNKNOWN_ID（NOT_RECOGNIZED），不转发 INTRODUCE2。
 		return sendRelayToClient(circ, clientConn, 0, cell.RelayIntroduceAck, introAckPayload(introAckNotRecognized))
 	}
 	if err := sendRelayToClient(slot.circ, slot.conn, 0, cell.RelayIntroduce2, payload); err != nil {

@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/connection"
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/onion"
 )
 
 // ExtendedCircuit tracks a circuit that has been extended to next hop
@@ -47,11 +49,14 @@ type ForwardingHandler struct {
 	hsMu         sync.Mutex
 	introByAuth  map[string]*hsRoleSlot // hex(AUTH_KEY) → 服务侧引言电路
 	rendByCookie map[string]*hsRoleSlot // hex(cookie) → 客户端会合电路
+	introDoSCons onion.IntroDoSParams
+	nowFn        func() time.Time
 }
 
 type hsRoleSlot struct {
-	circ *ServerCircuit
-	conn net.Conn
+	circ     *ServerCircuit
+	conn     net.Conn
+	introDoS *introDoSBucket
 }
 
 // NewForwardingHandler creates a new forwarding handler
