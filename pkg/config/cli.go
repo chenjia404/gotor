@@ -376,7 +376,7 @@ func KnownTorrcOptions() []string {
 		"ConnLimit", "DormantTimeout", "LogLevel", "Log",
 		"DoSCircuitCreationEnabled", "DoSCircuitCreationMinConnections",
 		"DoSCircuitCreationRate", "DoSCircuitCreationBurst",
-		"DoSCircuitCreationDefenseTimePeriod",
+		"DoSCircuitCreationDefenseTimePeriod", "DoSCircuitCreationDefenseType",
 		"DoSConnectionEnabled", "DoSConnectionMaxConcurrentCount",
 		"DoSConnectionConnectRate", "DoSConnectionConnectBurst",
 		"DoSConnectionConnectDefenseTimePeriod",

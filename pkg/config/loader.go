@@ -426,6 +426,13 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 		}
 		cfg.DoSCircuitCreationDefenseTime = d
 
+	case "DoSCircuitCreationDefenseType":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 || n > 2 {
+			return fmt.Errorf("invalid DoSCircuitCreationDefenseType value: %s", value)
+		}
+		cfg.DoSCircuitCreationDefenseType = n
+
 	case "DoSConnectionEnabled":
 		n, err := parseDoSEnabled(value)
 		if err != nil {
@@ -1279,6 +1286,7 @@ func SaveToFile(path string, cfg *Config) error {
 	fmt.Fprintf(writer, "DoSCircuitCreationRate %d\n", cfg.DoSCircuitCreationRate)
 	fmt.Fprintf(writer, "DoSCircuitCreationBurst %d\n", cfg.DoSCircuitCreationBurst)
 	fmt.Fprintf(writer, "DoSCircuitCreationDefenseTimePeriod %s\n", formatDuration(cfg.DoSCircuitCreationDefenseTime))
+	fmt.Fprintf(writer, "DoSCircuitCreationDefenseType %d\n", cfg.DoSCircuitCreationDefenseType)
 	fmt.Fprintf(writer, "DoSConnectionEnabled %s\n", FormatDoSEnabled(cfg.DoSConnectionEnabled))
 	fmt.Fprintf(writer, "DoSConnectionMaxConcurrentCount %d\n", cfg.DoSConnectionMaxConcurrentCount)
 	fmt.Fprintf(writer, "DoSConnectionConnectRate %d\n", cfg.DoSConnectionConnectRate)

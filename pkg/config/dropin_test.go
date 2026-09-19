@@ -246,7 +246,8 @@ func TestKnownTorrcOptionsCoversNewKeys(t *testing.T) {
 	for _, k := range []string{"CacheDirectory", "PidFile", "HTTPTunnelPort", "DNSPort", "DisableNetwork",
 		"DoSCircuitCreationEnabled", "DoSConnectionEnabled", "DoSRefuseSingleHopClient",
 		"DoSConnectionConnectRate", "DoSConnectionConnectBurst", "DoSConnectionConnectDefenseTimePeriod",
-		"DoSStreamCreationEnabled", "DoSStreamCreationRate", "DoSStreamCreationBurst", "DoSStreamCreationDefenseType"} {
+		"DoSStreamCreationEnabled", "DoSStreamCreationRate", "DoSStreamCreationBurst", "DoSStreamCreationDefenseType",
+		"DoSCircuitCreationDefenseType"} {
 		if !strings.Contains(opts, k) {
 			t.Fatalf("missing %s", k)
 		}

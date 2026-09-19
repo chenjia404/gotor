@@ -176,6 +176,11 @@ func GenerateJSONSchema() (*JSONSchema, error) {
 				Description: "CREATE2 token bucket burst per IP",
 				Default:     90,
 			},
+			"DoSCircuitCreationDefenseType": {
+				Type:        "integer",
+				Description: "1=none 2=refuse CREATE2; 0 follows consensus (default 2)",
+				Default:     0,
+			},
 			"DoSConnectionEnabled": {
 				Type:        "integer",
 				Description: "DoS per-IP concurrent OR connection defense: -1=auto, 0=off, 1=on",

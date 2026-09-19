@@ -106,6 +106,54 @@ func TestDoSGuardCreate2TokenBucketAndDefense(t *testing.T) {
 	}
 }
 
+func TestDoSGuardCreate2DefenseTypeNone(t *testing.T) {
+	g := NewDoSGuard(DoSConfig{
+		CircuitEnabled: true,
+		MinConnections: 1,
+		Rate:           1,
+		Burst:          1,
+		Defense:        time.Hour,
+		CircDefense:    dosCircDefenseNone,
+	})
+	_ = g.OnConnect("198.51.100.10")
+	if err := g.AllowCreate2("198.51.100.10"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := g.AllowCreate2("198.51.100.10"); err != nil {
+			t.Fatalf("DefenseType 1 桶空仍应放行: %v", err)
+		}
+	}
+}
+
+func TestDoSGuardCreate2DefenseTypeConsensus(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DoSCircuitCreationEnabled = config.DoSEnabledOn
+	cfg.DoSCircuitCreationMinConnections = 1
+	cfg.DoSCircuitCreationRate = 1
+	cfg.DoSCircuitCreationBurst = 1
+	g := NewDoSGuardFromConfig(cfg)
+	_ = g.OnConnect("198.51.100.11")
+	g.ApplyConsensus(map[string]int{"DoSCircuitCreationDefenseType": 1})
+	if err := g.AllowCreate2("198.51.100.11"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.AllowCreate2("198.51.100.11"); err != nil {
+		t.Fatal("共识 type 1 桶空应放行")
+	}
+
+	cfg.DoSCircuitCreationDefenseType = dosCircDefenseRefuse
+	g = NewDoSGuardFromConfig(cfg)
+	_ = g.OnConnect("198.51.100.12")
+	g.ApplyConsensus(map[string]int{"DoSCircuitCreationDefenseType": 1})
+	if err := g.AllowCreate2("198.51.100.12"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.AllowCreate2("198.51.100.12"); err == nil {
+		t.Fatal("显式 type 2 不得被共识 1 覆盖")
+	}
+}
+
 func TestDoSGuardConnLimitUnchangedSemantics(t *testing.T) {
 	// 文档约束：DoS 不得改写 ConnLimit。守卫关闭时 OnConnect 只计数、不拒绝。
 	g := NewDoSGuard(DoSConfig{ConnEnabled: false, MaxConcurrent: 1})

@@ -95,6 +95,7 @@ func TestLoadTorrcDoSOfficialKeys(t *testing.T) {
 	body := "DoSCircuitCreationEnabled 1\nDoSCircuitCreationMinConnections 4\n" +
 		"DoSCircuitCreationRate 5\nDoSCircuitCreationBurst 10\n" +
 		"DoSCircuitCreationDefenseTimePeriod 3600 seconds\n" +
+		"DoSCircuitCreationDefenseType 1\n" +
 		"DoSConnectionEnabled auto\nDoSConnectionMaxConcurrentCount 50\n" +
 		"DoSConnectionConnectRate 20\nDoSConnectionConnectBurst 40\n" +
 		"DoSConnectionConnectDefenseTimePeriod 86400 seconds\n" +
@@ -116,6 +117,9 @@ func TestLoadTorrcDoSOfficialKeys(t *testing.T) {
 	}
 	if cfg.DoSCircuitCreationDefenseTime != time.Hour {
 		t.Fatalf("defense %s", cfg.DoSCircuitCreationDefenseTime)
+	}
+	if cfg.DoSCircuitCreationDefenseType != 1 {
+		t.Fatalf("circ defense type %d", cfg.DoSCircuitCreationDefenseType)
 	}
 	if cfg.DoSConnectionEnabled != DoSEnabledAuto {
 		t.Fatalf("conn enabled %d", cfg.DoSConnectionEnabled)

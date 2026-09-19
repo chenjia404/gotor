@@ -95,6 +95,7 @@ type Config struct {
 	DoSCircuitCreationRate           int           // 电路/秒，默认 3
 	DoSCircuitCreationBurst          int           // 默认 90
 	DoSCircuitCreationDefenseTime    time.Duration // 默认 1h
+	DoSCircuitCreationDefenseType    int           // 0=跟共识；1=无动作 2=拒绝 CREATE2
 	DoSConnectionEnabled             int           // auto/0/1
 	DoSConnectionMaxConcurrentCount  int           // 每 IP 并发 OR，默认 100
 	DoSConnectionConnectRate         int           // 0=跟共识，否则覆盖；共识缺省 20
@@ -330,6 +331,7 @@ func DefaultConfig() *Config {
 		DoSCircuitCreationRate:           3,
 		DoSCircuitCreationBurst:          90,
 		DoSCircuitCreationDefenseTime:    time.Hour,
+		DoSCircuitCreationDefenseType:    0,
 		DoSConnectionEnabled:             DoSEnabledAuto,
 		DoSConnectionMaxConcurrentCount:  100,
 		DoSConnectionConnectRate:         0,
@@ -782,6 +784,9 @@ func validateDoSFields(c *Config) error {
 	}
 	if c.DoSCircuitCreationDefenseTime < 0 {
 		return fmt.Errorf("DoSCircuitCreationDefenseTimePeriod must be non-negative")
+	}
+	if c.DoSCircuitCreationDefenseType < 0 || c.DoSCircuitCreationDefenseType > 2 {
+		return fmt.Errorf("DoSCircuitCreationDefenseType must be 0..2")
 	}
 	if c.DoSConnectionMaxConcurrentCount < 1 {
 		return fmt.Errorf("DoSConnectionMaxConcurrentCount must be at least 1")

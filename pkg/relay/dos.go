@@ -31,6 +31,8 @@ const (
 	dosStreamDefenseNone         = 1
 	dosStreamDefenseRefuse       = 2
 	dosStreamDefenseClose        = 3
+	dosCircDefenseNone           = 1
+	dosCircDefenseRefuse         = 2
 )
 
 // DoSConfig 是接线用的已解析开关。Enabled=auto 且无共识时调用方应把 Enabled 置 false。
@@ -43,6 +45,7 @@ type DoSConfig struct {
 	Rate            int
 	Burst           int
 	Defense         time.Duration
+	CircDefense     int
 	MaxConcurrent   int
 	StreamRate      int
 	StreamBurst     int
@@ -77,6 +80,8 @@ type DoSGuard struct {
 	streamRateCfg  int
 	streamBurstCfg int
 	streamDefCfg   int
+	circDef        int
+	circDefCfg     int
 	mu             sync.Mutex
 	ips            map[string]*dosIP
 	circStreams    map[uint32]*dosCircStream
@@ -118,6 +123,7 @@ func NewDoSGuardFromConfig(cfg *config.Config) *DoSGuard {
 		StreamRate:      cfg.DoSStreamCreationRate,
 		StreamBurst:     cfg.DoSStreamCreationBurst,
 		StreamDefense:   cfg.DoSStreamCreationDefenseType,
+		CircDefense:     cfg.DoSCircuitCreationDefenseType,
 	})
 	if g == nil {
 		return nil
@@ -131,12 +137,14 @@ func NewDoSGuardFromConfig(cfg *config.Config) *DoSGuard {
 	g.streamRateCfg = cfg.DoSStreamCreationRate
 	g.streamBurstCfg = cfg.DoSStreamCreationBurst
 	g.streamDefCfg = cfg.DoSStreamCreationDefenseType
+	g.circDefCfg = cfg.DoSCircuitCreationDefenseType
 	g.connRate = dosConnConnectRateDefault
 	g.connBurst = dosConnConnectBurstDefault
 	g.connDef = dosConnConnectDefenseDefault
 	g.streamRate = dosStreamRateDefault
 	g.streamBurst = dosStreamBurstDefault
 	g.streamDef = dosStreamDefenseRefuse
+	g.circDef = dosCircDefenseRefuse
 	if g.connRateCfg > 0 {
 		g.connRate = float64(g.connRateCfg)
 	}
@@ -155,11 +163,14 @@ func NewDoSGuardFromConfig(cfg *config.Config) *DoSGuard {
 	if g.streamDefCfg >= dosStreamDefenseNone && g.streamDefCfg <= dosStreamDefenseClose {
 		g.streamDef = g.streamDefCfg
 	}
+	if g.circDefCfg >= dosCircDefenseNone && g.circDefCfg <= dosCircDefenseRefuse {
+		g.circDef = g.circDefCfg
+	}
 	return g
 }
 
 // ApplyConsensus 在 Enabled=auto 时用共识 DoSCircuitCreationEnabled / DoSConnectionEnabled / DoSStreamCreationEnabled（0–1，缺省 0）。
-// 显式 0/1 不被共识覆盖。ConnectRate/Burst/Defense 与 Stream Rate/Burst/DefenseType 在 torrc 为 0 时跟共识。
+// 显式 0/1 不被共识覆盖。ConnectRate/Burst/Defense、Stream Rate/Burst/DefenseType、CircuitCreationDefenseType 在 torrc 为 0 时跟共识。
 func (g *DoSGuard) ApplyConsensus(params map[string]int) {
 	if g == nil {
 		return
@@ -205,6 +216,12 @@ func (g *DoSGuard) ApplyConsensus(params map[string]int) {
 	} else {
 		g.streamDef = clampDoSParam(params, "DoSStreamCreationDefenseType",
 			dosStreamDefenseRefuse, dosStreamDefenseNone, dosStreamDefenseClose)
+	}
+	if g.circDefCfg >= dosCircDefenseNone && g.circDefCfg <= dosCircDefenseRefuse {
+		g.circDef = g.circDefCfg
+	} else {
+		g.circDef = clampDoSParam(params, "DoSCircuitCreationDefenseType",
+			dosCircDefenseRefuse, dosCircDefenseNone, dosCircDefenseRefuse)
 	}
 }
 
@@ -270,6 +287,10 @@ func NewDoSGuard(cfg DoSConfig) *DoSGuard {
 	if streamDef < dosStreamDefenseNone || streamDef > dosStreamDefenseClose {
 		streamDef = dosStreamDefenseRefuse
 	}
+	circDef := cfg.CircDefense
+	if circDef < dosCircDefenseNone || circDef > dosCircDefenseRefuse {
+		circDef = dosCircDefenseRefuse
+	}
 	g := &DoSGuard{
 		circOn:      cfg.CircuitEnabled,
 		connOn:      cfg.ConnEnabled,
@@ -286,6 +307,7 @@ func NewDoSGuard(cfg DoSConfig) *DoSGuard {
 		streamRate:  float64(streamRate),
 		streamBurst: float64(streamBurst),
 		streamDef:   streamDef,
+		circDef:     circDef,
 		ips:         make(map[string]*dosIP),
 		circStreams: make(map[uint32]*dosCircStream),
 		lastPurge:   time.Now(),
@@ -372,7 +394,7 @@ func (g *DoSGuard) OnDisconnect(ip string) {
 }
 
 // AllowCreate2 在并发连接数达到 MinConnections 后对该 IP 套令牌桶。
-// 桶空则进入 DefenseTimePeriod，期间一律拒绝。
+// 桶空时按 DefenseType：1 放行且不进防御窗；2（缺省）进入 DefenseTimePeriod 并拒绝。
 func (g *DoSGuard) AllowCreate2(ip string) error {
 	if g == nil || !g.circOn || ip == "" {
 		return nil
@@ -381,7 +403,7 @@ func (g *DoSGuard) AllowCreate2(ip string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	st := g.getLocked(ip)
-	if now.Before(st.markedUntil) {
+	if g.circDef != dosCircDefenseNone && now.Before(st.markedUntil) {
 		return errDoSCircuit
 	}
 	if st.conns < g.minConns {
@@ -390,6 +412,9 @@ func (g *DoSGuard) AllowCreate2(ip string) error {
 	g.refillLocked(st, now)
 	if st.tokens >= 1 {
 		st.tokens--
+		return nil
+	}
+	if g.circDef == dosCircDefenseNone {
 		return nil
 	}
 	st.markedUntil = now.Add(g.defense)
