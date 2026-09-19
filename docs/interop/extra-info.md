@@ -14,7 +14,8 @@
 - Ed25519 + RSA 双签名；发布前自检。
 - 与 C Tor 一样把 router + extra-info **拼成一次 POST**（不再先发无 digest 的描述符再单独 POST extra-info）。
 - 带宽历史只写**已完成**的 900s 观测格；停机空档不补零。无观测则不写 `write-history` / `read-history`。
-- 观测来自 **入站 OR TCP** 与 **出站中间跳 OR TCP**（TLS 之下的套接字）；可读写 C Tor `DataDirectory/state` 的 `BWHistoryReadValues` / `BWHistoryWriteValues` / `*Ends`。**最后一值是未完成桶**，`*Ends` 是该桶结束时刻；未到点不写入 extra-info。`AvoidDiskWrites` 时不落盘。出口流 TCP 不计入本项。
+- `ipv6-write-history` / `ipv6-read-history`：同一时间轴上仅 IPv6 OR（不含 IPv4-mapped）；总量仍含 IPv6。已完成格里无 IPv6 字节则不写这两行。IPv4 格对应位置写 0，不另造格。
+- 观测来自 **入站 OR TCP** 与 **出站中间跳 OR TCP**（TLS 之下的套接字）；可读写 C Tor `DataDirectory/state` 的 `BWHistoryReadValues` / `BWHistoryWriteValues` / `BWHistoryIPv6*` / `*Ends`。**最后一值是未完成桶**，`*Ends` 是该桶结束时刻；未到点不写入 extra-info。`AvoidDiskWrites` 时不落盘。出口流 TCP 不计入本项。
 - `conn-bi-direct`：按 C Tor `connstats.c` 每 10s 把每条 OR 连接分成 below（读写合计 <20480）/ read（读≥10×写）/ write / both；**满 24h 且该窗内至少有一次分类才写**。未完成窗不写。
 - `ipv6-conn-bi-direct`：同一窗内仅 IPv6 OR（不含 IPv4-mapped）；无 IPv6 分类不写。
 - `dirreq-stats-end` / `dirreq-v3-resp`：v3 网络状态（ns/microdesc/diff）HTTP 应答；满 24h 且有计数才写；计数向上取 4。
@@ -34,6 +35,6 @@
 ## 禁止
 
 - 把配置里的 `RelayBandwidthRate` / Burst 写成 history
-- 无观测却写假 `write-history` / `read-history`
+- 无观测却写假 `write-history` / `read-history` / `ipv6-*-history`
 - 空 extra-info 当「已实现完整」
 - 公开材料写主机、IP、指纹

@@ -258,6 +258,211 @@ func TestORListenerSetBandwidthHistoryWiresExtender(t *testing.T) {
 	}
 }
 
+func TestBandwidthHistoryOmitsIPv6WhenOnlyIPv4(t *testing.T) {
+	start := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	now := start.Add(time.Minute)
+	h := NewBandwidthHistory()
+	h.now = func() time.Time { return now }
+	h.resetCurrentLocked(now)
+	h.AddRead(1000)
+	h.AddWrite(400)
+	now = start.Add(15 * time.Minute)
+	h.now = func() time.Time { return now }
+	stats := h.StatsMap()
+	if _, ok := stats["ipv6-read-history"]; ok {
+		t.Fatal("仅 IPv4 不得写 ipv6-read-history")
+	}
+	if _, ok := stats["ipv6-write-history"]; ok {
+		t.Fatal("仅 IPv4 不得写 ipv6-write-history")
+	}
+}
+
+func TestBandwidthHistoryEmitsIPv6CompletedIntervals(t *testing.T) {
+	start := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	now := start.Add(time.Minute)
+	h := NewBandwidthHistory()
+	h.now = func() time.Time { return now }
+	h.resetCurrentLocked(now)
+	h.AddIPv6Read(1000)
+	h.AddIPv6Write(400)
+	now = start.Add(15 * time.Minute)
+	h.now = func() time.Time { return now }
+	stats := h.StatsMap()
+	if stats["read-history"] != "2026-08-20 12:15:00 (900 s) 1000" {
+		t.Fatalf("总量 read %q", stats["read-history"])
+	}
+	if stats["write-history"] != "2026-08-20 12:15:00 (900 s) 400" {
+		t.Fatalf("总量 write %q", stats["write-history"])
+	}
+	if stats["ipv6-read-history"] != "2026-08-20 12:15:00 (900 s) 1000" {
+		t.Fatalf("ipv6-read-history %q", stats["ipv6-read-history"])
+	}
+	if stats["ipv6-write-history"] != "2026-08-20 12:15:00 (900 s) 400" {
+		t.Fatalf("ipv6-write-history %q", stats["ipv6-write-history"])
+	}
+}
+
+func TestBandwidthHistoryIPv6AlignsWithIPv4Slots(t *testing.T) {
+	start := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	now := start.Add(time.Minute)
+	h := NewBandwidthHistory()
+	h.now = func() time.Time { return now }
+	h.resetCurrentLocked(now)
+	h.AddRead(10)
+	now = start.Add(15 * time.Minute)
+	h.now = func() time.Time { return now }
+	_ = h.StatsMap()
+	h.AddIPv6Read(20)
+	now = start.Add(30 * time.Minute)
+	h.now = func() time.Time { return now }
+	stats := h.StatsMap()
+	if stats["read-history"] != "2026-08-20 12:30:00 (900 s) 10,20" {
+		t.Fatalf("总量 %q", stats["read-history"])
+	}
+	if stats["ipv6-read-history"] != "2026-08-20 12:30:00 (900 s) 0,20" {
+		t.Fatalf("IPv4 格应为 0: %q", stats["ipv6-read-history"])
+	}
+}
+
+func TestBandwidthHistoryIPv6StateRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, datadir.StateFileName)
+	sf := &datadir.StateFile{}
+	if err := datadir.SaveState(path, sf, "Tor 0.4.9.11 (gotor)"); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	now := start.Add(time.Minute)
+	h := NewBandwidthHistory()
+	h.SetStatePath(path)
+	h.now = func() time.Time { return now }
+	h.resetCurrentLocked(now)
+	h.AddIPv6Read(77)
+	h.AddIPv6Write(9)
+	now = start.Add(15 * time.Minute)
+	h.now = func() time.Time { return now }
+	if err := h.Persist(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded := NewBandwidthHistory()
+	loaded.SetStatePath(path)
+	loaded.now = func() time.Time { return now }
+	if err := loaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	stats := loaded.StatsMap()
+	if stats["ipv6-read-history"] != "2026-08-20 12:15:00 (900 s) 77" {
+		t.Fatalf("load ipv6 %+v", stats)
+	}
+
+	again, err := datadir.LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := again.Get(bwHistoryIPv6ReadValues); v != "77,0" {
+		t.Fatalf("state 应保留已完成格与未完成桶: %q", v)
+	}
+	if v, _ := again.Get(bwHistoryIPv6ReadEnds); v != "2026-08-20 12:30:00" {
+		t.Fatalf("IPv6 Ends 应对齐总量: %q", v)
+	}
+}
+
+func TestBandwidthHistoryOldStateWithoutIPv6Keys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, datadir.StateFileName)
+	sf := &datadir.StateFile{}
+	sf.Set(bwHistoryReadValues, "10,99")
+	sf.Set(bwHistoryWriteValues, "4,7")
+	sf.Set(bwHistoryReadEnds, "2026-08-20 12:30:00")
+	sf.Set(bwHistoryWriteEnds, "2026-08-20 12:30:00")
+	if err := datadir.SaveState(path, sf, "Tor 0.4.9.11 (gotor)"); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 8, 20, 12, 20, 0, 0, time.UTC)
+	h := NewBandwidthHistory()
+	h.SetStatePath(path)
+	h.now = func() time.Time { return now }
+	if err := h.Load(); err != nil {
+		t.Fatal(err)
+	}
+	stats := h.StatsMap()
+	if _, ok := stats["ipv6-read-history"]; ok {
+		t.Fatal("旧 state 无 IPv6 键不得编造 ipv6 history")
+	}
+	if h.curIPv6Read != 0 || h.curIPv6Write != 0 {
+		t.Fatalf("旧 state live IPv6 应为 0: read=%d write=%d", h.curIPv6Read, h.curIPv6Write)
+	}
+}
+
+type remoteAddrConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c remoteAddrConn) RemoteAddr() net.Addr { return c.remote }
+
+func TestCountingConnIPv6RecordsIPv6History(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	h := NewBandwidthHistory()
+	c := newCountingConn(remoteAddrConn{
+		Conn:   a,
+		remote: &net.TCPAddr{IP: net.ParseIP("2001:db8::1"), Port: 9001},
+	}, h, nil)
+	done := make(chan struct{})
+	go func() {
+		_, _ = b.Write([]byte("ping"))
+		_, _ = b.Read(make([]byte, 8))
+		close(done)
+	}()
+	buf := make([]byte, 8)
+	n, err := c.Read(buf)
+	if err != nil || n != 4 {
+		t.Fatalf("read %d %v", n, err)
+	}
+	if _, err := c.Write([]byte("pong")); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if h.curRead != 4 || h.curWrite != 4 {
+		t.Fatalf("总量 read=%d write=%d", h.curRead, h.curWrite)
+	}
+	if h.curIPv6Read != 4 || h.curIPv6Write != 4 {
+		t.Fatalf("IPv6 read=%d write=%d", h.curIPv6Read, h.curIPv6Write)
+	}
+}
+
+func TestCountingConnIPv4MappedNotIPv6History(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	h := NewBandwidthHistory()
+	c := newCountingConn(remoteAddrConn{
+		Conn:   a,
+		remote: &net.TCPAddr{IP: net.ParseIP("::ffff:192.0.2.1"), Port: 9001},
+	}, h, nil)
+	done := make(chan struct{})
+	go func() {
+		_, _ = b.Write([]byte("ping"))
+		close(done)
+	}()
+	buf := make([]byte, 8)
+	if _, err := c.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if h.curRead != 4 {
+		t.Fatalf("总量 %d", h.curRead)
+	}
+	if h.curIPv6Read != 0 {
+		t.Fatalf("IPv4-mapped 不得计入 IPv6: %d", h.curIPv6Read)
+	}
+}
+
 func TestORListenerSetConnBiDirectWiresExtender(t *testing.T) {
 	keys, err := GenerateRelayKeys()
 	if err != nil {

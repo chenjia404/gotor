@@ -462,12 +462,14 @@ type countingConn struct {
 	hist *BandwidthHistory
 	bidi *ConnBiDirect
 	ent  *bidiEntry
+	ipv6 bool
 }
 
 func newCountingConn(c net.Conn, hist *BandwidthHistory, bidi *ConnBiDirect) *countingConn {
-	cc := &countingConn{Conn: c, hist: hist, bidi: bidi}
+	ipv6 := addrIsIPv6(c.RemoteAddr())
+	cc := &countingConn{Conn: c, hist: hist, bidi: bidi, ipv6: ipv6}
 	if bidi != nil {
-		cc.ent = bidi.register(addrIsIPv6(c.RemoteAddr()))
+		cc.ent = bidi.register(ipv6)
 	}
 	return cc
 }
@@ -476,7 +478,11 @@ func (c *countingConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	if n > 0 {
 		if c.hist != nil {
-			c.hist.AddRead(uint64(n))
+			if c.ipv6 {
+				c.hist.AddIPv6Read(uint64(n))
+			} else {
+				c.hist.AddRead(uint64(n))
+			}
 		}
 		if c.bidi != nil {
 			c.bidi.noteRead(c.ent, uint64(n))
@@ -489,7 +495,11 @@ func (c *countingConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
 	if n > 0 {
 		if c.hist != nil {
-			c.hist.AddWrite(uint64(n))
+			if c.ipv6 {
+				c.hist.AddIPv6Write(uint64(n))
+			} else {
+				c.hist.AddWrite(uint64(n))
+			}
 		}
 		if c.bidi != nil {
 			c.bidi.noteWrite(c.ent, uint64(n))

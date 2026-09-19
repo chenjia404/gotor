@@ -77,6 +77,8 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 	stats := map[string]string{
 		"write-history":          "2026-08-20 12:15:00 (900 s) 400",
 		"read-history":           "2026-08-20 12:15:00 (900 s) 1000",
+		"ipv6-write-history":     "2026-08-20 12:15:00 (900 s) 40",
+		"ipv6-read-history":      "2026-08-20 12:15:00 (900 s) 100",
 		"conn-bi-direct":         "2026-08-21 12:00:00 (86400 s) 10,2,1,3",
 		"ipv6-conn-bi-direct":    "2026-08-21 12:00:00 (86400 s) 4,1,0,2",
 		"dirreq-stats-end":       "2026-08-21 12:00:00 (86400 s)",
@@ -110,9 +112,17 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 	if w < 0 || r < w {
 		t.Fatal("write-history 应在 read-history 前")
 	}
+	iw := strings.Index(raw, "ipv6-write-history 2026-08-20 12:15:00 (900 s) 40\n")
+	if iw < 0 || iw < r {
+		t.Fatal("ipv6-write-history 应在 read-history 后")
+	}
+	ir := strings.Index(raw, "ipv6-read-history 2026-08-20 12:15:00 (900 s) 100\n")
+	if ir < 0 || ir < iw {
+		t.Fatal("ipv6-read-history 应在 ipv6-write-history 后")
+	}
 	bidi := strings.Index(raw, "conn-bi-direct 2026-08-21 12:00:00 (86400 s) 10,2,1,3\n")
-	if bidi < 0 || bidi < r {
-		t.Fatal("conn-bi-direct 应在 read-history 后")
+	if bidi < 0 || bidi < ir {
+		t.Fatal("conn-bi-direct 应在 ipv6-read-history 后")
 	}
 	v6 := strings.Index(raw, "ipv6-conn-bi-direct 2026-08-21 12:00:00 (86400 s) 4,1,0,2\n")
 	if v6 < 0 || v6 < bidi {
