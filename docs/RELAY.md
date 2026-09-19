@@ -56,5 +56,5 @@ gotor ORPort 9001 ExitRelay 1 ReduceExitPolicy 1 SocksPort 0 \
 - 入站可校验 AUTHENTICATE type 3（LinkAuth=3）；普通客户端不认证。无 AuthType 1。
 - ntor-v3 客户端请求 type 3 `[02 06]` 时走 CGO（AES-128 UIV+ / v1）；未请求则仍 tor1。描述符不写 `Relay=5-6`。出口电路级 SENDME v1 带 20 字节 digest 或 16 字节 CGO tag，并 FIFO 校验客户端 SENDME。FlowCtrl=2 出口用 TOR_VEGAS（`cwnd-inflight`），共识 `cc_*` 注入；不采样 orconn_blocked。
 - extra-info：描述符写 `extra-info-digest`，与 extra-info 一次 POST；只写已完成 900s 观测格。无观测不写 history。仍缺 dirreq/exit/conn-bi-direct 与真网归档。
-- 官方 `DoS*`：默认 auto 关闭；auto 跟共识 `DoSCircuitCreationEnabled` / `DoSConnectionEnabled` / `DoSStreamCreationEnabled`。显式 1 时每 IP 并发 OR 上限 + CREATE2 令牌桶 + 连接速率桶（20/40/24h）+ 每电路流创建桶（100/300，缺省拒绝流）。`DoSRefuseSingleHopClient` 仅在成功 EXTEND 后放行 BEGIN。不改 `ConnLimit`。仍缺 AUTHENTICATE 单跳区分。见 `docs/interop/dos-relay.md`。
+- 官方 `DoS*`：默认 auto 关闭；auto 跟共识 `DoSCircuitCreationEnabled` / `DoSConnectionEnabled` / `DoSStreamCreationEnabled`。显式 1 时每 IP 并发 OR 上限 + CREATE2 令牌桶 + 连接速率桶（20/40/24h）+ 每电路流创建桶（100/300，缺省拒绝流）。`DoSRefuseSingleHopClient` 对未 EXTEND 的普通客户端 DESTROY，已 AUTHENTICATE 的中继单跳放行。不改 `ConnLimit`。见 `docs/interop/dos-relay.md`。
 - 客户端 SOCKS 流量不会被当成出口

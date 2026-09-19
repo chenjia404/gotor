@@ -208,6 +208,20 @@ func TestRefuseSingleHopIfNeeded(t *testing.T) {
 	}
 }
 
+func TestRefuseSingleHopAllowsAuthenticatedRelay(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Destroy()
+	h := NewCircuitHandler(keys, nil)
+	h.SetDoS(NewDoSGuard(DoSConfig{RefuseSingleHop: true}))
+	circ := &ServerCircuit{CircuitID: 8, linkAuthed: true}
+	if err := h.forwarder.refuseSingleHopIfNeeded(circ, nil); err != nil {
+		t.Fatal("已 AUTHENTICATE 的中继单跳应放行")
+	}
+}
+
 func TestClientIPString(t *testing.T) {
 	if got := clientIPString("192.0.2.1:9001"); got != "192.0.2.1" {
 		t.Fatalf("got %q", got)

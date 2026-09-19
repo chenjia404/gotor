@@ -156,10 +156,14 @@ func (h *ForwardingHandler) refuseSingleHopIfNeeded(circ *ServerCircuit, clientC
 	if h.circuits == nil || h.circuits.dos == nil || !h.circuits.dos.RefuseSingleHop() {
 		return nil
 	}
+	if circ == nil {
+		return nil
+	}
 	circ.mu.RLock()
 	extended := circ.didExtend
+	linkAuthed := circ.linkAuthed
 	circ.mu.RUnlock()
-	if extended {
+	if extended || linkAuthed {
 		return nil
 	}
 	h.logger.Warn("DoSRefuseSingleHopClient: DESTROY", "circuit_id", circ.CircuitID)

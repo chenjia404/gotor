@@ -318,7 +318,7 @@ func (l *ORListener) handleConnection(ctx context.Context, rawConn net.Conn) {
 		}
 
 		// Handle cell with circuit handler
-		if err := l.circuitHandler.HandleCellFromConnection(serverConn.conn, receivedCell); err != nil {
+		if err := l.circuitHandler.HandleCellFromOR(serverConn, receivedCell); err != nil {
 			l.logger.Warn("Failed to handle cell", "remote", remoteAddr, "circuit", receivedCell.CircID, "error", err)
 			// Continue processing other cells
 		}

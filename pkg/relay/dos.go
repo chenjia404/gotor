@@ -51,7 +51,7 @@ type DoSConfig struct {
 
 // DoSGuard 对齐 C Tor dos.c 的最小切片：每 IP 并发 OR + 连接速率桶 + CREATE2 令牌桶 + 每电路流创建桶 + 单跳拒绝。
 // auto 跟共识 DoSCircuitCreationEnabled / DoSConnectionEnabled / DoSStreamCreationEnabled。
-// 不是完整 dos.c（无 AUTHENTICATE 单跳区分）。不是 ProtectionManager。
+// 单跳：未 EXTEND 的普通客户端拒绝；已 AUTHENTICATE 的中继放行。不是完整 dos.c。不是 ProtectionManager。
 type DoSGuard struct {
 	circOn         bool
 	connOn         bool

@@ -105,6 +105,42 @@ func TestCircuitHandler_HandleCreate2(t *testing.T) {
 	}
 }
 
+func TestHandleCreate2AuthCopiesLinkAuthed(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewCircuitHandler(keys, logger.NewDefault())
+	clientKey, err := crypto.GenerateNtorKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var serverNtorPriv [32]byte
+	copy(serverNtorPriv[:], keys.NtorOnionKey)
+	var serverNtorPub [32]byte
+	curve25519.ScalarBaseMult(&serverNtorPub, &serverNtorPriv)
+	handshakeData := make([]byte, 84)
+	copy(handshakeData[0:20], keys.RSANodeID())
+	copy(handshakeData[20:52], serverNtorPub[:])
+	copy(handshakeData[52:84], clientKey.Public[:])
+	payload := make([]byte, 4+84)
+	payload[1] = 0x02
+	payload[3] = 0x54
+	copy(payload[4:], handshakeData)
+	or := &ServerORConnection{conn: newMockConn(), authenticated: true}
+	if err := handler.HandleCellFromOR(or, &cell.Cell{CircID: 4, Command: cell.CmdCreate2, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	circ, exists := handler.GetCircuit(4)
+	if !exists || circ == nil || !circ.linkAuthed {
+		t.Fatal("已认证 OR 上的 CREATE2 应记下 linkAuthed")
+	}
+	handler.SetDoS(NewDoSGuard(DoSConfig{RefuseSingleHop: true}))
+	if err := handler.forwarder.refuseSingleHopIfNeeded(circ, nil); err != nil {
+		t.Fatal("已认证中继的单跳 BEGIN 应放行")
+	}
+}
+
 func TestCircuitHandler_HandleCreate2_InvalidHandshakeType(t *testing.T) {
 	log := logger.NewDefault()
 
