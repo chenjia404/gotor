@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/onion"
 )
 
@@ -17,6 +18,22 @@ const (
 	maxHSDirBody    = 100 << 10
 	hsDirTTL        = 3 * time.Hour
 )
+
+type hsDirPutStatus int
+
+const (
+	hsDirPutOK hsDirPutStatus = iota
+	hsDirPutBad
+	hsDirPutNotResponsible
+)
+
+type hsDirRingSnapshot struct {
+	dirs        []*onion.HSDirectory
+	srvCurrent  []byte
+	srvPrev     []byte
+	nReplicas   int
+	spreadStore int
+}
 
 type hsDirEntry struct {
 	body     []byte
@@ -28,18 +45,57 @@ type hsDirEntry struct {
 type hsDirStore struct {
 	mu      sync.Mutex
 	byBlind map[string]*hsDirEntry
+	selfID  []byte
+	ring    *hsDirRingSnapshot
 }
 
-func (s *hsDirStore) put(body []byte) bool {
+func (s *hsDirStore) setIdentity(id []byte) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(id) != 32 {
+		s.selfID = nil
+		return
+	}
+	s.selfID = append([]byte(nil), id...)
+}
+
+func (s *hsDirStore) setRing(dirs []*onion.HSDirectory, current, prev []byte, p onion.HSDirRingParams) {
+	if s == nil {
+		return
+	}
+	p = p.WithDefaults()
+	snap := &hsDirRingSnapshot{
+		dirs:        dirs,
+		nReplicas:   p.NReplicas,
+		spreadStore: p.SpreadStore,
+	}
+	if len(current) == 32 {
+		snap.srvCurrent = append([]byte(nil), current...)
+	}
+	if len(prev) == 32 {
+		snap.srvPrev = append([]byte(nil), prev...)
+	}
+	s.mu.Lock()
+	s.ring = snap
+	s.mu.Unlock()
+}
+
+func (s *hsDirStore) put(body []byte) hsDirPutStatus {
 	if s == nil || len(body) == 0 || len(body) > maxHSDirBody {
-		return false
+		return hsDirPutBad
 	}
 	if !strings.HasPrefix(string(body), "hs-descriptor") {
-		return false
+		return hsDirPutBad
 	}
 	blinded, revision, canonical, err := onion.VerifyHSDirOuterDescriptor(body)
 	if err != nil || len(blinded) != 32 || len(canonical) == 0 {
-		return false
+		return hsDirPutBad
+	}
+	if !s.responsible(blinded) {
+		return hsDirPutNotResponsible
 	}
 	key := hex.EncodeToString(blinded)
 	now := time.Now()
@@ -51,13 +107,49 @@ func (s *hsDirStore) put(body []byte) bool {
 	s.expireLocked(now)
 	if existing, ok := s.byBlind[key]; ok {
 		if revision <= existing.revision {
-			return false
+			return hsDirPutBad
 		}
 	} else if len(s.byBlind) >= maxHSDirEntries {
 		s.evictOldestLocked()
 	}
 	s.byBlind[key] = &hsDirEntry{body: canonical, mod: now, revision: revision}
-	return true
+	return hsDirPutOK
+}
+
+func (s *hsDirStore) responsible(blinded []byte) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	self := append([]byte(nil), s.selfID...)
+	ring := s.ring
+	s.mu.Unlock()
+	if len(self) != 32 || ring == nil || len(ring.dirs) == 0 {
+		return true
+	}
+	period := onion.GetTimePeriod(time.Now())
+	periods := []uint64{period, period + 1}
+	if period > 0 {
+		periods = append(periods, period-1)
+	}
+	srvs := make([][]byte, 0, 3)
+	if len(ring.srvCurrent) == 32 {
+		srvs = append(srvs, ring.srvCurrent)
+	}
+	if len(ring.srvPrev) == 32 {
+		srvs = append(srvs, ring.srvPrev)
+	}
+	if len(srvs) == 0 {
+		srvs = append(srvs, onion.DisasterSRV(period, 0))
+	}
+	for _, p := range periods {
+		for _, srv := range srvs {
+			if onion.IsResponsibleHSDir(self, blinded, ring.dirs, srv, p, ring.nReplicas, ring.spreadStore) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *hsDirStore) get(blinded []byte) ([]byte, time.Time, bool) {
@@ -103,6 +195,22 @@ func (s *hsDirStore) evictOldestLocked() {
 	}
 }
 
+// SetHSDirIdentity 注入本中继 Ed25519 身份，供哈希环责任判定。未宣告 HSDir=2。
+func (d *DirCacheServer) SetHSDirIdentity(id []byte) {
+	if d == nil || d.hs == nil {
+		return
+	}
+	d.hs.setIdentity(id)
+}
+
+// SetHSDirRing 注入共识 HSDir 列表与 SRV。环就绪后 POST 只接受本节点负责的描述符。
+func (d *DirCacheServer) SetHSDirRing(relays []*directory.Relay, current, prev []byte, params map[string]int) {
+	if d == nil || d.hs == nil {
+		return
+	}
+	d.hs.setRing(onion.HSDirectoriesFromRelays(relays), current, prev, onion.HSDirRingParamsFromConsensus(params))
+}
+
 func (d *DirCacheServer) serveHSPublish(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -113,11 +221,18 @@ func (d *DirCacheServer) serveHSPublish(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	if d.hs == nil || !d.hs.put(body) {
+	if d.hs == nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	switch d.hs.put(body) {
+	case hsDirPutOK:
+		w.WriteHeader(http.StatusOK)
+	case hsDirPutNotResponsible:
+		http.NotFound(w, r)
+	default:
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}
 }
 
 func (d *DirCacheServer) serveHSFetch(w http.ResponseWriter, r *http.Request) {

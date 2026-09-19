@@ -338,6 +338,7 @@ func (s *Server) SetOnionNetwork(
 	if dirClient != nil {
 		cur, prev := dirClient.SharedRandomValues()
 		s.onionClient.SetSharedRandom(cur, prev)
+		s.onionClient.SetHSDirRingParams(onion.HSDirRingParamsFromConsensus(dirClient.LastConsensusParams()))
 	}
 	if builder != nil {
 		begindir := onion.NewBegindirFetcher(builder, s.logger)

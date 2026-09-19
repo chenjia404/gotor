@@ -1830,6 +1830,21 @@ func (c *Client) refreshVanguardParams() {
 	c.vanguards.ApplyConsensusParams(path.VanguardParamsFromConsensus(c.directory.LastConsensusParams()))
 }
 
+// HSDirRingSnapshot 返回最近共识的 HSDir 环材料（中继 DirCache POST 责任判定）。
+func (c *Client) HSDirRingSnapshot() (relays []*directory.Relay, current, prev []byte, params map[string]int) {
+	if c == nil {
+		return nil, nil, nil, nil
+	}
+	if c.pathSelector != nil {
+		relays = c.pathSelector.GetRelays()
+	}
+	if c.directory != nil {
+		current, prev = c.directory.SharedRandomValues()
+		params = c.directory.LastConsensusParams()
+	}
+	return relays, current, prev, params
+}
+
 // CircpadConfig 返回共识驱动的 circpad 配置副本（供 onion HS setup 使用）。
 func (c *Client) CircpadConfig() circuit.CircpadConfig {
 	c.circpadCfgMu.RLock()

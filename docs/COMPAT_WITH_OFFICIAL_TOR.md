@@ -134,10 +134,10 @@ proto Link=3-5 LinkAuth=3 Circuit=1-4 Relay=1-4 FlowCtrl=1-2 Padding=2 Conflux=1
 
 ### 4. HSDir / intro / rend 中继角色
 
-- [ ] **状态**：PARTIAL（末端跳 ESTABLISH + **INTRODUCE1 转发 INTRODUCE2 / ACK** + **RENDEZVOUS1 会合并拼电路** + **HSDir `/tor/hs/3` 验签收/服**。未宣告 HS*。**无**真网被选为 intro/rend/HSDir 证据）
+- [ ] **状态**：PARTIAL（末端跳 ESTABLISH + **INTRODUCE1 转发 INTRODUCE2 / ACK** + **RENDEZVOUS1 会合并拼电路** + **HSDir `/tor/hs/3` 验签收/服 + 哈希环 spread_store 责任**。未宣告 HS*。**无**真网被选为 intro/rend/HSDir 证据）
 - **现有代码**：客户端 `pkg/onion/onion.go`、`pkg/onion/hsdir_index.go`、`pkg/onion/begindir.go`、`pkg/onion/establish_intro.go`、`pkg/onion/hsdir_match.go`。中继 `pkg/relay/hsintro.go`、`pkg/relay/hsrend.go`、`pkg/relay/hsdir.go`、`pkg/relay/forwarding.go`、`pkg/relay/circuit_handler.go`。互操作 `docs/interop/hs-intro-rend.md`。
-- **已做（协议切片，2026-08-20，#69）**：INTRODUCE1 按 AUTH_KEY 转发；RENDEZVOUS1 cookie 一次性取出后发 RENDEZVOUS2 并拼接；HSDir POST 验 type-8/正文签名，revision 只取自签名覆盖范围，按盲化公钥覆盖更高修订。描述符 proto **禁止** `HSDir=` / `HSIntro=` / `HSRend=`。
-- **要做（未达 HS* proto）**：引言点/会合点限速与官方生命周期；HSDir 哈希环责任与副本；真网被选。在此之前 **禁止** 在 `proto` 写 HS*。
+- **已做（协议切片，2026-08-20，#69；哈希环 2026-09-19）**：INTRODUCE1 按 AUTH_KEY 转发；RENDEZVOUS1 cookie 一次性取出后发 RENDEZVOUS2 并拼接；HSDir POST 验 type-8/正文签名，revision 只取自签名覆盖范围，按盲化公钥覆盖更高修订。**哈希环**：读共识 `hsdir_n_replicas` / `hsdir_spread_fetch` / `hsdir_spread_store`；上传用 spread_store；DirCache 在环就绪后拒绝非责任节点的 POST（404）。描述符 proto **禁止** `HSDir=` / `HSIntro=` / `HSRend=`。
+- **要做（未达 HS* proto）**：引言点/会合点限速与官方生命周期；真网被选。在此之前 **禁止** 在 `proto` 写 HS*。
 - **禁止**：描述符写上 HSDir/HSIntro/HSRend 但收到 cell 就 DESTROY；用电路 ntor 冒充 hs-ntor；把离线单测写成「已具备完整 HS 中继角色」。
 
 ### 5. LinkAuth=3 服务端

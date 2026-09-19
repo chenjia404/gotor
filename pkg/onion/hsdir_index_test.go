@@ -73,4 +73,31 @@ func TestSelectResponsibleHSDirs(t *testing.T) {
 	if len(got) == 0 || len(got) > 6 {
 		t.Fatalf("expected 1..6 responsible, got %d", len(got))
 	}
+	store := SelectResponsibleHSDirsStore(blinded, dirs, srv, 42, 2, 4)
+	if len(store) < len(got) || len(store) > 8 {
+		t.Fatalf("spread_store should cover fetch set, fetch=%d store=%d", len(got), len(store))
+	}
+	self := store[0].ed25519Identity()
+	if !IsResponsibleHSDir(self, blinded, dirs, srv, 42, 2, 4) {
+		t.Fatal("store member must be responsible")
+	}
+	outsider := bytes.Repeat([]byte{0xff}, 32)
+	if IsResponsibleHSDir(outsider, blinded, dirs, srv, 42, 2, 4) {
+		t.Fatal("unknown identity must not be responsible")
+	}
+}
+
+func TestHSDirRingParamsFromConsensus(t *testing.T) {
+	def := HSDirRingParamsFromConsensus(nil)
+	if def.NReplicas != 2 || def.SpreadFetch != 3 || def.SpreadStore != 4 {
+		t.Fatalf("defaults %+v", def)
+	}
+	got := HSDirRingParamsFromConsensus(map[string]int{
+		"hsdir_n_replicas":   0,
+		"hsdir_spread_fetch": 999,
+		"hsdir_spread_store": 8,
+	})
+	if got.NReplicas != 1 || got.SpreadFetch != 128 || got.SpreadStore != 8 {
+		t.Fatalf("clamp %+v", got)
+	}
 }

@@ -106,6 +106,9 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 	}
 	if cfg.DirCache || cfg.DirPort > 0 {
 		s.dirCache = NewDirCacheServer(cacheDir, log)
+		if len(keys.Ed25519Public) == 32 {
+			s.dirCache.SetHSDirIdentity(keys.Ed25519Public)
+		}
 		if ln.circuitHandler != nil && ln.circuitHandler.exits != nil {
 			dc := s.dirCache
 			ln.circuitHandler.exits.SetDirDial(dc.Dial)
@@ -225,6 +228,14 @@ func (s *Server) ReachabilityStatus() ReachabilityStatus {
 		return ReachabilityStatus{}
 	}
 	return s.reach.Status()
+}
+
+// SetHSDirRing 把最近共识的 HSDir 哈希环交给 DirCache（POST 责任判定）。未宣告 HSDir=2。
+func (s *Server) SetHSDirRing(relays []*directory.Relay, current, prev []byte, params map[string]int) {
+	if s == nil || s.dirCache == nil {
+		return
+	}
+	s.dirCache.SetHSDirRing(relays, current, prev, params)
 }
 
 // Stop 停止监听与描述符发布。

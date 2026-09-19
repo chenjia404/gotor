@@ -7,6 +7,7 @@ import (
 	"compress/zlib"
 	"crypto/ed25519"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -670,6 +671,92 @@ func TestDirCacheHSDirRejectsTamperAndStaleRevision(t *testing.T) {
 	locked := append(append([]byte(nil), raw3...), []byte("\nrevision-counter 999999\n")...)
 	if post(locked) != http.StatusBadRequest {
 		t.Fatal("未签名尾部抬高 revision 不得覆盖")
+	}
+}
+
+func TestDirCacheHSDirHashringResponsibility(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, blinded, err := onion.BuildSignedHSDescriptor(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirs := make([]*directory.Relay, 0, 16)
+	hsdirs := make([]*onion.HSDirectory, 0, 16)
+	for i := 0; i < 16; i++ {
+		id := make([]byte, 32)
+		id[0] = byte(i + 1)
+		id[1] = byte(i * 5)
+		r := &directory.Relay{
+			IdentityKey: append([]byte(nil), id...),
+			Nickname:    fmt.Sprintf("h%d", i),
+			Fingerprint: fmt.Sprintf("%040d", i),
+			Flags:       []string{"Running", "Valid", "HSDir", "V2Dir"},
+			Address:     "127.0.0.1",
+			ORPort:      9000 + i,
+		}
+		dirs = append(dirs, r)
+		hsdirs = append(hsdirs, &onion.HSDirectory{
+			Fingerprint: r.Fingerprint,
+			Address:     r.Address,
+			ORPort:      r.ORPort,
+			HSDir:       true,
+			Relay:       r,
+		})
+	}
+	period := onion.GetTimePeriod(time.Now())
+	srv := onion.DisasterSRV(period, 0)
+	responsible := onion.SelectResponsibleHSDirsStore(blinded, hsdirs, srv, period, 2, 4)
+	if len(responsible) == 0 {
+		t.Fatal("ring produced no responsible HSDir")
+	}
+	inside := responsible[0].Relay.IdentityKey
+	onRing := func(id []byte) bool {
+		for _, p := range []uint64{period, period + 1} {
+			if onion.IsResponsibleHSDir(id, blinded, hsdirs, srv, p, 2, 4) {
+				return true
+			}
+		}
+		if period > 0 && onion.IsResponsibleHSDir(id, blinded, hsdirs, srv, period-1, 2, 4) {
+			return true
+		}
+		return false
+	}
+	var outside []byte
+	for _, r := range dirs {
+		if !onRing(r.IdentityKey) {
+			outside = r.IdentityKey
+			break
+		}
+	}
+	if len(outside) != 32 {
+		t.Fatal("need an outsider on a 16-node ring")
+	}
+
+	post := func(s *DirCacheServer) int {
+		rec := httptest.NewRecorder()
+		s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/tor/hs/3/publish", strings.NewReader(string(raw))))
+		return rec.Code
+	}
+	okSrv := NewDirCacheServer(t.TempDir(), nil)
+	okSrv.SetHSDirIdentity(inside)
+	okSrv.SetHSDirRing(dirs, srv, nil, nil)
+	if code := post(okSrv); code != http.StatusOK {
+		t.Fatalf("responsible HSDir should accept, got %d", code)
+	}
+	deny := NewDirCacheServer(t.TempDir(), nil)
+	deny.SetHSDirIdentity(outside)
+	deny.SetHSDirRing(dirs, srv, nil, nil)
+	if code := post(deny); code != http.StatusNotFound {
+		t.Fatalf("non-responsible HSDir should 404, got %d", code)
+	}
+	path := "/tor/hs/3/" + base64.RawStdEncoding.EncodeToString(blinded)
+	rec := httptest.NewRecorder()
+	deny.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, http.NoBody))
+	if rec.Code != http.StatusNotFound {
+		t.Fatal("rejected publish must not be stored")
 	}
 }
 

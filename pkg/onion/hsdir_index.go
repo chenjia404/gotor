@@ -5,6 +5,7 @@
 package onion
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"sort"
@@ -20,7 +21,59 @@ const (
 	hsIndexPrefix           = "store-at-idx"
 	hsdirIndexPrefix        = "node-idx"
 	hsSRVDisasterPrefix     = "shared-random-disaster"
+
+	// param-spec / C Tor networkstatus_get_param
+	hsdirNReplicasMin = 1
+	hsdirNReplicasMax = 16
+	hsdirSpreadMin    = 1
+	hsdirSpreadMax    = 128
 )
+
+// HSDirRingParams 是共识 hsdir_n_replicas / hsdir_spread_fetch / hsdir_spread_store。
+type HSDirRingParams struct {
+	NReplicas   int
+	SpreadFetch int
+	SpreadStore int
+}
+
+// HSDirRingParamsFromConsensus 夹紧到 param-spec：replicas 1–16，spread 1–128。
+func HSDirRingParamsFromConsensus(params map[string]int) HSDirRingParams {
+	return HSDirRingParams{
+		NReplicas:   clampHSDirParam(params, "hsdir_n_replicas", hsdirNReplicasDefault, hsdirNReplicasMin, hsdirNReplicasMax),
+		SpreadFetch: clampHSDirParam(params, "hsdir_spread_fetch", hsdirSpreadFetchDefault, hsdirSpreadMin, hsdirSpreadMax),
+		SpreadStore: clampHSDirParam(params, "hsdir_spread_store", hsdirSpreadStoreDefault, hsdirSpreadMin, hsdirSpreadMax),
+	}
+}
+
+func (p HSDirRingParams) WithDefaults() HSDirRingParams {
+	if p.NReplicas <= 0 {
+		p.NReplicas = hsdirNReplicasDefault
+	}
+	if p.SpreadFetch <= 0 {
+		p.SpreadFetch = hsdirSpreadFetchDefault
+	}
+	if p.SpreadStore <= 0 {
+		p.SpreadStore = hsdirSpreadStoreDefault
+	}
+	return p
+}
+
+func clampHSDirParam(params map[string]int, key string, def, min, max int) int {
+	if params == nil {
+		return def
+	}
+	v, ok := params[key]
+	if !ok {
+		return def
+	}
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
 
 // DisasterSRV = SHA3_256("shared-random-disaster" | INT_8(period_length) | INT_8(period_num))
 func DisasterSRV(periodNum, periodLengthMinutes uint64) []byte {
@@ -129,6 +182,33 @@ func SelectResponsibleHSDirs(
 	if spreadFetch <= 0 {
 		spreadFetch = hsdirSpreadFetchDefault
 	}
+	return selectResponsibleHSDirs(blindedPubkey, hsdirs, srv, periodNum, nReplicas, spreadFetch)
+}
+
+// SelectResponsibleHSDirsStore 上传用 spread_store（默认 4，大于拉取的 3）。
+func SelectResponsibleHSDirsStore(
+	blindedPubkey []byte,
+	hsdirs []*HSDirectory,
+	srv []byte,
+	periodNum uint64,
+	nReplicas, spreadStore int,
+) []*HSDirectory {
+	if nReplicas <= 0 {
+		nReplicas = hsdirNReplicasDefault
+	}
+	if spreadStore <= 0 {
+		spreadStore = hsdirSpreadStoreDefault
+	}
+	return selectResponsibleHSDirs(blindedPubkey, hsdirs, srv, periodNum, nReplicas, spreadStore)
+}
+
+func selectResponsibleHSDirs(
+	blindedPubkey []byte,
+	hsdirs []*HSDirectory,
+	srv []byte,
+	periodNum uint64,
+	nReplicas, spread int,
+) []*HSDirectory {
 	periodLen := uint64(hsdirIntervalDefaultMinutes)
 
 	ring := make([]hsdirRingEntry, 0, len(hsdirs))
@@ -154,7 +234,7 @@ func SelectResponsibleHSDirs(
 	})
 
 	seen := make(map[string]struct{})
-	out := make([]*HSDirectory, 0, nReplicas*spreadFetch)
+	out := make([]*HSDirectory, 0, nReplicas*spread)
 	for replica := 1; replica <= nReplicas; replica++ {
 		hsIdx, err := BuildHSIndex(blindedPubkey, uint64(replica), periodNum, periodLen)
 		if err != nil {
@@ -168,7 +248,7 @@ func SelectResponsibleHSDirs(
 		}
 		added := 0
 		i := start
-		for added < spreadFetch {
+		for added < spread {
 			d := ring[i].dir
 			key := d.Fingerprint
 			if key == "" {
@@ -189,6 +269,25 @@ func SelectResponsibleHSDirs(
 		}
 	}
 	return out
+}
+
+// IsResponsibleHSDir 报告 selfID 是否在该盲化公钥的负责集合中（上传用 spread_store）。
+func IsResponsibleHSDir(
+	selfID, blindedPubkey []byte,
+	hsdirs []*HSDirectory,
+	srv []byte,
+	periodNum uint64,
+	nReplicas, spreadStore int,
+) bool {
+	if len(selfID) != 32 || len(blindedPubkey) != 32 {
+		return false
+	}
+	for _, d := range SelectResponsibleHSDirsStore(blindedPubkey, hsdirs, srv, periodNum, nReplicas, spreadStore) {
+		if bytes.Equal(d.ed25519Identity(), selfID) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *HSDirectory) ed25519Identity() []byte {

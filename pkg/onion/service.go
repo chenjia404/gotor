@@ -116,6 +116,11 @@ type ServiceConfig struct {
 
 	// NetworkRelays 共识节点（选引言点 / BEGIN_DIR 路径）
 	NetworkRelays []*directory.Relay
+
+	// SharedRandCurrent / Previous 共识 SRV（HSDir 哈希环上传）
+	SharedRandCurrent  []byte
+	SharedRandPrevious []byte
+	HSDirRing          HSDirRingParams
 }
 
 // ServiceIntroPoint represents an introduction point for this service
@@ -751,26 +756,71 @@ func (s *Service) publishDescriptor(ctx context.Context, hsdirs []*HSDirectory) 
 	}
 
 	// Select responsible HSDirs using HSDir protocol
-	hsdir := NewHSDir(s.logger)
-
-	// Publish to both replicas
-	published := 0
-	for replica := 0; replica < 2; replica++ {
-		selectedHSDirs := hsdir.SelectHSDirs(desc.DescriptorID, hsdirs, replica)
-
-		for _, targetHSDir := range selectedHSDirs {
-			if err := s.uploadDescriptor(ctx, targetHSDir, desc, replica); err != nil {
-				s.logger.Warn("Failed to publish to HSDir",
-					"hsdir", targetHSDir.Fingerprint,
-					"replica", replica,
-					"error", err)
-				continue
-			}
-			published++
-			s.logger.Debug("Descriptor published",
-				"hsdir", targetHSDir.Fingerprint,
-				"replica", replica)
+	now := time.Now()
+	period := GetTimePeriod(now)
+	blinded := desc.BlindedPubkey
+	if len(blinded) != 32 && desc.Address != nil && len(desc.Address.Pubkey) == 32 {
+		blinded = ComputeBlindedPubkey(ed25519.PublicKey(desc.Address.Pubkey), period)
+	}
+	rp := HSDirRingParams{}.WithDefaults()
+	var srvCurrent, srvPrev []byte
+	if s.config != nil {
+		rp = s.config.HSDirRing.WithDefaults()
+		srvCurrent = s.config.SharedRandCurrent
+		srvPrev = s.config.SharedRandPrevious
+	}
+	srv := SelectSRVForFetch(now, period, srvCurrent, srvPrev)
+	selectedHSDirs := SelectResponsibleHSDirsStore(blinded, hsdirs, srv, period, rp.NReplicas, rp.SpreadStore)
+	if len(selectedHSDirs) == 0 {
+		alt := srvPrev
+		if UseCurrentSRVForFetch(now) {
+			alt = srvCurrent
 		}
+		if len(alt) == 32 && (len(srv) != 32 || string(alt) != string(srv)) {
+			selectedHSDirs = SelectResponsibleHSDirsStore(blinded, hsdirs, alt, period, rp.NReplicas, rp.SpreadStore)
+		}
+	}
+	if len(selectedHSDirs) == 0 {
+		// 无 Ed25519 身份时回退旧启发式（占位单测）
+		hsdir := NewHSDir(s.logger)
+		for replica := 0; replica < 2; replica++ {
+			selectedHSDirs = append(selectedHSDirs, hsdir.SelectHSDirs(desc.DescriptorID, hsdirs, replica)...)
+		}
+	} else {
+		var alt []byte
+		if UseCurrentSRVForFetch(now) {
+			alt = srvPrev
+		} else {
+			alt = srvCurrent
+		}
+		if len(alt) == 32 {
+			extra := SelectResponsibleHSDirsStore(blinded, hsdirs, alt, period, rp.NReplicas, rp.SpreadStore)
+			seen := map[string]struct{}{}
+			for _, d := range selectedHSDirs {
+				seen[d.Fingerprint] = struct{}{}
+			}
+			merged := selectedHSDirs
+			for _, d := range extra {
+				if _, ok := seen[d.Fingerprint]; !ok {
+					merged = append(merged, d)
+					seen[d.Fingerprint] = struct{}{}
+				}
+			}
+			selectedHSDirs = merged
+		}
+	}
+
+	published := 0
+	for _, targetHSDir := range selectedHSDirs {
+		if err := s.uploadDescriptor(ctx, targetHSDir, desc, 1); err != nil {
+			s.logger.Warn("Failed to publish to HSDir",
+				"hsdir", targetHSDir.Fingerprint,
+				"error", err)
+			continue
+		}
+		published++
+		s.logger.Debug("Descriptor published",
+			"hsdir", targetHSDir.Fingerprint)
 	}
 
 	if published == 0 {

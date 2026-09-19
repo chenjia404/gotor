@@ -45,6 +45,14 @@ func (c *Client) startConfiguredOnionServices(ctx context.Context) error {
 	builder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
 	begindir := onion.NewBegindirFetcher(builder, c.logger)
 	begindir.SetRelays(networkRelays)
+	var srvCur, srvPrev []byte
+	if c.directory != nil {
+		srvCur, srvPrev = c.directory.SharedRandomValues()
+	}
+	ring := onion.HSDirRingParamsFromConsensus(nil)
+	if c.directory != nil {
+		ring = onion.HSDirRingParamsFromConsensus(c.directory.LastConsensusParams())
+	}
 
 	for _, dir := range order {
 		sc := byDir[dir]
@@ -52,6 +60,9 @@ func (c *Client) startConfiguredOnionServices(ctx context.Context) error {
 		sc.PathSelector = c.pathSelector
 		sc.Begindir = begindir
 		sc.NetworkRelays = networkRelays
+		sc.SharedRandCurrent = srvCur
+		sc.SharedRandPrevious = srvPrev
+		sc.HSDirRing = ring
 		svc, err := onion.NewService(sc, c.logger)
 		if err != nil {
 			return fmt.Errorf("onion service %s: %w", dir, err)

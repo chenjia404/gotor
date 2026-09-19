@@ -240,6 +240,10 @@ func run(ctx context.Context, cfg *config.Config, log *logger.Logger) error {
 		"circuits", stats.ActiveCircuits,
 		"socks", fmt.Sprintf("%s:%d", cfg.SocksListenAddr, stats.SocksPort),
 		"disable_network", cfg.DisableNetwork)
+	if relaySrv != nil {
+		relays, cur, prev, params := torClient.HSDirRingSnapshot()
+		relaySrv.SetHSDirRing(relays, cur, prev, params)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

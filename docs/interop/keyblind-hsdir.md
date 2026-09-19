@@ -11,7 +11,9 @@
 
 - `hs_index = SHA3_256("store-at-idx" | blinded | replica | period_len | period)`（replica 从 1 起）
 - `hsdir_index = SHA3_256("node-idx" | ed25519_id | SRV | period | period_len)`
-- 拉取用 current/previous SRV 合并负责节点；spread_fetch=3
+- 拉取用 current/previous SRV 合并负责节点；spread_fetch 默认 3，上传 spread_store 默认 4
+- 共识 `hsdir_n_replicas`（1–16）/ `hsdir_spread_fetch` / `hsdir_spread_store`（1–128）
+- 中继 DirCache 环就绪后 POST 只收本节点负责的描述符
 
 ## 匿名 BEGIN_DIR
 

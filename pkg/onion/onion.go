@@ -403,6 +403,13 @@ func (c *Client) SetSharedRandom(current, previous []byte) {
 	}
 }
 
+// SetHSDirRingParams 注入共识 hsdir_n_replicas / spread_fetch。
+func (c *Client) SetHSDirRingParams(p HSDirRingParams) {
+	if c != nil && c.hsdir != nil {
+		c.hsdir.SetRingParams(p)
+	}
+}
+
 // UpdateHSDirs updates the list of available HSDirs from consensus
 func (c *Client) UpdateHSDirs(relays []*HSDirectory) {
 	c.consensus = relays
@@ -1342,6 +1349,7 @@ type HSDir struct {
 	begindir          *BegindirFetcher
 	sharedRandCurrent []byte
 	sharedRandPrev    []byte
+	ringParams        HSDirRingParams
 }
 
 // NewHSDir creates a new HSDir protocol handler
@@ -1362,6 +1370,14 @@ func (h *HSDir) SetSharedRandom(current, previous []byte) {
 	}
 	h.sharedRandCurrent = append([]byte(nil), current...)
 	h.sharedRandPrev = append([]byte(nil), previous...)
+}
+
+// SetRingParams 注入共识 hsdir_*（拉取 spread_fetch）。
+func (h *HSDir) SetRingParams(p HSDirRingParams) {
+	if h == nil {
+		return
+	}
+	h.ringParams = p.WithDefaults()
 }
 
 // SetBegindir 启用经 ORPort 的 BEGIN_DIR 拉取（现代网络几乎必需）。
@@ -1497,8 +1513,9 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 	// Compute descriptor ID
 	descriptorID := computeDescriptorID(blindedPubkey)
 
+	rp := h.ringParams.WithDefaults()
 	srv := SelectSRVForFetch(now, timePeriod, h.sharedRandCurrent, h.sharedRandPrev)
-	selectedHSDirs := SelectResponsibleHSDirs(blindedPubkey, hsdirs, srv, timePeriod, 0, 0)
+	selectedHSDirs := SelectResponsibleHSDirs(blindedPubkey, hsdirs, srv, timePeriod, rp.NReplicas, rp.SpreadFetch)
 	if len(selectedHSDirs) == 0 {
 		// 尝试另一份 SRV
 		alt := h.sharedRandPrev
@@ -1506,7 +1523,7 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 			alt = h.sharedRandCurrent
 		}
 		if len(alt) == 32 && (len(srv) != 32 || string(alt) != string(srv)) {
-			selectedHSDirs = SelectResponsibleHSDirs(blindedPubkey, hsdirs, alt, timePeriod, 0, 0)
+			selectedHSDirs = SelectResponsibleHSDirs(blindedPubkey, hsdirs, alt, timePeriod, rp.NReplicas, rp.SpreadFetch)
 			srv = alt
 		}
 	}
@@ -1525,7 +1542,7 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 			alt = h.sharedRandCurrent
 		}
 		if len(alt) == 32 {
-			extra := SelectResponsibleHSDirs(blindedPubkey, hsdirs, alt, timePeriod, 0, 0)
+			extra := SelectResponsibleHSDirs(blindedPubkey, hsdirs, alt, timePeriod, rp.NReplicas, rp.SpreadFetch)
 			seen := map[string]struct{}{}
 			for _, d := range selectedHSDirs {
 				seen[d.Fingerprint] = struct{}{}
