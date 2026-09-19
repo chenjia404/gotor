@@ -13,6 +13,13 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
+const (
+	// C Tor HS_DESC_SUPERENC_PLAINTEXT_PAD_MULTIPLE：第一层明文补 NUL 到 10k 倍数。
+	hsDescSuperencPlaintextPadMultiple = 10000
+	// C Tor CLIENT_AUTH_ENTRIES_BLOCK_SIZE：无客户端授权时仍写 16 行假 auth-client。
+	hsDescAuthClientDummyCount = 16
+)
+
 // buildEd25519Cert 构造 proposal-220 证书（可选 signed-with-ed25519-key 扩展）。
 func buildEd25519Cert(certType byte, certifiedKey ed25519.PublicKey, signer ed25519.PrivateKey, expires time.Time, includeSigningExt bool) ([]byte, error) {
 	if len(certifiedKey) != 32 {
@@ -142,16 +149,57 @@ func SealDescriptorLayers(blinded, subcred []byte, revision uint64, introPlain [
 
 	var mid bytes.Buffer
 	fmt.Fprintf(&mid, "desc-auth-type x25519\n")
-	fmt.Fprintf(&mid, "desc-auth-ephemeral-key %s\n", base64.RawStdEncoding.EncodeToString(ephemPub))
+	// C Tor curve25519_public_to_base64：带 padding（44 字符）。
+	fmt.Fprintf(&mid, "desc-auth-ephemeral-key %s\n", base64.StdEncoding.EncodeToString(ephemPub))
+	if err := writeFakeAuthClientLines(&mid); err != nil {
+		return nil, err
+	}
 	fmt.Fprintf(&mid, "encrypted\n-----BEGIN MESSAGE-----\n")
 	writeB64Lines(&mid, innerCT)
 	fmt.Fprintf(&mid, "-----END MESSAGE-----\n")
 
-	superBlob, err = encryptHSDescLayer(blinded, subcred, revision, "hsdir-superencrypted-data", mid.Bytes())
+	superBlob, err = encryptHSDescLayer(blinded, subcred, revision, "hsdir-superencrypted-data", padHSDescSuperencryptedPlaintext(mid.Bytes()))
 	if err != nil {
 		return nil, fmt.Errorf("encrypt outer: %w", err)
 	}
 	return superBlob, nil
+}
+
+func padHSDescSuperencryptedPlaintext(plain []byte) []byte {
+	n := len(plain)
+	if n == 0 {
+		return make([]byte, hsDescSuperencPlaintextPadMultiple)
+	}
+	padded := ((n + hsDescSuperencPlaintextPadMultiple - 1) / hsDescSuperencPlaintextPadMultiple) * hsDescSuperencPlaintextPadMultiple
+	if padded == n {
+		return plain
+	}
+	out := make([]byte, padded)
+	copy(out, plain)
+	return out
+}
+
+func writeFakeAuthClientLines(buf *bytes.Buffer) error {
+	for i := 0; i < hsDescAuthClientDummyCount; i++ {
+		clientID := make([]byte, 8)
+		iv := make([]byte, 16)
+		cookie := make([]byte, 16)
+		if _, err := rand.Read(clientID); err != nil {
+			return err
+		}
+		if _, err := rand.Read(iv); err != nil {
+			return err
+		}
+		if _, err := rand.Read(cookie); err != nil {
+			return err
+		}
+		// C Tor base64_encode_nopad：client-id 8B、iv 16B、encrypted-cookie 16B。
+		fmt.Fprintf(buf, "auth-client %s %s %s\n",
+			base64.RawStdEncoding.EncodeToString(clientID),
+			base64.RawStdEncoding.EncodeToString(iv),
+			base64.RawStdEncoding.EncodeToString(cookie))
+	}
+	return nil
 }
 
 func writeB64Lines(buf *bytes.Buffer, data []byte) {

@@ -1327,10 +1327,20 @@ func EncodeDescriptor(desc *Descriptor) ([]byte, error) {
 	fmt.Fprintf(&buf, "-----END MESSAGE-----\n")
 
 	if len(desc.Signature) > 0 {
-		fmt.Fprintf(&buf, "signature %s\n", base64.StdEncoding.EncodeToString(desc.Signature))
+		// C Tor desc_sig_is_valid：strlen 必须等于 ED25519_SIG_BASE64_LEN（86，无 padding）。
+		// StdEncoding 会写成 88 字符带 "=="，真网 HSDir 直接 HTTP 400。
+		fmt.Fprintf(&buf, "signature %s\n", base64.RawStdEncoding.EncodeToString(desc.Signature))
 	}
 
 	return buf.Bytes(), nil
+}
+
+// descriptorSignatureBase64Len 返回 C Tor 线格式签名行长度（无 padding，64 字节签名应为 86）。
+func descriptorSignatureBase64Len(desc *Descriptor) int {
+	if desc == nil {
+		return 0
+	}
+	return base64.RawStdEncoding.EncodedLen(len(desc.Signature))
 }
 
 // HSDirectory represents a Hidden Service Directory capable of storing descriptors

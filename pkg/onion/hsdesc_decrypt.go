@@ -138,10 +138,8 @@ func encryptHSDescLayer(secretData, subcred []byte, revision uint64, stringConst
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
 	}
+	// C Tor 用 AES-CTR 流密码，按明文长度加密：内层不补齐；外层由调用方按 10k 补 NUL。
 	padded := append([]byte{}, plain...)
-	for len(padded)%16 != 0 {
-		padded = append(padded, 0)
-	}
 	secretKey, secretIV, macKey, err := hsDescDeriveKeys(secretData, subcred, revision, salt, stringConstant)
 	if err != nil {
 		return nil, err

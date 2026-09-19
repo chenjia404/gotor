@@ -849,6 +849,11 @@ func (s *Service) publishDescriptor(ctx context.Context, hsdirs []*HSDirectory) 
 		}
 	}
 
+	s.logger.Info("HS descriptor wire",
+		"bytes", len(desc.RawDescriptor),
+		"superencrypted", len(desc.SuperencryptedBlob),
+		"sig_b64_len", descriptorSignatureBase64Len(desc))
+
 	published := 0
 	for _, targetHSDir := range selectedHSDirs {
 		if err := s.uploadDescriptor(ctx, targetHSDir, desc, 1); err != nil {
