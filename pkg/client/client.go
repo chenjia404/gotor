@@ -1066,6 +1066,8 @@ func (c *Client) GetStats() Stats {
 		ConnectionAttempts:  metricsSnap.ConnectionAttempts,
 		ConnectionRetries:   metricsSnap.ConnectionRetries,
 		UptimeSeconds:       metricsSnap.UptimeSeconds,
+		SocksListener:       listenerFromConfig(c.config.SocksListenAddr, c.config.SocksPort, c.config.SocksUnixPath, c.config.SocksUnixPath != ""),
+		ControlListener:     listenerFromConfig(c.config.ControlListenAddr, c.config.ControlPort, c.config.ControlSocket, c.config.ControlSocket != "" && c.config.ControlPort <= 0),
 	}
 
 	if c.pathSelector != nil {
@@ -1126,6 +1128,10 @@ type Stats struct {
 
 	// GETINFO status/enough-dir-info：已有验签共识且能选路
 	EnoughDirInfo bool
+
+	// GETINFO net/listeners/*：实际绑定地址（TCP host:port 或 unix 路径）
+	SocksListener   string
+	ControlListener string
 
 	// System metrics
 	UptimeSeconds int64
@@ -1199,6 +1205,30 @@ func (s Stats) GetTrafficWritten() uint64 {
 // GetEnoughDirInfo 为 true 时 GETINFO status/enough-dir-info 返回 1。
 func (s Stats) GetEnoughDirInfo() bool {
 	return s.EnoughDirInfo
+}
+
+// GetSocksListener 返回 SOCKS 实际绑定（TCP 或 unix 路径）。
+func (s Stats) GetSocksListener() string {
+	return s.SocksListener
+}
+
+// GetControlListener 返回控制口实际绑定（TCP 或 unix 路径）。
+func (s Stats) GetControlListener() string {
+	return s.ControlListener
+}
+
+// listenerFromConfig 生成 GETINFO net/listeners 值。unix 优先时只写路径；TCP 空 host 视为 127.0.0.1。
+func listenerFromConfig(host string, port int, unixPath string, unixTakesOver bool) string {
+	if unixTakesOver && unixPath != "" {
+		return unixPath
+	}
+	if port <= 0 {
+		return ""
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 // PublishEvent publishes an event to the control protocol

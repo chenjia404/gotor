@@ -78,6 +78,8 @@ GETINFO key [key ...]
 | `status/enough-dir-info` | 已有验签共识且能选 Guard 则为 1，否则 0（不写死） | `0` 或 `1` |
 | `traffic/read` | 入口 OR 已读字节 | `4096` |
 | `traffic/written` | 入口 OR 已写字节 | `2048` |
+| `net/listeners/socks` | SOCKS 实际绑定（TCP 或 unix 路径，不写死 127.0.0.1） | `127.0.0.1:9050` |
+| `net/listeners/control` | 控制口实际绑定（TCP 或 unix 路径） | `127.0.0.1:9051` |
 
 **Example:**
 ```

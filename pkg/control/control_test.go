@@ -28,6 +28,8 @@ type mockClientGetter struct {
 	trafficRead         uint64
 	trafficWritten      uint64
 	enoughDirInfo       bool
+	socksListener       string
+	controlListener     string
 	config              map[string]string
 }
 
@@ -137,6 +139,14 @@ func (m *mockClientGetter) GetEnoughDirInfo() bool {
 	return m.enoughDirInfo
 }
 
+func (m *mockClientGetter) GetSocksListener() string {
+	return m.socksListener
+}
+
+func (m *mockClientGetter) GetControlListener() string {
+	return m.controlListener
+}
+
 // Helper to create test server
 func setupTestServer(t *testing.T) (*Server, *mockClientGetter) {
 	t.Helper()
@@ -153,6 +163,8 @@ func setupTestServer(t *testing.T) (*Server, *mockClientGetter) {
 		uptimeSeconds:       3600,
 		connectionAttempts:  200,
 		dataDir:             "/tmp/go-tor",
+		socksListener:       "127.0.0.1:9050",
+		controlListener:     "127.0.0.1:9051",
 	}
 
 	log := logger.NewDefault()
@@ -961,5 +973,32 @@ func TestGetInfoEnoughDirInfoFromStats(t *testing.T) {
 	got = readResponse(t, reader)
 	if !strings.HasPrefix(got, "250 status/enough-dir-info=1") {
 		t.Fatalf("有选路表时应为 1: %s", got)
+	}
+}
+
+func TestGetInfoListenersUsesBindAddr(t *testing.T) {
+	server, mock := setupTestServer(t)
+	mock.socksListener = "0.0.0.0:9050"
+	mock.controlListener = "/tmp/gotor.control"
+	conn := connectToServer(t, server)
+	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+	readResponse(t, reader)
+	writer.WriteString("AUTHENTICATE\r\n")
+	writer.Flush()
+	readResponse(t, reader)
+
+	writer.WriteString("GETINFO net/listeners/socks\r\n")
+	writer.Flush()
+	got := readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 net/listeners/socks=0.0.0.0:9050") {
+		t.Fatalf("SOCKS 应报绑定地址而非写死 127.0.0.1: %s", got)
+	}
+
+	writer.WriteString("GETINFO net/listeners/control\r\n")
+	writer.Flush()
+	got = readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 net/listeners/control=/tmp/gotor.control") {
+		t.Fatalf("控制口 unix 应报路径: %s", got)
 	}
 }

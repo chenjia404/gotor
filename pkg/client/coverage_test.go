@@ -44,6 +44,8 @@ func TestStatsGetters(t *testing.T) {
 		TrafficRead:         4096,
 		TrafficWritten:      2048,
 		EnoughDirInfo:       true,
+		SocksListener:       "0.0.0.0:9050",
+		ControlListener:     "127.0.0.1:9051",
 	}
 
 	if stats.GetActiveCircuits() != 5 {
@@ -98,6 +100,12 @@ func TestStatsGetters(t *testing.T) {
 	}
 	if !stats.GetEnoughDirInfo() {
 		t.Error("GetEnoughDirInfo() = false, want true")
+	}
+	if stats.GetSocksListener() != "0.0.0.0:9050" {
+		t.Errorf("GetSocksListener() = %q, want 0.0.0.0:9050", stats.GetSocksListener())
+	}
+	if stats.GetControlListener() != "127.0.0.1:9051" {
+		t.Errorf("GetControlListener() = %q", stats.GetControlListener())
 	}
 }
 
@@ -157,6 +165,27 @@ func TestStatsGettersZeroValues(t *testing.T) {
 	}
 	if stats.GetEnoughDirInfo() {
 		t.Error("GetEnoughDirInfo() = true, want false")
+	}
+	if stats.GetSocksListener() != "" {
+		t.Errorf("GetSocksListener() = %q, want empty", stats.GetSocksListener())
+	}
+}
+
+func TestListenerFromConfig(t *testing.T) {
+	if got := listenerFromConfig("0.0.0.0", 9050, "", false); got != "0.0.0.0:9050" {
+		t.Fatalf("IPv4 bind %q", got)
+	}
+	if got := listenerFromConfig("::1", 9051, "", false); got != "[::1]:9051" {
+		t.Fatalf("IPv6 bind %q", got)
+	}
+	if got := listenerFromConfig("", 9050, "", false); got != "127.0.0.1:9050" {
+		t.Fatalf("空 host 默认回环 %q", got)
+	}
+	if got := listenerFromConfig("127.0.0.1", 9050, "/tmp/socks", true); got != "/tmp/socks" {
+		t.Fatalf("unix 应覆盖 TCP %q", got)
+	}
+	if got := listenerFromConfig("127.0.0.1", 0, "", false); got != "" {
+		t.Fatalf("未监听应为空 %q", got)
 	}
 }
 

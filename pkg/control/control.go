@@ -95,6 +95,8 @@ type StatsProvider interface {
 	GetTrafficRead() uint64
 	GetTrafficWritten() uint64
 	GetEnoughDirInfo() bool
+	GetSocksListener() string
+	GetControlListener() string
 }
 
 // ConfigProvider provides access to configuration values
@@ -647,9 +649,9 @@ func (s *Server) getInfoValue(key string, stats StatsProvider) (string, bool) {
 
 	// Port information
 	case "net/listeners/socks":
-		return fmt.Sprintf("127.0.0.1:%d", stats.GetSocksPort()), true
+		return stats.GetSocksListener(), true
 	case "net/listeners/control":
-		return fmt.Sprintf("127.0.0.1:%d", stats.GetControlPort()), true
+		return stats.GetControlListener(), true
 
 	// Help information
 	case "info/names":

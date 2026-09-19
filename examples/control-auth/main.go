@@ -161,6 +161,14 @@ func (m *mockClientGetter) GetEnoughDirInfo() bool {
 	return false
 }
 
+func (m *mockClientGetter) GetSocksListener() string {
+	return "127.0.0.1:9050"
+}
+
+func (m *mockClientGetter) GetControlListener() string {
+	return "127.0.0.1:9051"
+}
+
 func (m *mockClientGetter) GetConfig() control.ConfigProvider {
 	return nil // No config needed for this demo
 }
