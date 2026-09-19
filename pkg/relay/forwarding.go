@@ -162,8 +162,14 @@ func (h *ForwardingHandler) refuseSingleHopIfNeeded(circ *ServerCircuit, clientC
 	circ.mu.RLock()
 	extended := circ.didExtend
 	linkAuthed := circ.linkAuthed
+	peerRSA := circ.peerRSA
+	peerEd := append([]byte(nil), circ.peerEd...)
 	circ.mu.RUnlock()
-	if extended || linkAuthed {
+	if extended {
+		return nil
+	}
+	// BEGIN 时再查 nodelist，以便 CREATE2 之后才注入的共识仍生效。
+	if linkAuthed && h.circuits.dos.KnownRelay(peerRSA, peerEd) {
 		return nil
 	}
 	h.logger.Warn("DoSRefuseSingleHopClient: DESTROY", "circuit_id", circ.CircuitID)

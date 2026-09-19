@@ -266,7 +266,89 @@ func TestRefuseSingleHopAllowsAuthenticatedRelay(t *testing.T) {
 	h.SetDoS(NewDoSGuard(DoSConfig{RefuseSingleHop: true}))
 	circ := &ServerCircuit{CircuitID: 8, linkAuthed: true}
 	if err := h.forwarder.refuseSingleHopIfNeeded(circ, nil); err != nil {
-		t.Fatal("已 AUTHENTICATE 的中继单跳应放行")
+		t.Fatal("未注入 nodelist 时已 AUTHENTICATE 应 fail-open")
+	}
+}
+
+func TestKnownRelayFailOpenUntilInjected(t *testing.T) {
+	g := NewDoSGuard(DoSConfig{})
+	if !g.KnownRelay("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", nil) {
+		t.Fatal("空表应 fail-open")
+	}
+	g.SetKnownRelayIDs([]string{"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}, nil)
+	if g.KnownRelay("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", nil) {
+		t.Fatal("已注入 nodelist 后未知 RSA 应拒绝")
+	}
+	if !g.KnownRelay("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", nil) {
+		t.Fatal("大小写不同的已知 RSA 应命中")
+	}
+}
+
+func TestKnownRelayMatchesEd25519(t *testing.T) {
+	g := NewDoSGuard(DoSConfig{})
+	ed := make([]byte, 32)
+	ed[0] = 0xab
+	g.SetKnownRelayIDs(nil, [][]byte{ed})
+	if g.KnownRelay("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", nil) {
+		t.Fatal("仅 Ed 表时未知 RSA 不得命中")
+	}
+	if !g.KnownRelay("", ed) {
+		t.Fatal("已知 Ed25519 应命中")
+	}
+}
+
+func TestSetKnownRelayIDsEmptyKeepsPrevious(t *testing.T) {
+	g := NewDoSGuard(DoSConfig{})
+	g.SetKnownRelayIDs([]string{"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"}, nil)
+	g.SetKnownRelayIDs(nil, nil)
+	if !g.KnownRelay("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC", nil) {
+		t.Fatal("空注入应保留上一份 nodelist")
+	}
+}
+
+func TestRefuseSingleHopUnknownAuthenticated(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Destroy()
+	h := NewCircuitHandler(keys, nil)
+	g := NewDoSGuard(DoSConfig{RefuseSingleHop: true})
+	g.SetKnownRelayIDs([]string{"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"}, nil)
+	h.SetDoS(g)
+	unknown := &ServerCircuit{CircuitID: 9, linkAuthed: true, peerRSA: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+	if err := h.forwarder.refuseSingleHopIfNeeded(unknown, nil); err == nil {
+		t.Fatal("共识未收录的 AUTHENTICATE 应拒绝单跳")
+	}
+	known := &ServerCircuit{CircuitID: 10, linkAuthed: true, peerRSA: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"}
+	h.mu.Lock()
+	h.circuits[10] = known
+	h.mu.Unlock()
+	if err := h.forwarder.refuseSingleHopIfNeeded(known, nil); err != nil {
+		t.Fatal("共识已收录的 AUTHENTICATE 应放行")
+	}
+}
+
+func TestRefuseSingleHopRechecksNodelistAtBegin(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Destroy()
+	h := NewCircuitHandler(keys, nil)
+	g := NewDoSGuard(DoSConfig{RefuseSingleHop: true})
+	h.SetDoS(g)
+	circ := &ServerCircuit{CircuitID: 11, linkAuthed: true, peerRSA: "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"}
+	if err := h.forwarder.refuseSingleHopIfNeeded(circ, nil); err != nil {
+		t.Fatal("CREATE2 时尚未注入共识应 fail-open")
+	}
+	g.SetKnownRelayIDs([]string{"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"}, nil)
+	if err := h.forwarder.refuseSingleHopIfNeeded(circ, nil); err == nil {
+		t.Fatal("BEGIN 时应按最新 nodelist 拒绝未知身份")
+	}
+	g.SetKnownRelayIDs([]string{"EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"}, nil)
+	if err := h.forwarder.refuseSingleHopIfNeeded(circ, nil); err != nil {
+		t.Fatal("BEGIN 时应按最新 nodelist 放行已知身份")
 	}
 }
 

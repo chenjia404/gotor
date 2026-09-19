@@ -262,11 +262,31 @@ func (s *Server) SetCCParamsFromConsensus(params map[string]int) {
 }
 
 // SetHSDirRing 把最近共识的 HSDir 哈希环交给 DirCache（POST 责任判定）。未宣告 HSDir=2。
+// 同时把共识身份交给 DoS 守卫（DoSRefuseSingleHopClient / connection_or_digest_is_known_relay）。
+// dirCache 为 nil 时仍注入 nodelist，以便 BEGIN_DIR 中继在无 DirPort 时也能核对身份。
 func (s *Server) SetHSDirRing(relays []*directory.Relay, current, prev []byte, params map[string]int) {
-	if s == nil || s.dirCache == nil {
+	if s == nil {
 		return
 	}
-	s.dirCache.SetHSDirRing(relays, current, prev, params)
+	if s.listener != nil && s.listener.dos != nil {
+		var rsa []string
+		var ed [][]byte
+		for _, r := range relays {
+			if r == nil {
+				continue
+			}
+			if fp := r.GetFingerprintHex(); fp != "" {
+				rsa = append(rsa, fp)
+			}
+			if len(r.IdentityKey) == 32 {
+				ed = append(ed, r.IdentityKey)
+			}
+		}
+		s.listener.dos.SetKnownRelayIDs(rsa, ed)
+	}
+	if s.dirCache != nil {
+		s.dirCache.SetHSDirRing(relays, current, prev, params)
+	}
 }
 
 // Stop 停止监听与描述符发布。

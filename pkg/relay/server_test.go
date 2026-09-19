@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/config"
+	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
@@ -102,5 +103,23 @@ func TestNtorKeyPersistedAcrossLoad(t *testing.T) {
 	}
 	if string(loaded.NtorOnionKey) != string(keys.NtorOnionKey) {
 		t.Fatal("ntor key changed across save/load")
+	}
+}
+
+func TestServerSetHSDirRingSetsKnownRelaysWithoutDirCache(t *testing.T) {
+	g := NewDoSGuard(DoSConfig{RefuseSingleHop: true})
+	s := &Server{listener: &ORListener{}}
+	s.listener.SetDoS(g)
+	ed := make([]byte, 32)
+	ed[31] = 0x42
+	s.SetHSDirRing([]*directory.Relay{{
+		FingerprintHex: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		IdentityKey:    ed,
+	}}, nil, nil, nil)
+	if !g.KnownRelay("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", nil) {
+		t.Fatal("dirCache 为 nil 时仍应注入 RSA 指纹")
+	}
+	if !g.KnownRelay("", ed) {
+		t.Fatal("dirCache 为 nil 时仍应注入 Ed25519 身份")
 	}
 }

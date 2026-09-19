@@ -31,7 +31,9 @@ type ServerCircuit struct {
 	introAuth    []byte // 已建立引言点的 AUTH_KEY（32 字节）
 	rendCookie   []byte // ESTABLISH_RENDEZVOUS cookie（20 字节）
 	didExtend    bool   // 本电路成功 EXTEND2（下一跳已登记）
-	linkAuthed   bool   // 入站 OR 已 AUTHENTICATE（LinkAuth=3），视为中继
+	linkAuthed   bool   // 入站 OR 已 AUTHENTICATE（LinkAuth=3）
+	peerRSA      string // 发起方 RSA 指纹，供共识 nodelist 核对
+	peerEd       []byte // 发起方 Ed25519 身份
 	joinedCirc   *ServerCircuit
 	joinedConn   net.Conn
 	mu           sync.RWMutex
@@ -81,7 +83,7 @@ func NewCircuitHandlerWithPolicy(keys *RelayKeys, policy *ExitPolicy, log *logge
 // HandleCellFromConnection processes cells from a client connection
 // This handles CREATE2 cells for circuit creation and RELAY cells for forwarding
 func (h *CircuitHandler) HandleCellFromConnection(conn net.Conn, c *cell.Cell) error {
-	return h.handleIncomingCell(conn, c, false)
+	return h.handleIncomingCell(conn, c, false, "", nil)
 }
 
 // HandleCellFromOR 处理已完成链路握手的 OR 连接。authenticated 来自 AUTHENTICATE。
@@ -89,13 +91,13 @@ func (h *CircuitHandler) HandleCellFromOR(or *ServerORConnection, c *cell.Cell) 
 	if h == nil || or == nil {
 		return fmt.Errorf("nil OR cell handler")
 	}
-	return h.handleIncomingCell(or.conn, c, or.authenticated)
+	return h.handleIncomingCell(or.conn, c, or.authenticated, or.rsaFP, append([]byte(nil), or.edID...))
 }
 
-func (h *CircuitHandler) handleIncomingCell(conn net.Conn, c *cell.Cell, linkAuthed bool) error {
+func (h *CircuitHandler) handleIncomingCell(conn net.Conn, c *cell.Cell, linkAuthed bool, rsaFP string, edID []byte) error {
 	switch c.Command {
 	case cell.CmdCreate2:
-		return h.handleCreate2Auth(conn, c, linkAuthed)
+		return h.handleCreate2Auth(conn, c, linkAuthed, rsaFP, edID)
 	case cell.CmdRelay, cell.CmdRelayEarly:
 		return h.handleRelay(conn, c)
 	case cell.CmdDestroy:
@@ -131,10 +133,10 @@ func (h *CircuitHandler) SetDoS(g *DoSGuard) {
 //	  HLEN (2 bytes) - handshake response length
 //	  HDATA (HLEN bytes) - handshake response
 func (h *CircuitHandler) handleCreate2(conn net.Conn, c *cell.Cell) error {
-	return h.handleCreate2Auth(conn, c, false)
+	return h.handleCreate2Auth(conn, c, false, "", nil)
 }
 
-func (h *CircuitHandler) handleCreate2Auth(conn net.Conn, c *cell.Cell, linkAuthed bool) error {
+func (h *CircuitHandler) handleCreate2Auth(conn net.Conn, c *cell.Cell, linkAuthed bool, rsaFP string, edID []byte) error {
 	h.logger.Info("Received CREATE2",
 		"circuit_id", c.CircID,
 		"data_len", len(c.Payload))
@@ -234,6 +236,8 @@ func (h *CircuitHandler) handleCreate2Auth(conn net.Conn, c *cell.Cell, linkAuth
 		sendmeInc:    inc,
 		circNonce:    append([]byte(nil), circNonce...),
 		linkAuthed:   linkAuthed,
+		peerRSA:      rsaFP,
+		peerEd:       append([]byte(nil), edID...),
 	}
 
 	// Store circuit

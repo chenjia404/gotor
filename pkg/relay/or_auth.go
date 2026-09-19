@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rsa"
+	"crypto/sha1" // #nosec G505 - SHA1 required by Tor fingerprints
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/protocol"
@@ -149,6 +152,27 @@ func initiatorCIDFromCERTS(initiator *protocol.CERTSCell) ([]byte, error) {
 		return nil, fmt.Errorf("type 2 not RSA")
 	}
 	return rsaIdentitySHA256(rsaPub), nil
+}
+
+// initiatorIdentities 从已校验的发起方 CERTS 取出 RSA 指纹（40 hex）与 Ed25519 身份。
+func initiatorIdentities(initiator *protocol.CERTSCell) (rsaHex string, edID []byte) {
+	if initiator == nil {
+		return "", nil
+	}
+	if cidED, err := initiator.Ed25519IdentityKey(); err == nil && len(cidED) == 32 {
+		edID = append([]byte(nil), cidED...)
+	}
+	type2 := initiator.FindCertificate(protocol.CertTypeRSAID)
+	if type2 == nil || type2.X509Cert == nil {
+		return rsaHex, edID
+	}
+	rsaPub, ok := type2.X509Cert.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return rsaHex, edID
+	}
+	der := x509.MarshalPKCS1PublicKey(rsaPub)
+	sum := sha1.Sum(der) // #nosec G401
+	return strings.ToUpper(hex.EncodeToString(sum[:])), edID
 }
 
 func encodeCellBytes(c *cell.Cell, circIDLen int) ([]byte, error) {

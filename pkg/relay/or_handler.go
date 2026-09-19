@@ -31,7 +31,9 @@ type ServerORConnection struct {
 	remoteAddr        string
 	negotiatedVersion int
 	authenticated     bool
-	circIDLen         int // VERSIONS 后按协商版本：v≥4 为 4，否则为 2
+	rsaFP             string // AUTHENTICATE 后的 RSA 指纹（40 hex）
+	edID              []byte // AUTHENTICATE 后的 Ed25519 身份
+	circIDLen         int    // VERSIONS 后按协商版本：v≥4 为 4，否则为 2
 }
 
 // LinkProtocolHandler handles the server-side link protocol handshake
@@ -329,6 +331,7 @@ func (h *LinkProtocolHandler) receiveInitiatorFinishWithSecrets(ctx context.Cont
 			}
 			if orConn != nil {
 				orConn.authenticated = true
+				orConn.rsaFP, orConn.edID = initiatorIdentities(initiatorCERTS)
 			}
 			h.logger.Info("Initiator authenticated", "linkauth", 3)
 		default:

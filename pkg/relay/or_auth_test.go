@@ -1,10 +1,12 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +109,26 @@ func TestReceiveInitiatorFinishAcceptsValidAuthenticate(t *testing.T) {
 	}
 	if !orConn.authenticated {
 		t.Fatal("expected authenticated")
+	}
+	rsaHex, edID := initiatorIdentities(certs)
+	if orConn.rsaFP != rsaHex || rsaHex == "" {
+		t.Fatalf("rsaFP %q want %q", orConn.rsaFP, rsaHex)
+	}
+	if !bytes.Equal(orConn.edID, edID) || len(edID) != 32 {
+		t.Fatal("edID 应来自发起方 CERTS")
+	}
+}
+
+func TestInitiatorIdentitiesFromCERTS(t *testing.T) {
+	initiator := generateTestRelayKeys(t)
+	certs, _, _ := mustInitiatorCERTS(t, initiator)
+	rsaHex, edID := initiatorIdentities(certs)
+	wantRSA := strings.ToUpper(initiator.Fingerprint())
+	if rsaHex != wantRSA {
+		t.Fatalf("rsa %q want %q", rsaHex, wantRSA)
+	}
+	if !bytes.Equal(edID, initiator.Ed25519Public) {
+		t.Fatal("ed25519 身份应与 CERTS type 4 一致")
 	}
 }
 

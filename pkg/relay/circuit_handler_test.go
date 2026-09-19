@@ -127,7 +127,9 @@ func TestHandleCreate2AuthCopiesLinkAuthed(t *testing.T) {
 	payload[1] = 0x02
 	payload[3] = 0x54
 	copy(payload[4:], handshakeData)
-	or := &ServerORConnection{conn: newMockConn(), authenticated: true}
+	peerRSA := "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	peerEd := bytes.Repeat([]byte{0x2a}, 32)
+	or := &ServerORConnection{conn: newMockConn(), authenticated: true, rsaFP: peerRSA, edID: peerEd}
 	if err := handler.HandleCellFromOR(or, &cell.Cell{CircID: 4, Command: cell.CmdCreate2, Payload: payload}); err != nil {
 		t.Fatal(err)
 	}
@@ -135,9 +137,14 @@ func TestHandleCreate2AuthCopiesLinkAuthed(t *testing.T) {
 	if !exists || circ == nil || !circ.linkAuthed {
 		t.Fatal("已认证 OR 上的 CREATE2 应记下 linkAuthed")
 	}
-	handler.SetDoS(NewDoSGuard(DoSConfig{RefuseSingleHop: true}))
+	if circ.peerRSA != peerRSA || !bytes.Equal(circ.peerEd, peerEd) {
+		t.Fatal("CREATE2 应记下发起方 RSA/Ed25519 身份")
+	}
+	g := NewDoSGuard(DoSConfig{RefuseSingleHop: true})
+	g.SetKnownRelayIDs([]string{peerRSA}, nil)
+	handler.SetDoS(g)
 	if err := handler.forwarder.refuseSingleHopIfNeeded(circ, nil); err != nil {
-		t.Fatal("已认证中继的单跳 BEGIN 应放行")
+		t.Fatal("共识已收录的认证中继单跳 BEGIN 应放行")
 	}
 }
 

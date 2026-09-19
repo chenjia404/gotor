@@ -1,8 +1,10 @@
 package relay
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,7 +56,8 @@ type DoSConfig struct {
 
 // DoSGuard 对齐 C Tor dos.c 的最小切片：每 IP 并发 OR + 连接速率桶 + CREATE2 令牌桶 + 每电路流创建桶 + 单跳拒绝。
 // auto 跟共识 DoSCircuitCreationEnabled / DoSConnectionEnabled / DoSStreamCreationEnabled。
-// 单跳：未 EXTEND 的普通客户端拒绝；已 AUTHENTICATE 的中继放行。不是完整 dos.c。不是 ProtectionManager。
+// 单跳：未 EXTEND 的普通客户端拒绝；已 AUTHENTICATE 且在共识 nodelist 中的中继放行。
+// 不是完整 dos.c。不是 ProtectionManager。
 type DoSGuard struct {
 	circOn         bool
 	connOn         bool
@@ -85,6 +88,8 @@ type DoSGuard struct {
 	mu             sync.Mutex
 	ips            map[string]*dosIP
 	circStreams    map[uint32]*dosCircStream
+	knownRSA       map[string]struct{} // 共识 RSA 指纹（40 hex 大写）
+	knownEd        map[string]struct{} // 共识 Ed25519 身份（64 hex 大写）
 	lastPurge      time.Time
 	nowFn          func() time.Time
 }
@@ -310,6 +315,8 @@ func NewDoSGuard(cfg DoSConfig) *DoSGuard {
 		circDef:     circDef,
 		ips:         make(map[string]*dosIP),
 		circStreams: make(map[uint32]*dosCircStream),
+		knownRSA:    make(map[string]struct{}),
+		knownEd:     make(map[string]struct{}),
 		lastPurge:   time.Now(),
 		nowFn:       time.Now,
 	}
@@ -341,6 +348,59 @@ func (g *DoSGuard) now() time.Time {
 // RefuseSingleHop 对应 DoSRefuseSingleHopClient。
 func (g *DoSGuard) RefuseSingleHop() bool {
 	return g != nil && g.refuseHop
+}
+
+// SetKnownRelayIDs 注入最近共识中的 RSA 指纹与 Ed25519 身份。
+// 对齐 C Tor connection_or_digest_is_known_relay：空表 fail-open（bootstrap / 尚未拉共识）。
+// 两次注入都为空则保留上一份，避免短暂空共识把已收录中继打成客户端。
+func (g *DoSGuard) SetKnownRelayIDs(rsaHex []string, edKeys [][]byte) {
+	if g == nil {
+		return
+	}
+	rsa := make(map[string]struct{}, len(rsaHex))
+	for _, fp := range rsaHex {
+		fp = strings.ToUpper(strings.TrimSpace(fp))
+		if len(fp) == 40 {
+			rsa[fp] = struct{}{}
+		}
+	}
+	ed := make(map[string]struct{}, len(edKeys))
+	for _, k := range edKeys {
+		if len(k) == 32 {
+			ed[strings.ToUpper(hex.EncodeToString(k))] = struct{}{}
+		}
+	}
+	if len(rsa) == 0 && len(ed) == 0 {
+		return
+	}
+	g.mu.Lock()
+	g.knownRSA = rsa
+	g.knownEd = ed
+	g.mu.Unlock()
+}
+
+// KnownRelay 判断 AUTHENTICATE 身份是否在最近共识 nodelist 中。
+// 表空时返回 true（尚未注入共识，不把已认证 OR 当客户端）。
+func (g *DoSGuard) KnownRelay(rsaHex string, edID []byte) bool {
+	if g == nil {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.knownRSA) == 0 && len(g.knownEd) == 0 {
+		return true
+	}
+	if fp := strings.ToUpper(strings.TrimSpace(rsaHex)); len(fp) == 40 {
+		if _, ok := g.knownRSA[fp]; ok {
+			return true
+		}
+	}
+	if len(edID) == 32 {
+		if _, ok := g.knownEd[strings.ToUpper(hex.EncodeToString(edID))]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // OnConnect 在 accept 之后、TLS 之前计数。ConnEnabled 时超过每 IP 上限或连接速率则拒绝。
