@@ -552,7 +552,7 @@ func (s *Server) handleProtocolInfo(conn *connection, args []string) {
 		lines = append(lines, fmt.Sprintf("250-AUTH COOKIEFILE=\"%s\"", s.cookieFile))
 	}
 	lines = append(lines,
-		"250-VERSION Tor=\"gotor-0.1.0\"",
+		fmt.Sprintf("250-VERSION Tor=%q", config.CompatTorVersion+" (gotor)"),
 		"250 OK",
 	)
 	conn.writeDataReply(lines)
@@ -595,7 +595,7 @@ func (s *Server) handleGetInfo(conn *connection, args []string) {
 func (s *Server) getInfoValue(key string, stats StatsProvider) (string, bool) {
 	switch key {
 	case "version":
-		return "go-tor 0.1.0", true
+		return config.SoftwareVersion(), true
 	case "traffic/read", "traffic/written":
 		return "0", true
 	case "status/circuit-established":

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/opd-ai/go-tor/pkg/config"
 )
 
 func TestGenerateServerDescriptor(t *testing.T) {
@@ -226,6 +228,28 @@ func TestDescriptorDoesNotAdvertiseDirCache2(t *testing.T) {
 	want := "proto Cons=2 Desc=2 FlowCtrl=1-2 Link=3-5 LinkAuth=3 Microdesc=2 Relay=2-4"
 	if got := protoLineOf(raw); got != want {
 		t.Fatalf("proto 应只宣告已实现能力\nwant %s\ngot  %s", want, got)
+	}
+}
+
+func TestDescriptorPlatformUsesCompatVersion(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc, err := GenerateServerDescriptor(keys, &DescriptorConfig{
+		Nickname: "Plat",
+		Address:  "192.0.2.1",
+		ORPort:   9001,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "platform " + config.PlatformString()
+	if !strings.Contains(string(desc.RawDescriptor), want) {
+		t.Fatalf("描述符 platform 应对齐 CLI 兼容号，缺 %q\n%s", want, string(desc.RawDescriptor))
+	}
+	if strings.Contains(string(desc.RawDescriptor), "go-tor 0.1.0") {
+		t.Fatal("不得再写 0.1.0")
 	}
 }
 

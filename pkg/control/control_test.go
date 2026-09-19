@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opd-ai/go-tor/pkg/config"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
@@ -270,6 +271,17 @@ func TestProtocolInfo(t *testing.T) {
 	if !found {
 		t.Error("PROTOCOLINFO response missing protocol version")
 	}
+	wantVer := fmt.Sprintf("VERSION Tor=%q", config.CompatTorVersion+" (gotor)")
+	foundVer := false
+	for _, line := range lines {
+		if strings.Contains(line, wantVer) {
+			foundVer = true
+			break
+		}
+	}
+	if !foundVer {
+		t.Fatalf("PROTOCOLINFO VERSION 应对齐 CLI 兼容号，得到 %q", lines)
+	}
 }
 
 func TestAuthenticate(t *testing.T) {
@@ -321,6 +333,12 @@ func TestGetInfoAfterAuth(t *testing.T) {
 
 	if !strings.Contains(response, "version=") {
 		t.Errorf("Expected version in response, got: %s", response)
+	}
+	if !strings.Contains(response, config.SoftwareVersion()) {
+		t.Errorf("GETINFO version 应对齐 CLI 兼容号，得到: %s", response)
+	}
+	if strings.Contains(response, "go-tor 0.1.0") {
+		t.Fatal("不得再回 0.1.0")
 	}
 }
 

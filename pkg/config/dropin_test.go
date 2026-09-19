@@ -213,6 +213,12 @@ func TestVersionString(t *testing.T) {
 	if !strings.Contains(VersionString(), "(gotor)") {
 		t.Fatal(VersionString())
 	}
+	if SoftwareVersion() != "Tor "+CompatTorVersion+" (gotor)" {
+		t.Fatalf("SoftwareVersion=%s", SoftwareVersion())
+	}
+	if !strings.HasPrefix(PlatformString(), SoftwareVersion()+" on ") {
+		t.Fatalf("PlatformString=%s", PlatformString())
+	}
 }
 
 func TestCheckDropInConstraints(t *testing.T) {

@@ -41,7 +41,7 @@ PROTOCOLINFO [version]
 > PROTOCOLINFO
 < 250-PROTOCOLINFO 1
 < 250-AUTH METHODS=NULL
-< 250-VERSION Tor="go-tor-0.1.0"
+< 250-VERSION Tor="0.4.9.11 (gotor)"
 < 250 OK
 ```
 
@@ -73,7 +73,7 @@ GETINFO key [key ...]
 
 | Key | Description | Example Value |
 |-----|-------------|---------------|
-| `version` | Client version | `go-tor 0.1.0` |
+| `version` | 实现版本 | `Tor 0.4.9.11 (gotor)` |
 | `status/circuit-established` | Whether circuits are available | `0` or `1` |
 | `status/enough-dir-info` | Whether directory info is available | `0` or `1` |
 | `traffic/read` | Bytes read (placeholder) | `0` |
@@ -82,7 +82,7 @@ GETINFO key [key ...]
 **Example:**
 ```
 > GETINFO version status/circuit-established
-< 250-version=go-tor 0.1.0
+< 250-version=Tor 0.4.9.11 (gotor)
 < 250 status/circuit-established=1
 ```
 
@@ -178,7 +178,7 @@ The control protocol uses numeric response codes similar to SMTP:
 Responses can span multiple lines. All lines except the last use `code-` format, and the last line uses `code ` (space) format:
 
 ```
-250-version=go-tor 0.1.0
+250-version=Tor 0.4.9.11 (gotor)
 250-status/circuit-established=1
 250 status/enough-dir-info=1
 ```
@@ -195,14 +195,14 @@ Connected to localhost.
 > PROTOCOLINFO
 < 250-PROTOCOLINFO 1
 < 250-AUTH METHODS=NULL
-< 250-VERSION Tor="go-tor-0.1.0"
+< 250-VERSION Tor="0.4.9.11 (gotor)"
 < 250 OK
 
 > AUTHENTICATE
 < 250 OK
 
 > GETINFO version status/circuit-established
-< 250-version=go-tor 0.1.0
+< 250-version=Tor 0.4.9.11 (gotor)
 < 250 status/circuit-established=1
 
 > SETEVENTS CIRC

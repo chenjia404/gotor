@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	torcfg "github.com/opd-ai/go-tor/pkg/config"
 	"github.com/opd-ai/go-tor/pkg/crypto"
 	"github.com/opd-ai/go-tor/pkg/protocol"
 	"golang.org/x/crypto/curve25519"
@@ -150,7 +151,7 @@ func GenerateServerDescriptor(keys *RelayKeys, config *DescriptorConfig) (*Serve
 		Address:         config.Address,
 		ORPort:          config.ORPort,
 		DirPort:         config.DirPort,
-		Platform:        "go-tor 0.1.0 on Go",
+		Platform:        torcfg.PlatformString(),
 		PublishedTime:   published,
 		Uptime:          config.Uptime,
 		BandwidthAvg:    bandwidthAvg,
