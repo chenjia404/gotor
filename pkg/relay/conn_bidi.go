@@ -2,6 +2,7 @@ package relay
 
 import (
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,15 +19,21 @@ const (
 type bidiEntry struct {
 	read  atomic.Uint64
 	write atomic.Uint64
+	ipv6  bool
 }
 
 type bidiCompleted struct {
-	end   time.Time
-	nsec  int
-	below uint64
-	read  uint64
-	write uint64
-	both  uint64
+	end     time.Time
+	nsec    int
+	below   uint64
+	read    uint64
+	write   uint64
+	both    uint64
+	v6below uint64
+	v6read  uint64
+	v6write uint64
+	v6both  uint64
+	hasV6   bool
 }
 
 // ConnBiDirect 按 10s 格把 OR 连接分成 below/read/write/both。
@@ -41,6 +48,10 @@ type ConnBiDirect struct {
 	read        uint64
 	write       uint64
 	both        uint64
+	v6below     uint64
+	v6read      uint64
+	v6write     uint64
+	v6both      uint64
 	completed   *bidiCompleted
 }
 
@@ -59,11 +70,11 @@ func newConnBiDirect(now func() time.Time) *ConnBiDirect {
 	}
 }
 
-func (h *ConnBiDirect) register() *bidiEntry {
+func (h *ConnBiDirect) register(ipv6 bool) *bidiEntry {
 	if h == nil {
 		return nil
 	}
-	e := &bidiEntry{}
+	e := &bidiEntry{ipv6: ipv6}
 	h.mu.Lock()
 	h.conns[e] = struct{}{}
 	h.mu.Unlock()
@@ -83,7 +94,7 @@ func (h *ConnBiDirect) unregister(e *bidiEntry) {
 	r := e.read.Swap(0)
 	w := e.write.Swap(0)
 	if r > 0 || w > 0 {
-		h.addClassLocked(r, w)
+		h.addClassLocked(r, w, e.ipv6)
 	}
 	delete(h.conns, e)
 }
@@ -108,7 +119,7 @@ func (h *ConnBiDirect) noteWrite(e *bidiEntry, n uint64) {
 	h.mu.Unlock()
 }
 
-// StatsMap 只返回已完成 24h 窗的 conn-bi-direct。无观测则空。
+// StatsMap 只返回已完成 24h 窗的 conn-bi-direct；有 IPv6 分类时另写 ipv6-conn-bi-direct。
 func (h *ConnBiDirect) StatsMap() map[string]string {
 	if h == nil {
 		return nil
@@ -120,10 +131,18 @@ func (h *ConnBiDirect) StatsMap() map[string]string {
 		return nil
 	}
 	c := h.completed
-	return map[string]string{
-		"conn-bi-direct": fmt.Sprintf("%s (%d s) %d,%d,%d,%d",
-			c.end.UTC().Format("2006-01-02 15:04:05"), c.nsec, c.below, c.read, c.write, c.both),
+	out := map[string]string{
+		"conn-bi-direct": formatBidiLine(c.end, c.nsec, c.below, c.read, c.write, c.both),
 	}
+	if c.hasV6 {
+		out["ipv6-conn-bi-direct"] = formatBidiLine(c.end, c.nsec, c.v6below, c.v6read, c.v6write, c.v6both)
+	}
+	return out
+}
+
+func formatBidiLine(end time.Time, nsec int, below, read, write, both uint64) string {
+	return fmt.Sprintf("%s (%d s) %d,%d,%d,%d",
+		end.UTC().Format("2006-01-02 15:04:05"), nsec, below, read, write, both)
 }
 
 func (h *ConnBiDirect) sampleLocked(now time.Time) {
@@ -145,41 +164,54 @@ func (h *ConnBiDirect) sampleLocked(now time.Time) {
 
 func (h *ConnBiDirect) classifyAllLocked() {
 	for e := range h.conns {
-		h.addClassLocked(e.read.Swap(0), e.write.Swap(0))
+		h.addClassLocked(e.read.Swap(0), e.write.Swap(0), e.ipv6)
 	}
 }
 
-func (h *ConnBiDirect) addClassLocked(read, write uint64) {
+func (h *ConnBiDirect) addClassLocked(read, write uint64, ipv6 bool) {
+	inc := func(dst *uint64, v6 *uint64) {
+		*dst++
+		if ipv6 {
+			*v6++
+		}
+	}
 	switch classifyBidi(read, write) {
 	case bidiClassBelow:
-		h.below++
+		inc(&h.below, &h.v6below)
 	case bidiClassRead:
-		h.read++
+		inc(&h.read, &h.v6read)
 	case bidiClassWrite:
-		h.write++
+		inc(&h.write, &h.v6write)
 	default:
-		h.both++
+		inc(&h.both, &h.v6both)
 	}
 }
 
 func (h *ConnBiDirect) finishPeriodLocked(end time.Time) {
 	total := h.below + h.read + h.write + h.both
+	v6total := h.v6below + h.v6read + h.v6write + h.v6both
 	if total > 0 {
 		nsec := int(end.Sub(h.periodStart).Seconds())
 		if nsec <= 0 {
 			nsec = int(bidiPeriod.Seconds())
 		}
 		h.completed = &bidiCompleted{
-			end:   end.UTC(),
-			nsec:  nsec,
-			below: h.below,
-			read:  h.read,
-			write: h.write,
-			both:  h.both,
+			end:     end.UTC(),
+			nsec:    nsec,
+			below:   h.below,
+			read:    h.read,
+			write:   h.write,
+			both:    h.both,
+			v6below: h.v6below,
+			v6read:  h.v6read,
+			v6write: h.v6write,
+			v6both:  h.v6both,
+			hasV6:   v6total > 0,
 		}
 	}
 	h.periodStart = end
 	h.below, h.read, h.write, h.both = 0, 0, 0, 0
+	h.v6below, h.v6read, h.v6write, h.v6both = 0, 0, 0, 0
 }
 
 type bidiClass int
@@ -226,4 +258,27 @@ func mergeExtraInfoStats(dst, src map[string]string) map[string]string {
 		dst[k] = v
 	}
 	return dst
+}
+
+// addrIsIPv6：IPv4 与 IPv4-mapped 不算 IPv6（对齐 C Tor connstats 分计）。
+func addrIsIPv6(addr net.Addr) bool {
+	if addr == nil {
+		return false
+	}
+	var ip net.IP
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		ip = a.IP
+	case *net.UDPAddr:
+		ip = a.IP
+	case *net.IPAddr:
+		ip = a.IP
+	default:
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			host = addr.String()
+		}
+		ip = net.ParseIP(host)
+	}
+	return ip != nil && ip.To4() == nil
 }

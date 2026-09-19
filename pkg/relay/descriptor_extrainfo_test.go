@@ -73,9 +73,10 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats := map[string]string{
-		"write-history":  "2026-08-20 12:15:00 (900 s) 400",
-		"read-history":   "2026-08-20 12:15:00 (900 s) 1000",
-		"conn-bi-direct": "2026-08-21 12:00:00 (86400 s) 10,2,1,3",
+		"write-history":       "2026-08-20 12:15:00 (900 s) 400",
+		"read-history":        "2026-08-20 12:15:00 (900 s) 1000",
+		"conn-bi-direct":      "2026-08-21 12:00:00 (86400 s) 10,2,1,3",
+		"ipv6-conn-bi-direct": "2026-08-21 12:00:00 (86400 s) 4,1,0,2",
 	}
 	_, extra, err := GenerateDescriptorPair(keys, &DescriptorConfig{
 		Nickname: "ObsRelay",
@@ -100,6 +101,10 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 	bidi := strings.Index(raw, "conn-bi-direct 2026-08-21 12:00:00 (86400 s) 10,2,1,3\n")
 	if bidi < 0 || bidi < r {
 		t.Fatal("conn-bi-direct 应在 read-history 后")
+	}
+	v6 := strings.Index(raw, "ipv6-conn-bi-direct 2026-08-21 12:00:00 (86400 s) 4,1,0,2\n")
+	if v6 < 0 || v6 < bidi {
+		t.Fatal("ipv6-conn-bi-direct 应在 conn-bi-direct 后")
 	}
 }
 

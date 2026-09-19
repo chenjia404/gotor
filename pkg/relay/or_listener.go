@@ -467,7 +467,7 @@ type countingConn struct {
 func newCountingConn(c net.Conn, hist *BandwidthHistory, bidi *ConnBiDirect) *countingConn {
 	cc := &countingConn{Conn: c, hist: hist, bidi: bidi}
 	if bidi != nil {
-		cc.ent = bidi.register()
+		cc.ent = bidi.register(addrIsIPv6(c.RemoteAddr()))
 	}
 	return cc
 }

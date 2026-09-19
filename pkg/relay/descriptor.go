@@ -600,7 +600,7 @@ func writeExtraInfoStats(buf *bytes.Buffer, stats map[string]string) {
 	if len(stats) == 0 {
 		return
 	}
-	preferred := []string{"write-history", "read-history", "ipv6-write-history", "ipv6-read-history", "conn-bi-direct"}
+	preferred := []string{"write-history", "read-history", "ipv6-write-history", "ipv6-read-history", "conn-bi-direct", "ipv6-conn-bi-direct"}
 	seen := make(map[string]bool, len(preferred))
 	for _, k := range preferred {
 		v := strings.TrimSpace(stats[k])

@@ -15,11 +15,12 @@
 - 与 C Tor 一样把 router + extra-info **拼成一次 POST**（不再先发无 digest 的描述符再单独 POST extra-info）。
 - 带宽历史只写**已完成**的 900s 观测格；停机空档不补零。无观测则不写 `write-history` / `read-history`。
 - 观测来自 **入站 OR TCP** 与 **出站中间跳 OR TCP**（TLS 之下的套接字）；可读写 C Tor `DataDirectory/state` 的 `BWHistoryReadValues` / `BWHistoryWriteValues` / `*Ends`。**最后一值是未完成桶**，`*Ends` 是该桶结束时刻；未到点不写入 extra-info。`AvoidDiskWrites` 时不落盘。出口流 TCP 不计入本项。
-- `conn-bi-direct`：按 C Tor `connstats.c` 每 10s 把每条 OR 连接分成 below（读写合计 <20480）/ read（读≥10×写）/ write / both；**满 24h 且该窗内至少有一次分类才写**。未完成窗不写。不写 `ipv6-conn-bi-direct`。
+- `conn-bi-direct`：按 C Tor `connstats.c` 每 10s 把每条 OR 连接分成 below（读写合计 <20480）/ read（读≥10×写）/ write / both；**满 24h 且该窗内至少有一次分类才写**。未完成窗不写。
+- `ipv6-conn-bi-direct`：同一窗内仅 IPv6 OR（不含 IPv4-mapped）；无 IPv6 分类不写。
 
 ## 明确未做
 
-- `dirreq-*` / `exit-*` / `hidserv-*` / `padding-counts` / `ipv6-conn-bi-direct`（无 24h 观测不写；IPv6 双向尚未分计）
+- `dirreq-*` / `exit-*` / `hidserv-*` / `padding-counts`（无 24h 观测不写）
 - 进程空闲但在跑时的全零格（无心跳；有流量的格才入列）
 - 真网权威归档 extra-info 的观察证据
 - 描述符 `bandwidth` 第三个数仍可来自配置默认，不是本切片的观测值
