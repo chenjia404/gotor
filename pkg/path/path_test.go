@@ -116,6 +116,19 @@ func TestUpdateConsensus(t *testing.T) {
 	if len(selector.relays) != 7 {
 		t.Errorf("Expected 7 total relays, got %d", len(selector.relays))
 	}
+	if !selector.HasMinimumDirInfo() {
+		t.Fatal("有 Guard 与中继时应 enough-dir-info")
+	}
+}
+
+func TestHasMinimumDirInfoEmpty(t *testing.T) {
+	if (*Selector)(nil).HasMinimumDirInfo() {
+		t.Fatal("nil selector 不得宣称 enough-dir-info")
+	}
+	s := NewSelector(directory.NewClient(logger.NewDefault()), logger.NewDefault())
+	if s.HasMinimumDirInfo() {
+		t.Fatal("空选路表不得宣称 enough-dir-info")
+	}
 }
 
 func TestSelectPath(t *testing.T) {

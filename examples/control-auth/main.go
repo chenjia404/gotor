@@ -157,6 +157,10 @@ func (m *mockClientGetter) GetTrafficWritten() uint64 {
 	return 0
 }
 
+func (m *mockClientGetter) GetEnoughDirInfo() bool {
+	return false
+}
+
 func (m *mockClientGetter) GetConfig() control.ConfigProvider {
 	return nil // No config needed for this demo
 }

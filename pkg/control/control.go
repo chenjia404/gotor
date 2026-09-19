@@ -94,6 +94,7 @@ type StatsProvider interface {
 	GetDataDir() string
 	GetTrafficRead() uint64
 	GetTrafficWritten() uint64
+	GetEnoughDirInfo() bool
 }
 
 // ConfigProvider provides access to configuration values
@@ -609,7 +610,10 @@ func (s *Server) getInfoValue(key string, stats StatsProvider) (string, bool) {
 		}
 		return "0", true
 	case "status/enough-dir-info":
-		return "1", true
+		if stats.GetEnoughDirInfo() {
+			return "1", true
+		}
+		return "0", true
 
 	// Circuit statistics
 	case "status/circuits":

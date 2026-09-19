@@ -200,6 +200,16 @@ func (s *Selector) GetRelays() []*directory.Relay {
 	return relays
 }
 
+// HasMinimumDirInfo 表示已有验签共识且能选出 Guard（与 SelectPath 入口条件一致）。
+func (s *Selector) HasMinimumDirInfo() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.guards) > 0 && len(s.relays) > 0
+}
+
 // SelectPath 按 IPv4/主机名端口选一条三跳路径。
 func (s *Selector) SelectPath(exitPort int) (*Path, error) {
 	return s.SelectPathFor(ExitTarget{Port: exitPort})

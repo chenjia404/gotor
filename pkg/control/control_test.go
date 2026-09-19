@@ -27,6 +27,7 @@ type mockClientGetter struct {
 	dataDir             string
 	trafficRead         uint64
 	trafficWritten      uint64
+	enoughDirInfo       bool
 	config              map[string]string
 }
 
@@ -130,6 +131,10 @@ func (m *mockClientGetter) GetTrafficRead() uint64 {
 
 func (m *mockClientGetter) GetTrafficWritten() uint64 {
 	return m.trafficWritten
+}
+
+func (m *mockClientGetter) GetEnoughDirInfo() bool {
+	return m.enoughDirInfo
 }
 
 // Helper to create test server
@@ -930,5 +935,31 @@ func TestGetInfoBackwardCompatibility(t *testing.T) {
 				t.Errorf("Expected response to start with %q, got: %s", expectedPrefix, response)
 			}
 		})
+	}
+}
+
+func TestGetInfoEnoughDirInfoFromStats(t *testing.T) {
+	server, mock := setupTestServer(t)
+	conn := connectToServer(t, server)
+	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+	readResponse(t, reader)
+	writer.WriteString("AUTHENTICATE\r\n")
+	writer.Flush()
+	readResponse(t, reader)
+
+	writer.WriteString("GETINFO status/enough-dir-info\r\n")
+	writer.Flush()
+	got := readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 status/enough-dir-info=0") {
+		t.Fatalf("无共识时不得写死 1: %s", got)
+	}
+
+	mock.enoughDirInfo = true
+	writer.WriteString("GETINFO status/enough-dir-info\r\n")
+	writer.Flush()
+	got = readResponse(t, reader)
+	if !strings.HasPrefix(got, "250 status/enough-dir-info=1") {
+		t.Fatalf("有选路表时应为 1: %s", got)
 	}
 }

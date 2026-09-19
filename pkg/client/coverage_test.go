@@ -43,6 +43,7 @@ func TestStatsGetters(t *testing.T) {
 		DataDir:             "/tmp/tor-data",
 		TrafficRead:         4096,
 		TrafficWritten:      2048,
+		EnoughDirInfo:       true,
 	}
 
 	if stats.GetActiveCircuits() != 5 {
@@ -94,6 +95,9 @@ func TestStatsGetters(t *testing.T) {
 	}
 	if stats.GetTrafficWritten() != 2048 {
 		t.Errorf("GetTrafficWritten() = %d, want 2048", stats.GetTrafficWritten())
+	}
+	if !stats.GetEnoughDirInfo() {
+		t.Error("GetEnoughDirInfo() = false, want true")
 	}
 }
 
@@ -150,6 +154,9 @@ func TestStatsGettersZeroValues(t *testing.T) {
 	}
 	if stats.GetTrafficWritten() != 0 {
 		t.Errorf("GetTrafficWritten() = %d, want 0", stats.GetTrafficWritten())
+	}
+	if stats.GetEnoughDirInfo() {
+		t.Error("GetEnoughDirInfo() = true, want false")
 	}
 }
 

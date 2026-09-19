@@ -1068,6 +1068,10 @@ func (c *Client) GetStats() Stats {
 		UptimeSeconds:       metricsSnap.UptimeSeconds,
 	}
 
+	if c.pathSelector != nil {
+		stats.EnoughDirInfo = c.pathSelector.HasMinimumDirInfo()
+	}
+
 	c.bwMu.Lock()
 	stats.TrafficRead = c.bytesRead
 	stats.TrafficWritten = c.bytesWritten
@@ -1119,6 +1123,9 @@ type Stats struct {
 	// OR 套接字累计字节（GETINFO traffic/*）
 	TrafficRead    uint64
 	TrafficWritten uint64
+
+	// GETINFO status/enough-dir-info：已有验签共识且能选路
+	EnoughDirInfo bool
 
 	// System metrics
 	UptimeSeconds int64
@@ -1187,6 +1194,11 @@ func (s Stats) GetTrafficRead() uint64 {
 // GetTrafficWritten 返回入口 OR TLS 之下已写字节。
 func (s Stats) GetTrafficWritten() uint64 {
 	return s.TrafficWritten
+}
+
+// GetEnoughDirInfo 为 true 时 GETINFO status/enough-dir-info 返回 1。
+func (s Stats) GetEnoughDirInfo() bool {
+	return s.EnoughDirInfo
 }
 
 // PublishEvent publishes an event to the control protocol
