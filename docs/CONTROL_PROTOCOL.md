@@ -102,11 +102,13 @@ GETCONF key [key ...]
 
 **Example:**
 ```
-> GETCONF SocksPort
-< 250 SocksPort=
+> GETCONF SocksPort HTTPTunnelPort DNSPort
+< 250-SocksPort=9050
+< 250-HTTPTunnelPort=9080
+< 250 DNSPort=5353
 ```
 
-**Note:** Currently returns placeholder values. Full configuration introspection will be added in future updates.
+已实现键返回当前配置（`HTTPTunnelPort`/`DNSPort` 为端口数字，未开为 `0`）；未知键按 control-spec 返回空值。
 
 ### SETCONF
 
@@ -119,11 +121,11 @@ SETCONF key=value [key=value ...]
 
 **Example:**
 ```
-> SETCONF SocksPort=9150
+> SETCONF LogLevel=debug
 < 250 OK
 ```
 
-**Note:** Currently acknowledges but does not apply changes. Full configuration management will be added in future updates.
+运行时可写键立即生效；`SocksPort`/`HTTPTunnelPort`/`DNSPort` 等监听端口需重启，会报错而非假装已改。
 
 ### SETEVENTS
 
@@ -275,8 +277,8 @@ with Controller.from_port(port=9051) as controller:
 | PROTOCOLINFO command | ✅ Complete |
 | AUTHENTICATE command | ✅ Complete (NULL auth only) |
 | GETINFO command | ✅ Partial (core keys implemented) |
-| GETCONF command | ✅ Placeholder |
-| SETCONF command | ✅ Placeholder |
+| GETCONF command | ✅ 已实现键返回当前值（含 HTTPTunnelPort/DNSPort） |
+| SETCONF command | ✅ 可写子集立即生效；监听端口需重启 |
 | SETEVENTS command | ✅ Complete |
 | QUIT command | ✅ Complete |
 | Event notifications | ✅ Complete (CIRC, STREAM, BW, ORCONN, NEWDESC, GUARD, NS) |

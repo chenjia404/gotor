@@ -12,6 +12,8 @@ func TestClientConfigProvider_GetConfigValue(t *testing.T) {
 	cfg := &config.Config{
 		SocksPort:                     9050,
 		ControlPort:                   9051,
+		HTTPTunnelPort:                9080,
+		DNSPort:                       5353,
 		DataDirectory:                 "/tmp/tor",
 		CircuitBuildTimeout:           60 * time.Second,
 		MaxCircuitDirtiness:           10 * time.Minute,
@@ -92,6 +94,8 @@ func TestClientConfigProvider_GetConfigValue(t *testing.T) {
 	}{
 		{"SocksPort", "SocksPort", "9050", true},
 		{"ControlPort", "ControlPort", "9051", true},
+		{"HTTPTunnelPort", "HTTPTunnelPort", "9080", true},
+		{"DNSPort", "DNSPort", "5353", true},
 		{"DataDirectory", "DataDirectory", "/tmp/tor", true},
 		{"CircuitBuildTimeout", "CircuitBuildTimeout", "1m0s", true},
 		{"MaxCircuitDirtiness", "MaxCircuitDirtiness", "10m0s", true},
@@ -409,6 +413,18 @@ func TestClientConfigProvider_SetConfigValue(t *testing.T) {
 			name:    "SocksPort requires restart",
 			key:     "SocksPort",
 			value:   "9999",
+			wantErr: true,
+		},
+		{
+			name:    "HTTPTunnelPort requires restart",
+			key:     "HTTPTunnelPort",
+			value:   "9081",
+			wantErr: true,
+		},
+		{
+			name:    "DNSPort requires restart",
+			key:     "DNSPort",
+			value:   "5354",
 			wantErr: true,
 		},
 		{

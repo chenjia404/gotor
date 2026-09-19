@@ -35,6 +35,8 @@ The following configuration parameters can be queried via GETCONF:
 #### Network Settings
 - `SocksPort` - SOCKS5 proxy port
 - `ControlPort` - Control protocol port
+- `HTTPTunnelPort` - HTTP CONNECT 隧道端口（0=关闭）
+- `DNSPort` - UDP DNS 端口（0=关闭）
 - `DataDirectory` - Directory for persistent state
 - `ConnLimit` - Max concurrent connections
 - `DormantTimeout` - Time before entering dormant mode
