@@ -76,7 +76,7 @@ func (d *DirCacheServer) handler() http.Handler {
 		if d.dirreq != nil && isV3NetworkStatusPath(req.URL.Path) {
 			cap := &dirreqCapture{ResponseWriter: w}
 			mux.ServeHTTP(cap, req)
-			d.dirreq.NoteHTTP(cap.code())
+			d.dirreq.NoteHTTP(cap.code(), isDirreqTunneled(req))
 			return
 		}
 		mux.ServeHTTP(w, req)
@@ -749,7 +749,7 @@ func (d *DirCacheServer) servePipe(c net.Conn) {
 		return
 	}
 	rw := &pipeResponse{conn: c, header: make(http.Header)}
-	d.handler().ServeHTTP(rw, req)
+	d.handler().ServeHTTP(rw, withDirreqTunneled(req))
 	rw.finish()
 }
 
@@ -763,7 +763,7 @@ func (d *DirCacheServer) Close() error {
 	return nil
 }
 
-// StatsDirReq 已完成 24h 窗的 dirreq-stats-end / dirreq-v3-resp；无观测则空。
+// StatsDirReq 已完成 24h 窗的 dirreq-stats-end / dirreq-v3-resp / *-dl；无观测则空。
 func (d *DirCacheServer) StatsDirReq() map[string]string {
 	if d == nil || d.dirreq == nil {
 		return nil

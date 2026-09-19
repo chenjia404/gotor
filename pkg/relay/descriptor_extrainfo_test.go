@@ -74,12 +74,14 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats := map[string]string{
-		"write-history":       "2026-08-20 12:15:00 (900 s) 400",
-		"read-history":        "2026-08-20 12:15:00 (900 s) 1000",
-		"conn-bi-direct":      "2026-08-21 12:00:00 (86400 s) 10,2,1,3",
-		"ipv6-conn-bi-direct": "2026-08-21 12:00:00 (86400 s) 4,1,0,2",
-		"dirreq-stats-end":    "2026-08-21 12:00:00 (86400 s)",
-		"dirreq-v3-resp":      "ok=4,not-found=4",
+		"write-history":         "2026-08-20 12:15:00 (900 s) 400",
+		"read-history":          "2026-08-20 12:15:00 (900 s) 1000",
+		"conn-bi-direct":        "2026-08-21 12:00:00 (86400 s) 10,2,1,3",
+		"ipv6-conn-bi-direct":   "2026-08-21 12:00:00 (86400 s) 4,1,0,2",
+		"dirreq-stats-end":      "2026-08-21 12:00:00 (86400 s)",
+		"dirreq-v3-resp":        "ok=4,not-found=4",
+		"dirreq-v3-direct-dl":   "complete=1",
+		"dirreq-v3-tunneled-dl": "complete=2",
 	}
 	_, extra, err := GenerateDescriptorPair(keys, &DescriptorConfig{
 		Nickname: "ObsRelay",
@@ -116,6 +118,14 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 	dr := strings.Index(raw, "dirreq-v3-resp ok=4,not-found=4\n")
 	if dr < 0 || dr < ds {
 		t.Fatal("dirreq-v3-resp 应在 dirreq-stats-end 后")
+	}
+	dd := strings.Index(raw, "dirreq-v3-direct-dl complete=1\n")
+	if dd < 0 || dd < dr {
+		t.Fatal("dirreq-v3-direct-dl 应在 dirreq-v3-resp 后")
+	}
+	td := strings.Index(raw, "dirreq-v3-tunneled-dl complete=2\n")
+	if td < 0 || td < dd {
+		t.Fatal("dirreq-v3-tunneled-dl 应在 dirreq-v3-direct-dl 后")
 	}
 }
 

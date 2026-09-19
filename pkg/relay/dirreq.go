@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -20,10 +21,13 @@ type dirreqCompleted struct {
 	notFound    uint64
 	notModified uint64
 	busy        uint64
+	directOK    uint64
+	tunneledOK  uint64
 }
 
-// DirReqStats 统计 v3 网络状态请求的 HTTP 应答（dirreq-v3-resp）。
-// 满 24h 且该窗有计数才写入 extra-info；无 geoip，不写 dirreq-v3-ips/reqs。
+// DirReqStats 统计 v3 网络状态请求的 HTTP 应答（dirreq-v3-resp）
+// 以及 DirPort / BEGIN_DIR 完成次数（dirreq-v3-*-dl 的 complete）。
+// 满 24h 且该窗有计数才写入 extra-info；无 geoip，不写 ips/reqs；不写下载分位数。
 type DirReqStats struct {
 	mu          sync.Mutex
 	now         func() time.Time
@@ -35,6 +39,8 @@ type DirReqStats struct {
 	notFound    uint64
 	notModified uint64
 	busy        uint64
+	directOK    uint64
+	tunneledOK  uint64
 	completed   *dirreqCompleted
 }
 
@@ -47,8 +53,25 @@ func newDirReqStats(now func() time.Time) *DirReqStats {
 	return &DirReqStats{now: now, periodStart: t}
 }
 
-// NoteHTTP 按应答状态计入当前 24h 窗。非 v3 目录应答码忽略。
-func (s *DirReqStats) NoteHTTP(status int) {
+type dirreqTunneledKey struct{}
+
+func withDirreqTunneled(r *http.Request) *http.Request {
+	if r == nil {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), dirreqTunneledKey{}, true))
+}
+
+func isDirreqTunneled(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	v, _ := r.Context().Value(dirreqTunneledKey{}).(bool)
+	return v
+}
+
+// NoteHTTP 按应答状态计入当前 24h 窗。tunneled 为 BEGIN_DIR；非 v3 目录应答码忽略。
+func (s *DirReqStats) NoteHTTP(status int, tunneled bool) {
 	if s == nil {
 		return
 	}
@@ -59,6 +82,11 @@ func (s *DirReqStats) NoteHTTP(status int) {
 	case http.StatusOK, 0:
 		s.served++
 		s.ok++
+		if tunneled {
+			s.tunneledOK++
+		} else {
+			s.directOK++
+		}
 	case http.StatusNotModified:
 		s.notModified++
 	case http.StatusNotFound:
@@ -70,7 +98,7 @@ func (s *DirReqStats) NoteHTTP(status int) {
 	}
 }
 
-// StatsMap 返回已完成窗的 dirreq-stats-end 与 dirreq-v3-resp。无观测则空。
+// StatsMap 返回已完成窗的 dirreq-stats-end、dirreq-v3-resp 以及有 complete 时的 *-dl。无观测则空。
 func (s *DirReqStats) StatsMap() map[string]string {
 	if s == nil {
 		return nil
@@ -86,11 +114,18 @@ func (s *DirReqStats) StatsMap() map[string]string {
 	if resp == "" {
 		return nil
 	}
-	return map[string]string{
+	out := map[string]string{
 		"dirreq-stats-end": fmt.Sprintf("%s (%d s)",
 			c.end.UTC().Format("2006-01-02 15:04:05"), c.nsec),
 		"dirreq-v3-resp": resp,
 	}
+	if c.directOK > 0 {
+		out["dirreq-v3-direct-dl"] = fmt.Sprintf("complete=%d", c.directOK)
+	}
+	if c.tunneledOK > 0 {
+		out["dirreq-v3-tunneled-dl"] = fmt.Sprintf("complete=%d", c.tunneledOK)
+	}
+	return out
 }
 
 func (s *DirReqStats) rotateLocked(now time.Time) {
@@ -113,6 +148,8 @@ func (s *DirReqStats) rotateLocked(now time.Time) {
 			notFound:    s.notFound,
 			notModified: s.notModified,
 			busy:        s.busy,
+			directOK:    s.directOK,
+			tunneledOK:  s.tunneledOK,
 		}
 	}
 	// 空档不补零；当前窗对齐到 now。
@@ -124,6 +161,7 @@ func (s *DirReqStats) rotateLocked(now time.Time) {
 	}
 	s.served, s.ok, s.notEnough, s.unavailable = 0, 0, 0, 0
 	s.notFound, s.notModified, s.busy = 0, 0, 0
+	s.directOK, s.tunneledOK = 0, 0
 }
 
 func (s *DirReqStats) hasCountsLocked() bool {

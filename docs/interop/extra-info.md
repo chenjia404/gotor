@@ -17,11 +17,13 @@
 - 观测来自 **入站 OR TCP** 与 **出站中间跳 OR TCP**（TLS 之下的套接字）；可读写 C Tor `DataDirectory/state` 的 `BWHistoryReadValues` / `BWHistoryWriteValues` / `*Ends`。**最后一值是未完成桶**，`*Ends` 是该桶结束时刻；未到点不写入 extra-info。`AvoidDiskWrites` 时不落盘。出口流 TCP 不计入本项。
 - `conn-bi-direct`：按 C Tor `connstats.c` 每 10s 把每条 OR 连接分成 below（读写合计 <20480）/ read（读≥10×写）/ write / both；**满 24h 且该窗内至少有一次分类才写**。未完成窗不写。
 - `ipv6-conn-bi-direct`：同一窗内仅 IPv6 OR（不含 IPv4-mapped）；无 IPv6 分类不写。
-- `dirreq-stats-end` / `dirreq-v3-resp`：v3 网络状态（ns/microdesc/diff）HTTP 应答；满 24h 且有计数才写；计数向上取 4。无 geoip，不写 `dirreq-v3-ips` / `dirreq-v3-reqs`。不写 direct/tunneled 下载分位数。
+- `dirreq-stats-end` / `dirreq-v3-resp`：v3 网络状态（ns/microdesc/diff）HTTP 应答；满 24h 且有计数才写；计数向上取 4。无 geoip，不写 `dirreq-v3-ips` / `dirreq-v3-reqs`。
+- `dirreq-v3-direct-dl` / `dirreq-v3-tunneled-dl`：DirPort HTTP 为 direct，BEGIN_DIR 为 tunneled；仅 HTTP 200 计 `complete`；满 24h 且该通道 complete>0 才写。无字节速率观测，不写 timeout/running/min/d1/…/max。
 
 ## 明确未做
 
-- `dirreq-v3-ips` / `dirreq-v3-reqs` / `dirreq-v3-direct-dl` / `dirreq-v3-tunneled-dl` / `exit-*` / `hidserv-*` / `padding-counts`（无 geoip / 无 24h 观测不写）
+- `dirreq-v3-ips` / `dirreq-v3-reqs` / `exit-*` / `hidserv-*` / `padding-counts`（无 geoip / 无 24h 观测不写）
+- `dirreq-v3-*-dl` 的 timeout/running 与 B/s 分位数（无下载时长/速率观测不写）
 - 进程空闲但在跑时的全零格（无心跳；有流量的格才入列）
 - 真网权威归档 extra-info 的观察证据
 - 描述符 `bandwidth` 第三个数仍可来自配置默认，不是本切片的观测值
