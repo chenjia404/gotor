@@ -186,6 +186,9 @@ func (s *Server) startPublisher(ctx context.Context) error {
 		if s.bidi != nil {
 			stats = mergeExtraInfoStats(stats, s.bidi.StatsMap())
 		}
+		if s.dirCache != nil {
+			stats = mergeExtraInfoStats(stats, s.dirCache.StatsDirReq())
+		}
 		desc, extra, err := GenerateDescriptorPair(s.keys, dcfg, stats)
 		if err != nil {
 			return nil, nil, err

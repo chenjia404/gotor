@@ -34,8 +34,9 @@ func TestGenerateDescriptorPairCrossDigest(t *testing.T) {
 	}
 	if strings.Contains(string(extra.RawDescriptor), "write-history") ||
 		strings.Contains(string(extra.RawDescriptor), "read-history") ||
-		strings.Contains(string(extra.RawDescriptor), "conn-bi-direct") {
-		t.Fatal("无观测不得写 history / conn-bi-direct")
+		strings.Contains(string(extra.RawDescriptor), "conn-bi-direct") ||
+		strings.Contains(string(extra.RawDescriptor), "dirreq-v3-resp") {
+		t.Fatal("无观测不得写 history / conn-bi-direct / dirreq")
 	}
 
 	const marker = "router-signature\n"
@@ -77,6 +78,8 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 		"read-history":        "2026-08-20 12:15:00 (900 s) 1000",
 		"conn-bi-direct":      "2026-08-21 12:00:00 (86400 s) 10,2,1,3",
 		"ipv6-conn-bi-direct": "2026-08-21 12:00:00 (86400 s) 4,1,0,2",
+		"dirreq-stats-end":    "2026-08-21 12:00:00 (86400 s)",
+		"dirreq-v3-resp":      "ok=4,not-found=4",
 	}
 	_, extra, err := GenerateDescriptorPair(keys, &DescriptorConfig{
 		Nickname: "ObsRelay",
@@ -105,6 +108,14 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 	v6 := strings.Index(raw, "ipv6-conn-bi-direct 2026-08-21 12:00:00 (86400 s) 4,1,0,2\n")
 	if v6 < 0 || v6 < bidi {
 		t.Fatal("ipv6-conn-bi-direct 应在 conn-bi-direct 后")
+	}
+	ds := strings.Index(raw, "dirreq-stats-end 2026-08-21 12:00:00 (86400 s)\n")
+	if ds < 0 || ds < v6 {
+		t.Fatal("dirreq-stats-end 应在 ipv6-conn-bi-direct 后")
+	}
+	dr := strings.Index(raw, "dirreq-v3-resp ok=4,not-found=4\n")
+	if dr < 0 || dr < ds {
+		t.Fatal("dirreq-v3-resp 应在 dirreq-stats-end 后")
 	}
 }
 

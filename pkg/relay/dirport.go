@@ -38,7 +38,8 @@ type DirCacheServer struct {
 	diffByFrom map[string]string
 	diffWait   map[string]chan struct{}
 
-	hs *hsDirStore
+	hs     *hsDirStore
+	dirreq *DirReqStats
 }
 
 const maxCachedConsensusDiffs = 72
@@ -47,7 +48,7 @@ func NewDirCacheServer(cacheDir string, log *logger.Logger) *DirCacheServer {
 	if log == nil {
 		log = logger.NewDefault()
 	}
-	return &DirCacheServer{cacheDir: cacheDir, logger: log.Component("dircache"), hs: &hsDirStore{}}
+	return &DirCacheServer{cacheDir: cacheDir, logger: log.Component("dircache"), hs: &hsDirStore{}, dirreq: NewDirReqStats()}
 }
 
 func (d *DirCacheServer) handler() http.Handler {
@@ -64,15 +65,21 @@ func (d *DirCacheServer) handler() http.Handler {
 	mux.HandleFunc("/tor/hs/3/publish", d.serveHSPublish)
 	mux.HandleFunc("/tor/hs/3/", d.serveHSFetch)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := r
 		if strings.HasSuffix(r.URL.Path, ".z") {
 			clone := r.Clone(context.WithValue(r.Context(), dirZKey{}, true))
 			u := *r.URL
 			u.Path = strings.TrimSuffix(r.URL.Path, ".z")
 			clone.URL = &u
-			mux.ServeHTTP(w, clone)
+			req = clone
+		}
+		if d.dirreq != nil && isV3NetworkStatusPath(req.URL.Path) {
+			cap := &dirreqCapture{ResponseWriter: w}
+			mux.ServeHTTP(cap, req)
+			d.dirreq.NoteHTTP(cap.code())
 			return
 		}
-		mux.ServeHTTP(w, r)
+		mux.ServeHTTP(w, req)
 	})
 }
 
@@ -754,6 +761,14 @@ func (d *DirCacheServer) Close() error {
 		return d.ln.Close()
 	}
 	return nil
+}
+
+// StatsDirReq 已完成 24h 窗的 dirreq-stats-end / dirreq-v3-resp；无观测则空。
+func (d *DirCacheServer) StatsDirReq() map[string]string {
+	if d == nil || d.dirreq == nil {
+		return nil
+	}
+	return d.dirreq.StatsMap()
 }
 
 type pipeResponse struct {
