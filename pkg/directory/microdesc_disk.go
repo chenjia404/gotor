@@ -10,9 +10,17 @@ import (
 )
 
 const (
-	cachedMicrodescsName     = "cached-microdescs"
-	cachedMicrodescsNewName  = "cached-microdescs.new"
-	maxCachedMicrodescsBytes = 32 << 20
+	cachedMicrodescsName    = "cached-microdescs"
+	cachedMicrodescsNewName = "cached-microdescs.new"
+	// 全网 microdesc 加上 @last-listed 注解后已经超过 32MiB。
+	// 到顶就整份拒载，进程再把同一批追加进 .new，文件只增不减。
+	defaultMaxCachedMicrodescsBytes  = 128 << 20
+	defaultMicrodescJournalCompactAt = 8 << 20
+)
+
+var (
+	maxCachedMicrodescsBytes  = defaultMaxCachedMicrodescsBytes
+	microdescJournalCompactAt = defaultMicrodescJournalCompactAt
 )
 
 // EnableMicrodescDiskCache 加载 cached-microdescs + cached-microdescs.new。
@@ -49,8 +57,20 @@ type microdescDiskCache struct {
 }
 
 func (m *microdescDiskCache) load() error {
+	var skipped []string
 	for _, name := range []string{cachedMicrodescsName, cachedMicrodescsNewName} {
 		path := filepath.Join(m.dir, name)
+		fi, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if fi.Size() > int64(maxCachedMicrodescsBytes) {
+			skipped = append(skipped, name)
+			continue
+		}
 		data, err := os.ReadFile(path) // #nosec G304 -- CacheDirectory 固定文件名
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -58,10 +78,24 @@ func (m *microdescDiskCache) load() error {
 			}
 			return err
 		}
-		if len(data) > maxCachedMicrodescsBytes {
-			return fmt.Errorf("%s too large", name)
-		}
 		m.ingestRaw(data)
+	}
+	m.mu.Lock()
+	loaded := len(m.byDigest)
+	journal := filepath.Join(m.dir, cachedMicrodescsNewName)
+	needCompact := false
+	if fi, err := os.Stat(journal); err == nil && fi.Size() > 0 {
+		needCompact = true
+	}
+	if len(skipped) > 0 {
+		needCompact = true
+	}
+	if loaded > 0 && needCompact {
+		m.compactLocked()
+	}
+	m.mu.Unlock()
+	if loaded == 0 && len(skipped) > 0 {
+		return fmt.Errorf("%s too large", skipped[0])
 	}
 	return nil
 }
@@ -154,6 +188,18 @@ func (m *microdescDiskCache) appendNew(body []byte, avoidDisk bool) {
 	if m == nil || avoidDisk || len(body) == 0 {
 		return
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	path := filepath.Join(m.dir, cachedMicrodescsNewName)
+	if fi, err := os.Stat(path); err == nil && fi.Size() >= int64(microdescJournalCompactAt) {
+		// remember 已经把正文放进 byDigest；到阈值就重写成去重后的主文件。
+		m.compactLocked()
+		return
+	}
+	m.appendJournalLocked(body)
+}
+
+func (m *microdescDiskCache) appendJournalLocked(body []byte) {
 	path := filepath.Join(m.dir, cachedMicrodescsNewName)
 	stamp := time.Now().UTC().Format("2006-01-02 15:04:05")
 	var buf strings.Builder
@@ -168,6 +214,42 @@ func (m *microdescDiskCache) appendNew(body []byte, avoidDisk bool) {
 	}
 	_, _ = f.WriteString(buf.String())
 	_ = f.Close()
+}
+
+// compactLocked 把内存里的去重文档写成 cached-microdescs，并丢掉只增不减的 .new。
+// 调用方必须持有 m.mu。
+func (m *microdescDiskCache) compactLocked() {
+	if m == nil || m.dir == "" || len(m.byDigest) == 0 {
+		return
+	}
+	var buf strings.Builder
+	stamp := time.Now().UTC().Format("2006-01-02 15:04:05")
+	for _, body := range m.byDigest {
+		if len(body) == 0 {
+			continue
+		}
+		fmt.Fprintf(&buf, "@last-listed %s\n", stamp)
+		buf.Write(body)
+		if body[len(body)-1] != '\n' {
+			buf.WriteByte('\n')
+		}
+	}
+	if buf.Len() == 0 {
+		return
+	}
+	final := filepath.Join(m.dir, cachedMicrodescsName)
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, []byte(buf.String()), 0o600); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(final)
+		if err2 := os.Rename(tmp, final); err2 != nil {
+			_ = os.Remove(tmp)
+			return
+		}
+	}
+	_ = os.Remove(filepath.Join(m.dir, cachedMicrodescsNewName))
 }
 
 func (c *Client) applyMicrodescsFromDisk(relays []*Relay) []*Relay {
