@@ -26,6 +26,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/httptunnel"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/metrics"
+	"github.com/opd-ai/go-tor/pkg/onion"
 	"github.com/opd-ai/go-tor/pkg/path"
 	"github.com/opd-ai/go-tor/pkg/pool"
 	"github.com/opd-ai/go-tor/pkg/ratelimit"
@@ -96,6 +97,9 @@ type Client struct {
 	// Padding=2 / proposal 302：共识 circpad_* 缓存，供 HS setup 机使用
 	circpadCfg   circuit.CircpadConfig
 	circpadCfgMu sync.RWMutex
+
+	hostedMu       sync.Mutex
+	hostedServices []*onion.Service
 }
 
 // New creates a new Tor client
@@ -383,7 +387,7 @@ func (c *Client) Start(ctx context.Context) error {
 
 		// Step 4.5: 托管洋葱服务（HiddenServiceDir/Port）
 		if err := c.startConfiguredOnionServices(ctx); err != nil {
-			c.logger.Warn("configured onion service start failed", "error", err)
+			return fmt.Errorf("onion service: %w", err)
 		}
 	}
 
@@ -535,6 +539,16 @@ func (c *Client) startHeapReclaim(ctx context.Context) {
 func (c *Client) Stop() error {
 	c.shutdownOnce.Do(func() {
 		c.logger.Info("Stopping Tor client...")
+		c.hostedMu.Lock()
+		svcs := append([]*onion.Service(nil), c.hostedServices...)
+		c.hostedMu.Unlock()
+		for _, svc := range svcs {
+			if svc != nil {
+				if err := svc.Stop(); err != nil {
+					c.logger.Warn("Failed to stop onion service", "error", err)
+				}
+			}
+		}
 		close(c.shutdown)
 		c.cancel()
 	})

@@ -285,7 +285,7 @@ func TestEstablishIntroductionPoints(t *testing.T) {
 	}
 }
 
-func TestEstablishIntroductionPointsInsufficientRelays(t *testing.T) {
+func TestEstablishIntroductionPointsPartialPool(t *testing.T) {
 	config := &ServiceConfig{
 		NumIntroPoints:         5,
 		AllowPlaceholderIntros: true,
@@ -300,15 +300,34 @@ func TestEstablishIntroductionPointsInsufficientRelays(t *testing.T) {
 		t.Fatalf("failed to create service: %v", err)
 	}
 
-	// Only 2 relays, but need 5
 	hsdirs := []*HSDirectory{
 		{Fingerprint: "relay1", Address: "127.0.0.1", ORPort: 9001, DirPort: 9030, HSDir: true},
 		{Fingerprint: "relay2", Address: "127.0.0.1", ORPort: 9002, DirPort: 9031, HSDir: true},
 	}
 
 	ctx := context.Background()
-	if err := service.establishIntroductionPoints(ctx, hsdirs); err == nil {
-		t.Error("expected error with insufficient relays")
+	if err := service.establishIntroductionPoints(ctx, hsdirs); err != nil {
+		t.Fatalf("有候选时应收够能建的引言点，不应失败: %v", err)
+	}
+	if len(service.introPoints) != 2 {
+		t.Errorf("expected 2 intro points from 2 candidates, got %d", len(service.introPoints))
+	}
+}
+
+func TestEstablishIntroductionPointsEmptyPool(t *testing.T) {
+	config := &ServiceConfig{
+		NumIntroPoints:         3,
+		AllowPlaceholderIntros: true,
+		Ports: map[int]string{
+			80: "localhost:8080",
+		},
+	}
+	service, err := NewService(config, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("failed to create service: %v", err)
+	}
+	if err := service.establishIntroductionPoints(context.Background(), nil); err == nil {
+		t.Fatal("empty intro pool should fail")
 	}
 }
 

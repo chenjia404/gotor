@@ -211,6 +211,22 @@ func (m *IntroPointManager) RecordFailure(circuitID uint32) {
 	}
 }
 
+// MarkUnhealthy 引言电路已死：立刻标不健康，供维护循环换点。
+func (m *IntroPointManager) MarkUnhealthy(circuitID uint32) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h, ok := m.health[circuitID]
+	if !ok {
+		return
+	}
+	h.Healthy = false
+	h.LastChecked = time.Now()
+	h.ConsecutiveFails = 3
+}
+
 // IsHealthy checks if an introduction point is healthy
 func (m *IntroPointManager) IsHealthy(circuitID uint32) bool {
 	m.mu.RLock()

@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base32"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -142,7 +143,8 @@ type ServiceConfig struct {
 // ServiceIntroPoint represents an introduction point for this service
 type ServiceIntroPoint struct {
 	Relay         *HSDirectory // The relay acting as intro point
-	CircuitID     uint32       // Circuit to the intro point
+	Circuit       *circuit.Circuit
+	CircuitID     uint32 // Circuit to the intro point
 	AuthPrivate   ed25519.PrivateKey
 	AuthPublic    ed25519.PublicKey
 	EncKey        []byte // Curve25519 private (b)
@@ -383,8 +385,9 @@ func (s *Service) GetAddress() string {
 	return s.address.String()
 }
 
-// Start starts the onion service
-func (s *Service) Start(ctx context.Context, hsdirs []*HSDirectory) error {
+// Start starts the onion service.
+// introPool 是 Fast+Stable 引言点候选；上传走共识 HSDir（NetworkRelays），不是同一份列表。
+func (s *Service) Start(ctx context.Context, introPool []*HSDirectory) error {
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -399,7 +402,7 @@ func (s *Service) Start(ctx context.Context, hsdirs []*HSDirectory) error {
 		"intro_points", s.config.NumIntroPoints)
 
 	// Step 1: Select and establish introduction points
-	if err := s.establishIntroductionPoints(ctx, hsdirs); err != nil {
+	if err := s.establishIntroductionPoints(ctx, introPool); err != nil {
 		s.running = false
 		return fmt.Errorf("failed to establish introduction points: %w", err)
 	}
@@ -410,14 +413,15 @@ func (s *Service) Start(ctx context.Context, hsdirs []*HSDirectory) error {
 		return fmt.Errorf("failed to create descriptor: %w", err)
 	}
 
-	// Step 3: Publish descriptor to HSDirs
+	// Step 3: Publish descriptor to HSDirs（与引言点池分开）
+	hsdirs := s.responsibleHSDirPool(introPool)
 	if err := s.publishDescriptor(ctx, hsdirs); err != nil {
 		s.running = false
 		return fmt.Errorf("failed to publish descriptor: %w", err)
 	}
 
 	// Step 4: Start background tasks
-	go s.maintenanceLoop(ctx, hsdirs)
+	go s.maintenanceLoop(ctx, introPool, hsdirs)
 	go s.introManager.StartHealthChecking(ctx)
 
 	s.logger.Info("Onion service started successfully",
@@ -455,12 +459,10 @@ func (s *Service) Stop() error {
 
 	// Clean up introduction points
 	for _, intro := range s.introPoints {
-		// Unregister from health monitoring
 		s.introManager.UnregisterIntroPoint(intro.CircuitID)
-		// In a full implementation, we would:
-		// 1. Send INTRO_ESTABLISHED teardown
-		// 2. Close circuits
-		_ = intro
+		if intro.Circuit != nil {
+			intro.Circuit.Close()
+		}
 	}
 
 	s.running = false
@@ -519,34 +521,50 @@ func (s *Service) saveState() error {
 }
 
 // establishIntroductionPoints selects and establishes circuits to introduction points
-func (s *Service) establishIntroductionPoints(ctx context.Context, hsdirs []*HSDirectory) error {
+func (s *Service) establishIntroductionPoints(ctx context.Context, introPool []*HSDirectory) error {
 	s.logger.Info("Establishing introduction points", "count", s.config.NumIntroPoints)
 
-	if len(hsdirs) < s.config.NumIntroPoints {
-		return fmt.Errorf("not enough relays available: need %d, have %d",
-			s.config.NumIntroPoints, len(hsdirs))
+	if len(introPool) < 1 {
+		return fmt.Errorf("not enough intro candidates: need at least 1, have %d", len(introPool))
+	}
+	need := s.config.NumIntroPoints
+	if need <= 0 {
+		need = 3
+	}
+	if need > 10 {
+		need = 10
 	}
 
-	// Select introduction points (use first N relays for Phase 7.4)
-	// In production, we would:
-	// 1. Filter relays with appropriate flags
-	// 2. Randomly select from filtered set
-	// 3. Ensure geographical and network diversity
-	selectedRelays := hsdirs[:s.config.NumIntroPoints]
-
-	for i, relay := range selectedRelays {
+	candidates := shuffleHSDirectories(introPool)
+	seen := map[string]struct{}{}
+	for _, relay := range candidates {
+		if ctx.Err() != nil {
+			break
+		}
+		if len(s.introPoints) >= need {
+			break
+		}
+		fp := ""
+		if relay != nil {
+			fp = relay.Fingerprint
+		}
+		if fp != "" {
+			if _, ok := seen[fp]; ok {
+				continue
+			}
+			seen[fp] = struct{}{}
+		}
 		intro, err := s.establishIntroductionPoint(ctx, relay)
 		if err != nil {
 			s.logger.Warn("Failed to establish introduction point",
-				"relay", relay.Fingerprint,
+				"relay", fp,
 				"error", err)
 			continue
 		}
-
 		s.introPoints = append(s.introPoints, intro)
 		s.logger.Debug("Introduction point established",
-			"index", i,
-			"relay", relay.Fingerprint,
+			"index", len(s.introPoints)-1,
+			"relay", fp,
 			"circuit", intro.CircuitID)
 	}
 
@@ -614,6 +632,7 @@ func (s *Service) establishIntroductionPoint(ctx context.Context, relay *HSDirec
 
 	intro := &ServiceIntroPoint{
 		Relay:         relay,
+		Circuit:       circ,
 		CircuitID:     circ.ID,
 		AuthPrivate:   keys.AuthPrivate,
 		AuthPublic:    keys.AuthPublic,
@@ -899,7 +918,7 @@ func (s *Service) uploadDescriptor(ctx context.Context, hsdir *HSDirectory, desc
 }
 
 // maintenanceLoop handles periodic tasks
-func (s *Service) maintenanceLoop(ctx context.Context, hsdirs []*HSDirectory) {
+func (s *Service) maintenanceLoop(ctx context.Context, introPool, hsdirs []*HSDirectory) {
 	// Refresh descriptor every hour or 2/3 of lifetime, whichever is shorter
 	refreshInterval := s.config.DescriptorLifetime * 2 / 3
 	if refreshInterval > time.Hour {
@@ -917,7 +936,7 @@ func (s *Service) maintenanceLoop(ctx context.Context, hsdirs []*HSDirectory) {
 			s.logger.Debug("Running maintenance tasks")
 
 			// Check for unhealthy or stale introduction points
-			s.rotateUnhealthyIntroPoints(ctx, hsdirs)
+			s.rotateUnhealthyIntroPoints(ctx, introPool)
 
 			// Re-publish descriptor
 			if err := s.createDescriptor(); err != nil {
@@ -932,12 +951,10 @@ func (s *Service) maintenanceLoop(ctx context.Context, hsdirs []*HSDirectory) {
 }
 
 // rotateUnhealthyIntroPoints replaces unhealthy or stale introduction points
-func (s *Service) rotateUnhealthyIntroPoints(ctx context.Context, hsdirs []*HSDirectory) {
-	// Get unhealthy and stale intro points
+func (s *Service) rotateUnhealthyIntroPoints(ctx context.Context, introPool []*HSDirectory) {
 	unhealthy := s.introManager.GetUnhealthyIntroPoints()
 	stale := s.introManager.GetStaleIntroPoints()
 
-	// Combine into set of intro points to replace
 	toReplace := make(map[uint32]bool)
 	for _, id := range unhealthy {
 		toReplace[id] = true
@@ -956,47 +973,89 @@ func (s *Service) rotateUnhealthyIntroPoints(ctx context.Context, hsdirs []*HSDi
 		"total_to_replace", len(toReplace))
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Remove unhealthy/stale intro points
 	newIntroPoints := make([]*ServiceIntroPoint, 0, len(s.introPoints))
+	used := map[string]struct{}{}
 	for _, intro := range s.introPoints {
 		if toReplace[intro.CircuitID] {
+			fp := ""
+			if intro.Relay != nil {
+				fp = intro.Relay.Fingerprint
+			}
 			s.logger.Info("Removing introduction point",
 				"circuit", intro.CircuitID,
-				"relay", intro.Relay.Fingerprint)
+				"relay", fp)
 			s.introManager.UnregisterIntroPoint(intro.CircuitID)
-		} else {
-			newIntroPoints = append(newIntroPoints, intro)
+			if intro.Circuit != nil {
+				intro.Circuit.Close()
+			}
+			continue
+		}
+		newIntroPoints = append(newIntroPoints, intro)
+		if intro.Relay != nil && intro.Relay.Fingerprint != "" {
+			used[intro.Relay.Fingerprint] = struct{}{}
 		}
 	}
 	s.introPoints = newIntroPoints
-
-	// Establish new introduction points to maintain desired count
 	needed := s.config.NumIntroPoints - len(s.introPoints)
+	if needed < 0 {
+		needed = 0
+	}
+	s.mu.Unlock()
+
 	if needed <= 0 {
 		return
 	}
 
 	s.logger.Info("Establishing replacement introduction points", "needed", needed)
 
-	// Select relays for new intro points (simplified - use first available)
-	availableRelays := hsdirs
-	for i := 0; i < needed && i < len(availableRelays); i++ {
-		relay := availableRelays[i]
+	for _, relay := range shuffleHSDirectories(introPool) {
+		if ctx.Err() != nil || needed <= 0 {
+			break
+		}
+		fp := ""
+		if relay != nil {
+			fp = relay.Fingerprint
+		}
+		if fp != "" {
+			if _, ok := used[fp]; ok {
+				continue
+			}
+		}
 		intro, err := s.establishIntroductionPoint(ctx, relay)
 		if err != nil {
 			s.logger.Warn("Failed to establish replacement intro point",
-				"relay", relay.Fingerprint,
+				"relay", fp,
 				"error", err)
 			continue
 		}
+		s.mu.Lock()
 		s.introPoints = append(s.introPoints, intro)
+		s.mu.Unlock()
+		if fp != "" {
+			used[fp] = struct{}{}
+		}
+		needed--
 	}
 
+	s.mu.RLock()
+	count := len(s.introPoints)
+	target := s.config.NumIntroPoints
+	s.mu.RUnlock()
 	s.logger.Info("Introduction point rotation complete",
-		"current_count", len(s.introPoints),
-		"target_count", s.config.NumIntroPoints)
+		"current_count", count,
+		"target_count", target)
+}
+
+// responsibleHSDirPool 上传用共识 HSDir，不用引言点 Fast+Stable 列表。
+// 单测无 NetworkRelays 时回退到传入池（占位上传）。
+func (s *Service) responsibleHSDirPool(introPool []*HSDirectory) []*HSDirectory {
+	if s.config != nil && len(s.config.NetworkRelays) > 0 {
+		hsdirs := HSDirectoriesFromRelays(s.config.NetworkRelays)
+		if len(hsdirs) > 0 {
+			return hsdirs
+		}
+	}
+	return introPool
 }
 
 // HandleIntroduce2 handles an INTRODUCE2 cell from an introduction point
@@ -1030,6 +1089,9 @@ func (s *Service) HandleIntroduce2(introCircuitID uint32, introduce2Data []byte)
 	}
 	if err := s.verifyIntroducePoW(request, blinded); err != nil {
 		return fmt.Errorf("INTRODUCE2 PoW: %w", err)
+	}
+	if s.config.Metrics != nil {
+		s.config.Metrics.RecordOnionServiceIntroReceived()
 	}
 
 	s.logger.Debug("INTRODUCE2 parsed successfully",
@@ -1216,36 +1278,103 @@ func (s *Service) sendEstablishIntro(ctx context.Context, circ *circuit.Circuit,
 	if err != nil {
 		return fmt.Errorf("create ESTABLISH_INTRO cell: %w", err)
 	}
+	estCh := make(chan error, 1)
+	go s.handleIntroCircuitCells(circ, estCh)
 	if err := circ.SendRelayCell(relayCell); err != nil {
+		circ.Close()
 		return fmt.Errorf("send ESTABLISH_INTRO: %w", err)
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := s.waitForIntroEstablished(waitCtx, circ); err != nil {
-		return fmt.Errorf("INTRO_ESTABLISHED: %w", err)
+	select {
+	case <-waitCtx.Done():
+		circ.Close()
+		return fmt.Errorf("INTRO_ESTABLISHED: %w", waitCtx.Err())
+	case err := <-estCh:
+		if err != nil {
+			circ.Close()
+			return fmt.Errorf("INTRO_ESTABLISHED: %w", err)
+		}
+		return nil
 	}
-	return nil
 }
 
-// waitForIntroEstablished waits for an INTRO_ESTABLISHED acknowledgment
-func (s *Service) waitForIntroEstablished(ctx context.Context, circ *circuit.Circuit) error {
-	// Wait for INTRO_ESTABLISHED relay cell from the introduction point
-	// Per rend-spec-v3.txt §3.1.1, the relay responds with INTRO_ESTABLISHED
-	relayCell, err := circ.ReceiveRelayCell(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to receive INTRO_ESTABLISHED: %w", err)
+// handleIntroCircuitCells 在 ESTABLISH_INTRO 发出后立刻收包：先等 INTRO_ESTABLISHED（cmd 38），再处理 INTRODUCE2。
+// 必须常驻 ReceiveRelayCell，否则引言点转发的 INTRODUCE2 会在 100ms 入队超时后被丢弃。
+func (s *Service) handleIntroCircuitCells(circ CircuitInterface, established chan<- error) {
+	if circ == nil {
+		if established != nil {
+			established <- fmt.Errorf("nil intro circuit")
+		}
+		return
 	}
-
-	// Validate that we received the correct cell type
-	if relayCell.Command != cell.RelayIntroEstdAck {
-		return fmt.Errorf("expected INTRO_ESTABLISHED (39) but got relay command %d", relayCell.Command)
+	s.logger.Info("Starting introduction circuit relay cell handler",
+		"circuit_id", circ.GetID())
+	awaitingAck := established != nil
+	for {
+		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+		relayCell, err := circ.ReceiveRelayCell(ctx)
+		cancel()
+		if err != nil {
+			select {
+			case <-s.ctx.Done():
+				if awaitingAck && established != nil {
+					select {
+					case established <- err:
+					default:
+					}
+				}
+				return
+			default:
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				continue
+			}
+			if awaitingAck && established != nil {
+				select {
+				case established <- err:
+				default:
+				}
+				return
+			}
+			s.logger.Warn("introduction circuit receive ended",
+				"circuit_id", circ.GetID(),
+				"error", err)
+			s.introManager.MarkUnhealthy(circ.GetID())
+			return
+		}
+		if awaitingAck {
+			if relayCell.Command != cell.RelayIntroEstablished {
+				err := fmt.Errorf("expected INTRO_ESTABLISHED (%d) but got relay command %d",
+					cell.RelayIntroEstablished, relayCell.Command)
+				select {
+				case established <- err:
+				default:
+				}
+				return
+			}
+			s.logger.Debug("Received INTRO_ESTABLISHED acknowledgment",
+				"circuit_id", circ.GetID(),
+				"stream_id", relayCell.StreamID)
+			select {
+			case established <- nil:
+			default:
+			}
+			awaitingAck = false
+			continue
+		}
+		if relayCell.Command != cell.RelayIntroduce2 {
+			s.logger.Debug("ignoring non-INTRODUCE2 on intro circuit",
+				"circuit_id", circ.GetID(),
+				"command", relayCell.Command)
+			continue
+		}
+		if err := s.HandleIntroduce2(circ.GetID(), relayCell.Data); err != nil {
+			s.logger.Warn("INTRODUCE2 handling failed",
+				"circuit_id", circ.GetID(),
+				"error", err)
+		}
 	}
-
-	s.logger.Debug("Received INTRO_ESTABLISHED acknowledgment",
-		"circuit_id", circ.ID,
-		"stream_id", relayCell.StreamID)
-
-	return nil
 }
 
 // handleRendezvousCircuitCells monitors a rendezvous circuit for incoming relay cells

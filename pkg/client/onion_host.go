@@ -42,8 +42,10 @@ func (c *Client) startConfiguredOnionServices(ctx context.Context) error {
 	}
 
 	networkRelays := c.pathSelector.GetRelays()
-	hsdirs := onion.HSDirectoriesFromRelays(networkRelays)
 	introCandidates := onion.IntroPointCandidatesFromRelays(networkRelays)
+	if len(introCandidates) == 0 {
+		return fmt.Errorf("no Fast+Stable introduction point candidates in consensus")
+	}
 
 	builder := circuit.NewBuilder(c.circuitMgr, c.logger)
 	builder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
@@ -77,13 +79,18 @@ func (c *Client) startConfiguredOnionServices(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("onion service %s: %w", dir, err)
 		}
-		pool := introCandidates
-		if len(pool) < sc.NumIntroPoints {
-			pool = hsdirs
-		}
-		if err := svc.Start(ctx, pool); err != nil {
+		if err := svc.Start(ctx, introCandidates); err != nil {
+			c.hostedMu.Lock()
+			started := append([]*onion.Service(nil), c.hostedServices...)
+			c.hostedMu.Unlock()
+			for _, prev := range started {
+				_ = prev.Stop()
+			}
 			return fmt.Errorf("start onion service %s: %w", dir, err)
 		}
+		c.hostedMu.Lock()
+		c.hostedServices = append(c.hostedServices, svc)
+		c.hostedMu.Unlock()
 		c.logger.Info("onion service started from torrc",
 			"dir", dir, "address", svc.GetAddress(), "ports", len(sc.Ports))
 	}
