@@ -74,6 +74,7 @@ func (c *Client) ProbeORPortViaCircuit(ctx context.Context, self *directory.Rela
 
 	builder := circuit.NewBuilder(c.circuitMgr, c.logger)
 	builder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
+	c.attachORTrafficCount(builder)
 	if c.circuitRateLimiter != nil {
 		builder.SetRateLimiter(c.circuitRateLimiter)
 		builder.SetMetricsRecorder(c.metrics)

@@ -92,6 +92,8 @@ type StatsProvider interface {
 	GetUptimeSeconds() int64
 	GetConnectionAttempts() int64
 	GetDataDir() string
+	GetTrafficRead() uint64
+	GetTrafficWritten() uint64
 }
 
 // ConfigProvider provides access to configuration values
@@ -596,8 +598,10 @@ func (s *Server) getInfoValue(key string, stats StatsProvider) (string, bool) {
 	switch key {
 	case "version":
 		return config.SoftwareVersion(), true
-	case "traffic/read", "traffic/written":
-		return "0", true
+	case "traffic/read":
+		return fmt.Sprintf("%d", stats.GetTrafficRead()), true
+	case "traffic/written":
+		return fmt.Sprintf("%d", stats.GetTrafficWritten()), true
 	case "status/circuit-established":
 		// Check if we have any circuits
 		if stats.GetActiveCircuits() > 0 {

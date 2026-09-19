@@ -149,6 +149,14 @@ func (m *mockClientGetter) GetDataDir() string {
 	return m.dataDir
 }
 
+func (m *mockClientGetter) GetTrafficRead() uint64 {
+	return 0
+}
+
+func (m *mockClientGetter) GetTrafficWritten() uint64 {
+	return 0
+}
+
 func (m *mockClientGetter) GetConfig() control.ConfigProvider {
 	return nil // No config needed for this demo
 }

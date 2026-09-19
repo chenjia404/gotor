@@ -41,6 +41,8 @@ func TestStatsGetters(t *testing.T) {
 		UptimeSeconds:       3600,
 		ConnectionAttempts:  150,
 		DataDir:             "/tmp/tor-data",
+		TrafficRead:         4096,
+		TrafficWritten:      2048,
 	}
 
 	if stats.GetActiveCircuits() != 5 {
@@ -85,6 +87,13 @@ func TestStatsGetters(t *testing.T) {
 
 	if stats.GetDataDir() != "/tmp/tor-data" {
 		t.Errorf("GetDataDir() = %q, want %q", stats.GetDataDir(), "/tmp/tor-data")
+	}
+
+	if stats.GetTrafficRead() != 4096 {
+		t.Errorf("GetTrafficRead() = %d, want 4096", stats.GetTrafficRead())
+	}
+	if stats.GetTrafficWritten() != 2048 {
+		t.Errorf("GetTrafficWritten() = %d, want 2048", stats.GetTrafficWritten())
 	}
 }
 
@@ -134,6 +143,13 @@ func TestStatsGettersZeroValues(t *testing.T) {
 
 	if stats.GetDataDir() != "" {
 		t.Errorf("GetDataDir() = %q, want empty string", stats.GetDataDir())
+	}
+
+	if stats.GetTrafficRead() != 0 {
+		t.Errorf("GetTrafficRead() = %d, want 0", stats.GetTrafficRead())
+	}
+	if stats.GetTrafficWritten() != 0 {
+		t.Errorf("GetTrafficWritten() = %d, want 0", stats.GetTrafficWritten())
 	}
 }
 

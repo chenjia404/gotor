@@ -25,6 +25,8 @@ type mockClientGetter struct {
 	uptimeSeconds       int64
 	connectionAttempts  int64
 	dataDir             string
+	trafficRead         uint64
+	trafficWritten      uint64
 	config              map[string]string
 }
 
@@ -120,6 +122,14 @@ func (m *mockClientGetter) GetConnectionAttempts() int64 {
 
 func (m *mockClientGetter) GetDataDir() string {
 	return m.dataDir
+}
+
+func (m *mockClientGetter) GetTrafficRead() uint64 {
+	return m.trafficRead
+}
+
+func (m *mockClientGetter) GetTrafficWritten() uint64 {
+	return m.trafficWritten
 }
 
 // Helper to create test server
@@ -339,6 +349,37 @@ func TestGetInfoAfterAuth(t *testing.T) {
 	}
 	if strings.Contains(response, "go-tor 0.1.0") {
 		t.Fatal("不得再回 0.1.0")
+	}
+}
+
+func TestGetInfoTrafficUsesStats(t *testing.T) {
+	server, mock := setupTestServer(t)
+	mock.trafficRead = 4096
+	mock.trafficWritten = 2048
+	conn := connectToServer(t, server)
+
+	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+	readResponse(t, reader)
+
+	writer.WriteString("AUTHENTICATE\r\n")
+	writer.Flush()
+	readResponse(t, reader)
+
+	writer.WriteString("GETINFO traffic/read traffic/written\r\n")
+	writer.Flush()
+
+	first := readResponse(t, reader)
+	second := readResponse(t, reader)
+	got := first + "\n" + second
+	if !strings.Contains(got, "traffic/read=4096") {
+		t.Errorf("traffic/read 应得 4096，得到: %s", got)
+	}
+	if !strings.Contains(got, "traffic/written=2048") {
+		t.Errorf("traffic/written 应得 2048，得到: %s", got)
+	}
+	if strings.Contains(got, "traffic/read=0") || strings.Contains(got, "traffic/written=0") {
+		t.Fatal("不得再硬编码 0")
 	}
 }
 

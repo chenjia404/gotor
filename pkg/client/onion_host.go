@@ -43,6 +43,7 @@ func (c *Client) startConfiguredOnionServices(ctx context.Context) error {
 
 	builder := circuit.NewBuilder(c.circuitMgr, c.logger)
 	builder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
+	c.attachORTrafficCount(builder)
 	begindir := onion.NewBegindirFetcher(builder, c.logger)
 	begindir.SetRelays(networkRelays)
 	var srvCur, srvPrev []byte

@@ -2,6 +2,7 @@ package circuit
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -32,6 +33,19 @@ func TestNewBuilder(t *testing.T) {
 	builder2 := NewBuilder(manager, nil)
 	if builder2.logger == nil {
 		t.Error("Builder should create default logger when nil is passed")
+	}
+}
+
+func TestBuilderSetWrapConn(t *testing.T) {
+	builder := NewBuilder(NewManager(), logger.NewDefault())
+	fn := func(c net.Conn) net.Conn { return c }
+	builder.SetWrapConn(fn)
+	if builder.wrapConn == nil {
+		t.Fatal("SetWrapConn 应保存回调")
+	}
+	builder.SetWrapConn(nil)
+	if builder.wrapConn != nil {
+		t.Fatal("nil 应清除 WrapConn")
 	}
 }
 

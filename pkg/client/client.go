@@ -325,6 +325,7 @@ func (c *Client) Start(ctx context.Context) error {
 		if relays := c.pathSelector.GetRelays(); len(relays) > 0 {
 			onionBuilder := circuit.NewBuilder(c.circuitMgr, c.logger)
 			onionBuilder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
+			c.attachORTrafficCount(onionBuilder)
 			c.socksServer.SetOnionPathDefense(c.vanguards, c.guardManager)
 			c.socksServer.SetOnionNetwork(relays, onionBuilder, c.circuitMgr, c.directory)
 		}
@@ -762,6 +763,7 @@ func (c *Client) buildCircuitForTarget(ctx context.Context, target path.ExitTarg
 	// Create circuit builder
 	builder := circuit.NewBuilder(c.circuitMgr, c.logger)
 	builder.SetCCParams(circuit.CCParamsFromConsensus(c.directory.LastConsensusParams()))
+	c.attachORTrafficCount(builder)
 
 	// Configure rate limiter if enabled
 	if c.circuitRateLimiter != nil {
@@ -1066,6 +1068,11 @@ func (c *Client) GetStats() Stats {
 		UptimeSeconds:       metricsSnap.UptimeSeconds,
 	}
 
+	c.bwMu.Lock()
+	stats.TrafficRead = c.bytesRead
+	stats.TrafficWritten = c.bytesWritten
+	c.bwMu.Unlock()
+
 	// Add circuit pool statistics if enabled (Phase 9.4)
 	if c.circuitPool != nil {
 		poolStats := c.circuitPool.Stats()
@@ -1108,6 +1115,10 @@ type Stats struct {
 	// Connection metrics
 	ConnectionAttempts int64
 	ConnectionRetries  int64
+
+	// OR 套接字累计字节（GETINFO traffic/*）
+	TrafficRead    uint64
+	TrafficWritten uint64
 
 	// System metrics
 	UptimeSeconds int64
@@ -1166,6 +1177,16 @@ func (s Stats) GetConnectionAttempts() int64 {
 // GetDataDir returns the data directory path
 func (s Stats) GetDataDir() string {
 	return s.DataDir
+}
+
+// GetTrafficRead 返回入口 OR TLS 之下已读字节。
+func (s Stats) GetTrafficRead() uint64 {
+	return s.TrafficRead
+}
+
+// GetTrafficWritten 返回入口 OR TLS 之下已写字节。
+func (s Stats) GetTrafficWritten() uint64 {
+	return s.TrafficWritten
 }
 
 // PublishEvent publishes an event to the control protocol
@@ -1259,7 +1280,7 @@ func (c *Client) publishBandwidthEvent() {
 	})
 }
 
-// RecordBytesRead records bytes read (called by stream/circuit layers)
+// RecordBytesRead 累计入口 OR 已读字节（wrapORConn / 测试）。
 func (c *Client) RecordBytesRead(n uint64) {
 	c.bwMu.Lock()
 	c.bytesRead += n
@@ -1271,6 +1292,43 @@ func (c *Client) RecordBytesWritten(n uint64) {
 	c.bwMu.Lock()
 	c.bytesWritten += n
 	c.bwMu.Unlock()
+}
+
+// attachORTrafficCount 让该 Builder 拨出的入口 OR 计入 GETINFO traffic。
+func (c *Client) attachORTrafficCount(b *circuit.Builder) {
+	if c == nil || b == nil {
+		return
+	}
+	b.SetWrapConn(c.wrapORConn)
+}
+
+func (c *Client) wrapORConn(conn net.Conn) net.Conn {
+	if c == nil || conn == nil {
+		return conn
+	}
+	return &orTrafficConn{Conn: conn, client: c}
+}
+
+// orTrafficConn 在 TLS 之下统计入口 OR 套接字字节。
+type orTrafficConn struct {
+	net.Conn
+	client *Client
+}
+
+func (c *orTrafficConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 && c.client != nil {
+		c.client.RecordBytesRead(uint64(n))
+	}
+	return n, err
+}
+
+func (c *orTrafficConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n > 0 && c.client != nil {
+		c.client.RecordBytesWritten(uint64(n))
+	}
+	return n, err
 }
 
 // clientStatsAdapter adapts Client to control.ClientInfoGetter

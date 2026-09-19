@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"net"
 	"runtime"
 	"testing"
 	"time"
@@ -206,14 +207,59 @@ func TestRecordBandwidth(t *testing.T) {
 		t.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Record some bandwidth
 	client.RecordBytesRead(100)
 	client.RecordBytesWritten(200)
-
-	// Bytes are tracked internally but not exposed in Stats
-	// Test that methods don't panic and can be called multiple times
 	client.RecordBytesRead(50)
 	client.RecordBytesWritten(75)
+
+	stats := client.GetStats()
+	if stats.GetTrafficRead() != 150 {
+		t.Errorf("GetTrafficRead() = %d, want 150", stats.GetTrafficRead())
+	}
+	if stats.GetTrafficWritten() != 275 {
+		t.Errorf("GetTrafficWritten() = %d, want 275", stats.GetTrafficWritten())
+	}
+}
+
+func TestWrapORConnCountsBytes(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DataDirectory = t.TempDir()
+	client, err := New(cfg, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+
+	a, b := net.Pipe()
+	t.Cleanup(func() {
+		_ = a.Close()
+		_ = b.Close()
+	})
+	wrapped := client.wrapORConn(a)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 8)
+		_, _ = b.Read(buf)
+		_, _ = b.Write([]byte("pong!!"))
+	}()
+
+	if _, err := wrapped.Write([]byte("ping!!!!")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	buf := make([]byte, 6)
+	if _, err := wrapped.Read(buf); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	<-done
+
+	stats := client.GetStats()
+	if stats.GetTrafficWritten() != 8 {
+		t.Errorf("written = %d, want 8", stats.GetTrafficWritten())
+	}
+	if stats.GetTrafficRead() != 6 {
+		t.Errorf("read = %d, want 6", stats.GetTrafficRead())
+	}
 }
 
 func TestGetCircuits(t *testing.T) {

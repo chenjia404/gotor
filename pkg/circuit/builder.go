@@ -4,6 +4,7 @@ package circuit
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -25,9 +26,11 @@ type MetricsRecorder interface {
 type Builder struct {
 	logger          *logger.Logger
 	manager         *Manager
-	rateLimiter     *ratelimit.RateLimiter // Rate limiter for circuit creation
-	metricsRecorder MetricsRecorder        // Metrics recorder for rate limiting stats
-	ccParams        CCParams               // 已验签共识的 FlowCtrl=2 参数
+	rateLimiter     *ratelimit.RateLimiter  // Rate limiter for circuit creation
+	metricsRecorder MetricsRecorder         // Metrics recorder for rate limiting stats
+	ccParams        CCParams                // 已验签共识的 FlowCtrl=2 参数
+	wrapConn        func(net.Conn) net.Conn // 入口 OR 在 TLS 前包一层；nil 则不包
+	wrapConnMu      sync.Mutex
 	mu              sync.Mutex
 }
 
@@ -67,6 +70,13 @@ func (b *Builder) SetMetricsRecorder(recorder MetricsRecorder) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.metricsRecorder = recorder
+}
+
+// SetWrapConn 在拨入入口 OR 时、TLS 之前包一层。客户端用来累计 GETINFO traffic 字节。
+func (b *Builder) SetWrapConn(fn func(net.Conn) net.Conn) {
+	b.wrapConnMu.Lock()
+	defer b.wrapConnMu.Unlock()
+	b.wrapConn = fn
 }
 
 // BuildCircuit builds a circuit (3 hops, or 4 when Path.Middle2 为 HS L3).
@@ -273,6 +283,13 @@ func (b *Builder) connectToRelay(ctx context.Context, address string, relay *dir
 		// Enable strict CERTS validation mode for defense-in-depth
 		// This will fail the handshake if CERTS validation fails
 		cfg.RequireCERTS = true
+	}
+
+	b.wrapConnMu.Lock()
+	wrap := b.wrapConn
+	b.wrapConnMu.Unlock()
+	if wrap != nil {
+		cfg.WrapConn = wrap
 	}
 
 	conn := connection.New(cfg, b.logger)
