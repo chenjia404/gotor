@@ -132,6 +132,12 @@ func New(cfg *config.Config, log *logger.Logger) (*Client, error) {
 		cancel()
 		return nil, fmt.Errorf("failed to enable consensus disk cache: %w", err)
 	}
+	if cfg.ORPort > 0 && !cfg.ClientOnly && (cfg.DirCache || cfg.DirPort > 0) {
+		if err := dirClient.EnableNSConsensusDiskCache(cacheDir); err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to enable ns consensus disk cache: %w", err)
+		}
+	}
 	if err := dirClient.EnableMicrodescDiskCache(cacheDir); err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to enable microdesc disk cache: %w", err)
@@ -302,6 +308,11 @@ func (c *Client) Start(ctx context.Context) error {
 		c.logger.Info("DisableNetwork: skipping consensus and circuit build")
 	} else if err := c.pathSelector.UpdateConsensus(ctx); err != nil {
 		return fmt.Errorf("failed to update consensus: %w", err)
+	}
+	if !c.config.DisableNetwork && c.directory != nil && c.directory.NSConsensusCacheEnabled() {
+		if err := c.directory.FetchNSConsensusDocument(ctx); err != nil {
+			c.logger.Warn("ns consensus for DirCache not stored", "error", err)
+		}
 	}
 	if !c.config.DisableNetwork {
 		c.refreshCircpadConfig()

@@ -27,12 +27,8 @@ type dirZKey struct{}
 
 const maxDirServeBytes = 8 << 20
 
-const (
-	cachedConsensusName     = "cached-microdesc-consensus"
-	cachedConsensusPrevName = "cached-microdesc-consensus.prev"
-)
-
 // DirCacheServer 用 CacheDirectory 的落盘共识/microdesc 应答 BEGIN_DIR / DirPort。
+// ns 与 microdesc 分库存放（cached-consensus / cached-microdesc-consensus），
 // 可按 X-Or-Diff-From-Consensus 或 /diff/<HASH>/<FPRLIST> 从最多 72 小时历史共识提供 limited-ed，
 // 按 FPRLIST 过滤权威签名（未过半 404），并协商 x-tor-lzma/x-zstd/gzip/deflate/.z 与 304；不宣告 DirCache=2。
 type DirCacheServer struct {
@@ -131,12 +127,17 @@ func (d *DirCacheServer) serveConsensus(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	flavor, ok := directory.ConsensusFlavorFromHTTPPath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 	fps, filter, ok := fprlistFromConsensusPath(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	curr, ok := d.readCachedFile(cachedConsensusName)
+	curr, ok := d.readCachedFlavor(flavor)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -152,9 +153,9 @@ func (d *DirCacheServer) serveConsensus(w http.ResponseWriter, r *http.Request) 
 		fprKey = strings.Join(fps, "+")
 	}
 	hashes := directory.ParseOrDiffFromConsensusHeader(r.Header.Get("X-Or-Diff-From-Consensus"))
-	mod := consensusLastModified(curr, d.cachedModTime(cachedConsensusName))
+	mod := consensusLastModified(curr, d.cachedModTime(directory.ConsensusCacheFile(flavor)))
 	if len(hashes) > 0 {
-		if diff, ok := d.diffFromHashes(hashes, curr, fprKey); ok {
+		if diff, ok := d.diffFromHashes(flavor, hashes, curr, fprKey); ok {
 			writeDirBody(w, r, []byte(diff), mod, !filter)
 			return
 		}
@@ -167,7 +168,7 @@ func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.R
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	hash, fprRaw, ok := parseConsensusDiffPath(r.URL.Path)
+	hash, fprRaw, flavor, ok := parseConsensusDiffPath(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -177,7 +178,7 @@ func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.R
 		http.NotFound(w, r)
 		return
 	}
-	curr, ok := d.readCachedFile(cachedConsensusName)
+	curr, ok := d.readCachedFlavor(flavor)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -192,15 +193,15 @@ func (d *DirCacheServer) serveConsensusDiffPath(w http.ResponseWriter, r *http.R
 		}
 		fprKey = strings.Join(fps, "+")
 	}
-	diff, ok := d.diffFromHashes([]string{hash}, curr, fprKey)
+	diff, ok := d.diffFromHashes(flavor, []string{hash}, curr, fprKey)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	writeDirBody(w, r, []byte(diff), consensusLastModified(curr, d.cachedModTime(cachedConsensusName)), !filter)
+	writeDirBody(w, r, []byte(diff), consensusLastModified(curr, d.cachedModTime(directory.ConsensusCacheFile(flavor))), !filter)
 }
 
-func parseConsensusDiffPath(path string) (hash, fprlist string, ok bool) {
+func parseConsensusDiffPath(path string) (hash, fprlist string, flavor directory.ConsensusFlavor, ok bool) {
 	const (
 		micro = "/tor/status-vote/current/consensus-microdesc/diff/"
 		ns    = "/tor/status-vote/current/consensus/diff/"
@@ -209,27 +210,29 @@ func parseConsensusDiffPath(path string) (hash, fprlist string, ok bool) {
 	switch {
 	case strings.HasPrefix(path, micro):
 		rest = strings.TrimPrefix(path, micro)
+		flavor = directory.FlavorMicrodesc
 	case strings.HasPrefix(path, ns):
 		rest = strings.TrimPrefix(path, ns)
+		flavor = directory.FlavorNS
 	default:
-		return "", "", false
+		return "", "", "", false
 	}
 	rest = strings.Trim(rest, "/")
 	if rest == "" || strings.Contains(rest, "..") {
-		return "", "", false
+		return "", "", "", false
 	}
 	hash, fprlist, _ = strings.Cut(rest, "/")
 	hash = strings.ToLower(hash)
 	if len(hash) != 64 {
-		return "", "", false
+		return "", "", "", false
 	}
 	for i := 0; i < len(hash); i++ {
 		c := hash[i]
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return "", "", false
+			return "", "", "", false
 		}
 	}
-	return hash, fprlist, true
+	return hash, fprlist, flavor, true
 }
 
 func fprlistFromConsensusPath(path string) (fps []string, filter bool, ok bool) {
@@ -252,13 +255,13 @@ func fprlistFromConsensusPath(path string) (fps []string, filter bool, ok bool) 
 	return directory.ParseFPRLIST(rest)
 }
 
-func (d *DirCacheServer) diffFromHashes(hashes []string, curr, fprKey string) (string, bool) {
-	prev, from, ok := directory.LookupHistoricalConsensus(d.cacheDir, hashes, curr)
+func (d *DirCacheServer) diffFromHashes(flavor directory.ConsensusFlavor, hashes []string, curr, fprKey string) (string, bool) {
+	prev, from, ok := directory.LookupHistoricalConsensusFlavor(d.cacheDir, flavor, hashes, curr)
 	if !ok {
 		return "", false
 	}
-	to := strings.ToLower(directory.ConsensusDiffFromDigest(curr))
-	from = strings.ToLower(from)
+	to := string(flavor) + ":" + strings.ToLower(directory.ConsensusDiffFromDigest(curr))
+	from = string(flavor) + ":" + strings.ToLower(from)
 	if from == to {
 		return "", false
 	}
@@ -327,6 +330,19 @@ func (d *DirCacheServer) diffFromHashes(hashes []string, curr, fprKey string) (s
 		}
 		return diff, true
 	}
+}
+
+func (d *DirCacheServer) readCachedFlavor(flavor directory.ConsensusFlavor) (string, bool) {
+	name := directory.ConsensusCacheFile(flavor)
+	curr, ok := d.readCachedFile(name)
+	if !ok {
+		return "", false
+	}
+	got, ok := directory.DetectConsensusFlavor(curr)
+	if !ok || got != flavor {
+		return "", false
+	}
+	return curr, true
 }
 
 func (d *DirCacheServer) readCachedFile(name string) (string, bool) {

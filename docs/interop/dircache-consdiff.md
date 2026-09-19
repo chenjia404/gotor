@@ -1,6 +1,6 @@
 # 中继对外 consdiff（limited-ed）
 
-**日期**：2026-08-20  
+**日期**：2026-09-19  
 **状态**：PARTIAL（离线单测；**未**宣告 `DirCache=2`）
 
 对照：
@@ -18,7 +18,7 @@
 | `GET /tor/status-vote/current/consensus-microdesc` 带 `X-Or-Diff-From-Consensus` | 若摘要匹配 72 小时内历史共识，回 limited-ed；否则回整份当前共识 |
 | `GET /tor/status-vote/current/consensus-microdesc/diff/<HASH>/<FPRLIST>` | 未过滤且匹配则 200 + limited-ed；FPRLIST 过半签名才返回整份过滤共识相关路径，过滤体不实时生成 diff；未知/过期 404 |
 | `GET /tor/status-vote/current/consensus-microdesc/<FPRLIST>` | 超过半数被请求权威已签名则回过滤后的共识；`all` / 无列表回全部签名 |
-| 同上 `consensus`（非 flavor）路径 | 与现有行为一致：仍服务 `cached-microdesc-consensus` |
+| 同上 `consensus`（ns flavor）路径 | 只服务 `cached-consensus`；缺文件或文件不是 ns flavor 则 **404**，**不得**回 microdesc 文档 |
 | BEGIN_DIR | 同一 handler |
 | `CacheDirectory/cached-microdesc-consensus.prev` | 换共识时保留上一份（兼容旧缓存） |
 | `CacheDirectory/cached-microdesc-consensus.hist/<FromDigest>` | 按 signed-part SHA3-256 命名；最多 72 小时 / 72 份 |
@@ -67,9 +67,19 @@
 - 未过滤 diff 按当前 ToDigest 缓存，生成在锁外且全进程同时只跑一份 LCS。
 - **仍禁止** 在 `proto` 写 `DirCache=2`
 
+## 本切片已做（2026-09-19 ns / microdesc 分库）
+
+对照 dir-spec [general-use-http-urls](https://spec.torproject.org/dir-spec/general-use-http-urls.html) 的 flavor。
+
+- `GET /tor/status-vote/current/consensus-microdesc*` 只读 `cached-microdesc-consensus`（及 `.prev` / `.hist`）。
+- `GET /tor/status-vote/current/consensus*`（非 microdesc）只读 `cached-consensus`。
+- 文件内容 flavor 与路径不符则 404（禁止把 microdesc 文档当 ns 发出）。
+- 中继 `DirCache`/`DirPort` 且 `ORPort>0` 时，客户端在 microdesc 共识之后另拉并验签 ns 共识，写入 `cached-consensus`；**不**覆盖选路用的 `lastConsensusRaw`。
+- ns 历史同样最多 72 小时 / 72 份，consdiff 缓存键带 flavor，两库不得交叉命中。
+- **仍禁止** 在 `proto` 写 `DirCache=2`
+
 ## 明确未做（因此禁止 `DirCache=2`）
 
-- ns flavor 与 microdesc 分库存放
 - 预压缩 / 预计算的完整 consdiff 库（C Tor consdiffmgr）
 - 真网官方客户端把本中继当 DirCache 的证据；权威 V2Dir 仍取决于 Running / 可达性，不由本切片单独证明
 

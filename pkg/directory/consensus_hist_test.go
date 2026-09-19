@@ -14,7 +14,7 @@ func histConsensusAt(t time.Time, marker string) string {
 	fu := t.UTC().Add(time.Hour).Format("2006-01-02 15:04:05")
 	vu := t.UTC().Add(3 * time.Hour).Format("2006-01-02 15:04:05")
 	return "" +
-		"network-status-version 3\n" +
+		"network-status-version 3 microdesc\n" +
 		"vote-status consensus\n" +
 		"consensus-method 32\n" +
 		"valid-after " + va + "\n" +

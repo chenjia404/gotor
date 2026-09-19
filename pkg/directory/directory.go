@@ -162,6 +162,9 @@ type Client struct {
 	sharedRandPrev      []byte         // shared-rand-previous-value（32 字节）
 	consensusValidAfter time.Time
 	consensusDiskPath   string // CacheDirectory/cached-microdesc-consensus
+	nsDiskPath          string // CacheDirectory/cached-consensus（ns flavor，不进选路）
+	nsLastRaw           string
+	nsLastSignedSHA3Hex string
 	avoidDiskWrites     bool
 	microdescDisk       *microdescDiskCache
 }

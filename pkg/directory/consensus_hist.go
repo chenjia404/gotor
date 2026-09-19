@@ -13,36 +13,52 @@ const (
 	CachedMicrodescConsensusHistDir = "cached-microdesc-consensus.hist"
 
 	// maxConsensusHistHours 对齐 param-spec max-consensus-age-to-cache-for-diff 默认 72。
-	// 仍禁止宣告 DirCache=2：缺真网被当缓存证据，且未做 ns/microdesc 分库与预压缩 diff 库。
+	// 仍禁止宣告 DirCache=2：缺真网被当缓存证据，且未做预压缩 diff 库。
 	maxConsensusHistHours = 72
 	maxConsensusHistFiles = 72
 	maxOrDiffFromHashes   = 16
 )
 
-// LookupHistoricalConsensus 按 X-Or-Diff-From-Consensus /diff/<HASH> 查找历史共识。
-// 先查 hist/<digest>，再回退 CacheDirectory/cached-microdesc-consensus.prev（旧缓存只有上一份）。
-// currentDoc 有 valid-after 时，丢弃超过 72h 的历史（param-spec 默认）。
+// LookupHistoricalConsensus 查找 microdesc flavor 历史共识（兼容旧调用）。
 func LookupHistoricalConsensus(cacheDir string, hashes []string, currentDoc string) (doc, digest string, ok bool) {
+	return LookupHistoricalConsensusFlavor(cacheDir, FlavorMicrodesc, hashes, currentDoc)
+}
+
+// LookupHistoricalConsensusFlavor 按 X-Or-Diff-From-Consensus /diff/<HASH> 查找指定 flavor 的历史共识。
+// 先查该 flavor 的 hist/<digest>，再回退 .prev。currentDoc 有 valid-after 时丢弃超过 72h 的历史。
+// ns 与 microdesc 分库，禁止交叉命中。
+func LookupHistoricalConsensusFlavor(cacheDir string, flavor ConsensusFlavor, hashes []string, currentDoc string) (doc, digest string, ok bool) {
 	if cacheDir == "" || len(hashes) == 0 {
 		return "", "", false
+	}
+	if flavor != FlavorNS && flavor != FlavorMicrodesc {
+		flavor = FlavorMicrodesc
 	}
 	if len(hashes) > maxOrDiffFromHashes {
 		hashes = hashes[:maxOrDiffFromHashes]
 	}
+	hist := consensusHistDir(flavor)
+	prevName := consensusPrevFile(flavor)
 	for _, h := range hashes {
 		h = strings.ToLower(strings.TrimSpace(h))
 		if !validSHA3Hex(h) {
 			continue
 		}
-		if body, found := readCachedConsensusFile(cacheDir, filepath.Join(CachedMicrodescConsensusHistDir, h)); found {
+		if body, found := readCachedConsensusFile(cacheDir, filepath.Join(hist, h)); found {
+			if !consensusMatchesFlavor(body, flavor) {
+				continue
+			}
 			// 文件名必须等于正文 FromDigest，避免错名文件冒充客户端要的 HASH。
 			if strings.ToLower(consensusDiffFromDigest(body)) == h && !consensusOlderThanMaxHist(body, currentDoc) {
 				return body, h, true
 			}
 		}
 	}
-	prev, found := readCachedConsensusFile(cacheDir, cachedMicrodescConsensusPrevName)
+	prev, found := readCachedConsensusFile(cacheDir, prevName)
 	if !found {
+		return "", "", false
+	}
+	if !consensusMatchesFlavor(prev, flavor) {
 		return "", "", false
 	}
 	from := strings.ToLower(consensusDiffFromDigest(prev))
@@ -57,37 +73,58 @@ func LookupHistoricalConsensus(cacheDir string, hashes []string, currentDoc stri
 	return "", "", false
 }
 
+func consensusMatchesFlavor(doc string, flavor ConsensusFlavor) bool {
+	got, ok := DetectConsensusFlavor(doc)
+	return ok && got == flavor
+}
+
 func persistConsensusHistory(cacheDir string, outgoing []byte, newDoc string) {
+	persistConsensusHistoryFlavor(cacheDir, FlavorMicrodesc, outgoing, newDoc)
+}
+
+func persistConsensusHistoryFlavor(cacheDir string, flavor ConsensusFlavor, outgoing []byte, newDoc string) {
 	if cacheDir == "" || len(outgoing) == 0 || len(outgoing) > maxCachedConsensusBytes {
 		return
 	}
+	if flavor != FlavorNS && flavor != FlavorMicrodesc {
+		flavor = FlavorMicrodesc
+	}
 	oldDoc := string(outgoing)
 	if consensusOlderThanMaxHist(oldDoc, newDoc) {
-		pruneConsensusHistory(cacheDir, newDoc)
-		dropStalePrevConsensus(cacheDir, newDoc)
+		pruneConsensusHistoryFlavor(cacheDir, flavor, newDoc)
+		dropStalePrevConsensusFlavor(cacheDir, flavor, newDoc)
 		return
 	}
 	digest := strings.ToLower(consensusDiffFromDigest(oldDoc))
 	if !validSHA3Hex(digest) {
 		return
 	}
-	histDir := filepath.Join(cacheDir, CachedMicrodescConsensusHistDir)
+	histRel := consensusHistDir(flavor)
+	histDir := filepath.Join(cacheDir, histRel)
 	// .prev 先写：hist 失败时落后一期的客户端仍能拿 limited-ed。
-	_ = writeCachedConsensusFile(cacheDir, cachedMicrodescConsensusPrevName, outgoing)
+	_ = writeCachedConsensusFile(cacheDir, consensusPrevFile(flavor), outgoing)
 	if err := os.MkdirAll(histDir, 0o700); err != nil {
 		return
 	}
-	if err := writeCachedConsensusFile(cacheDir, filepath.Join(CachedMicrodescConsensusHistDir, digest), outgoing); err != nil {
+	if err := writeCachedConsensusFile(cacheDir, filepath.Join(histRel, digest), outgoing); err != nil {
 		return
 	}
-	pruneConsensusHistory(cacheDir, newDoc)
+	pruneConsensusHistoryFlavor(cacheDir, flavor, newDoc)
 }
 
 func pruneConsensusHistory(cacheDir, newDoc string) {
-	histDir := filepath.Join(cacheDir, CachedMicrodescConsensusHistDir)
+	pruneConsensusHistoryFlavor(cacheDir, FlavorMicrodesc, newDoc)
+}
+
+func pruneConsensusHistoryFlavor(cacheDir string, flavor ConsensusFlavor, newDoc string) {
+	if flavor != FlavorNS && flavor != FlavorMicrodesc {
+		flavor = FlavorMicrodesc
+	}
+	histRel := consensusHistDir(flavor)
+	histDir := filepath.Join(cacheDir, histRel)
 	ents, err := os.ReadDir(histDir)
 	if err != nil {
-		dropStalePrevConsensus(cacheDir, newDoc)
+		dropStalePrevConsensusFlavor(cacheDir, flavor, newDoc)
 		return
 	}
 	type item struct {
@@ -97,7 +134,7 @@ func pruneConsensusHistory(cacheDir, newDoc string) {
 	keep := make([]item, 0, len(ents))
 	for _, ent := range ents {
 		name := ent.Name()
-		path := filepath.Join(CachedMicrodescConsensusHistDir, name)
+		path := filepath.Join(histRel, name)
 		if ent.IsDir() || !validSHA3Hex(name) {
 			_ = removeCachedConsensusFile(cacheDir, path)
 			continue
@@ -122,19 +159,23 @@ func pruneConsensusHistory(cacheDir, newDoc string) {
 			return keep[i].va.After(keep[j].va)
 		})
 		for _, extra := range keep[maxConsensusHistFiles:] {
-			_ = removeCachedConsensusFile(cacheDir, filepath.Join(CachedMicrodescConsensusHistDir, extra.name))
+			_ = removeCachedConsensusFile(cacheDir, filepath.Join(histRel, extra.name))
 		}
 	}
-	dropStalePrevConsensus(cacheDir, newDoc)
+	dropStalePrevConsensusFlavor(cacheDir, flavor, newDoc)
 }
 
 func dropStalePrevConsensus(cacheDir, newDoc string) {
-	prev, ok := readCachedConsensusFile(cacheDir, cachedMicrodescConsensusPrevName)
+	dropStalePrevConsensusFlavor(cacheDir, FlavorMicrodesc, newDoc)
+}
+
+func dropStalePrevConsensusFlavor(cacheDir string, flavor ConsensusFlavor, newDoc string) {
+	prev, ok := readCachedConsensusFile(cacheDir, consensusPrevFile(flavor))
 	if !ok {
 		return
 	}
 	if consensusOlderThanMaxHist(prev, newDoc) {
-		_ = removeCachedConsensusFile(cacheDir, cachedMicrodescConsensusPrevName)
+		_ = removeCachedConsensusFile(cacheDir, consensusPrevFile(flavor))
 	}
 }
 

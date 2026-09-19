@@ -162,6 +162,39 @@ w Bandwidth=1000
 	return out.String()
 }
 
+func buildSignedNSConsensus(t *testing.T, auths []*testAuthority) string {
+	t.Helper()
+	now := time.Now().UTC()
+	core := fmt.Sprintf(`network-status-version 3
+vote-status consensus
+consensus-method 33
+valid-after %s
+fresh-until %s
+valid-until %s
+r TestRelay AAAAAAAAAAAAAAAAAAAAAA %s 192.0.2.1 9001 0
+s Fast Guard Running Stable Valid
+w Bandwidth=1000
+`,
+		now.Add(-1*time.Hour).Format("2006-01-02 15:04:05"),
+		now.Add(1*time.Hour).Format("2006-01-02 15:04:05"),
+		now.Add(3*time.Hour).Format("2006-01-02 15:04:05"),
+		now.Add(-2*time.Hour).Format("2006-01-02 15:04:05"),
+	)
+	signedBody := core + "directory-signature "
+	var out strings.Builder
+	out.WriteString(core)
+	h := sha256.Sum256([]byte(signedBody))
+	for _, a := range auths {
+		fmt.Fprintf(&out, "directory-signature sha256 %s %s\n", a.dir.V3Ident, a.sigFP)
+		sig, err := rsa.SignPKCS1v15(rand.Reader, a.sigPriv, 0, h[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		out.Write(pem.EncodeToMemory(&pem.Block{Type: "SIGNATURE", Bytes: sig}))
+	}
+	return out.String()
+}
+
 func TestExtractConsensusSignedBody(t *testing.T) {
 	doc := "network-status-version 3 microdesc\nparams foo=1\ndirectory-signature sha256 AA BB\n-----BEGIN SIGNATURE-----\nxx\n-----END SIGNATURE-----\n"
 	body, err := extractConsensusSignedBody(doc)

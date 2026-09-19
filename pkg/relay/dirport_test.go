@@ -24,8 +24,8 @@ import (
 
 func TestDirCacheServesCachedConsensus(t *testing.T) {
 	dir := t.TempDir()
-	body := []byte("network-status-version 3\n")
-	if err := os.WriteFile(filepath.Join(dir, "cached-microdesc-consensus"), body, 0o600); err != nil {
+	body := []byte("network-status-version 3 microdesc\n")
+	if err := os.WriteFile(filepath.Join(dir, directory.ConsensusCacheFile(directory.FlavorMicrodesc)), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s := NewDirCacheServer(dir, nil)
@@ -137,7 +137,7 @@ func TestDirCacheServesKeysByFingerprint(t *testing.T) {
 
 func testConsensusPair() (prev, curr string) {
 	prev = "" +
-		"network-status-version 3\n" +
+		"network-status-version 3 microdesc\n" +
 		"vote-status consensus\n" +
 		"consensus-method 32\n" +
 		"valid-after 2024-01-01 00:00:00\n" +
@@ -146,7 +146,7 @@ func testConsensusPair() (prev, curr string) {
 		"directory-footer\n" +
 		"directory-signature sha256 AA BB\n-----BEGIN SIGNATURE-----\nOLD\n-----END SIGNATURE-----\n"
 	curr = "" +
-		"network-status-version 3\n" +
+		"network-status-version 3 microdesc\n" +
 		"vote-status consensus\n" +
 		"consensus-method 32\n" +
 		"valid-after 2024-01-01 01:00:00\n" +
@@ -160,10 +160,10 @@ func testConsensusPair() (prev, curr string) {
 func writeConsensusPair(t *testing.T, dir string) (prev, curr string) {
 	t.Helper()
 	prev, curr = testConsensusPair()
-	if err := os.WriteFile(filepath.Join(dir, cachedConsensusName), []byte(curr), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, directory.ConsensusCacheFile(directory.FlavorMicrodesc)), []byte(curr), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, cachedConsensusPrevName), []byte(prev), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, directory.ConsensusCachePrevFile(directory.FlavorMicrodesc)), []byte(prev), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return prev, curr
@@ -213,7 +213,7 @@ func testConsensusAt(ts time.Time, marker string) string {
 	fu := ts.UTC().Add(time.Hour).Format("2006-01-02 15:04:05")
 	vu := ts.UTC().Add(3 * time.Hour).Format("2006-01-02 15:04:05")
 	return "" +
-		"network-status-version 3\n" +
+		"network-status-version 3 microdesc\n" +
 		"vote-status consensus\n" +
 		"consensus-method 32\n" +
 		"valid-after " + va + "\n" +
@@ -244,10 +244,10 @@ func TestDirCacheServesDiffFromTwoPeriodsAgo(t *testing.T) {
 	}
 	writeHist(old)
 	writeHist(mid)
-	if err := os.WriteFile(filepath.Join(dir, cachedConsensusPrevName), []byte(mid), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, directory.ConsensusCachePrevFile(directory.FlavorMicrodesc)), []byte(mid), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, cachedConsensusName), []byte(curr), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, directory.ConsensusCacheFile(directory.FlavorMicrodesc)), []byte(curr), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -364,14 +364,14 @@ func TestDirCacheFPRLISTFiltersSignatures(t *testing.T) {
 	c := "cccccccccccccccccccccccccccccccccccccccc"
 	z := "ffffffffffffffffffffffffffffffffffffffff"
 	curr := "" +
-		"network-status-version 3\n" +
+		"network-status-version 3 microdesc\n" +
 		"vote-status consensus\n" +
 		"valid-after 2024-01-01 01:00:00\n" +
 		"directory-footer\n" +
 		"directory-signature sha256 " + strings.ToUpper(a) + " SA\n-----BEGIN SIGNATURE-----\nA\n-----END SIGNATURE-----\n" +
 		"directory-signature sha256 " + strings.ToUpper(b) + " SB\n-----BEGIN SIGNATURE-----\nB\n-----END SIGNATURE-----\n" +
 		"directory-signature sha256 " + strings.ToUpper(c) + " SC\n-----BEGIN SIGNATURE-----\nC\n-----END SIGNATURE-----\n"
-	if err := os.WriteFile(filepath.Join(dir, cachedConsensusName), []byte(curr), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, directory.ConsensusCacheFile(directory.FlavorMicrodesc)), []byte(curr), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s := NewDirCacheServer(dir, nil)
@@ -420,7 +420,7 @@ func TestDirCacheFPRLISTFiltersSignatures(t *testing.T) {
 	// 过滤请求不得为每个 FPRLIST 实时 GenerateConsensusDiff（未鉴权 CPU 放大）。
 	prev := strings.Replace(curr, "01:00:00", "00:00:00", 1)
 	prev = strings.Replace(prev, "\nA\n", "\nOLD\n", 1)
-	if err := os.WriteFile(filepath.Join(dir, cachedConsensusPrevName), []byte(prev), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, directory.ConsensusCachePrevFile(directory.FlavorMicrodesc)), []byte(prev), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	diffReq := httptest.NewRequest(http.MethodGet, okURL, http.NoBody)
@@ -503,7 +503,7 @@ func TestDirCacheKeysFPViaBeginDir(t *testing.T) {
 
 func TestDirCacheGzipAndNotModified(t *testing.T) {
 	dir := t.TempDir()
-	body := []byte("network-status-version 3\nvalid-after 2024-01-01 01:00:00\nconsensus-gzip-test\n")
+	body := []byte("network-status-version 3 microdesc\nvalid-after 2024-01-01 01:00:00\nconsensus-gzip-test\n")
 	path := filepath.Join(dir, "cached-microdesc-consensus")
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		t.Fatal(err)
@@ -565,7 +565,7 @@ func TestDirCacheGzipAndNotModified(t *testing.T) {
 
 func TestDirCacheDotZIsDeflate(t *testing.T) {
 	dir := t.TempDir()
-	body := []byte("network-status-version 3\ndot-z\n")
+	body := []byte("network-status-version 3 microdesc\ndot-z\n")
 	if err := os.WriteFile(filepath.Join(dir, "cached-microdesc-consensus"), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -683,7 +683,7 @@ func bytesRepeatDir(b byte, n int) []byte {
 
 func TestDirCacheDotZWithAcceptEncodingGzip(t *testing.T) {
 	dir := t.TempDir()
-	body := []byte("network-status-version 3\ndot-z-gzip\n")
+	body := []byte("network-status-version 3 microdesc\ndot-z-gzip\n")
 	if err := os.WriteFile(filepath.Join(dir, "cached-microdesc-consensus"), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -711,7 +711,7 @@ func TestDirCacheDotZWithAcceptEncodingGzip(t *testing.T) {
 
 func TestDirCacheZstdAndLzma(t *testing.T) {
 	dir := t.TempDir()
-	body := []byte("network-status-version 3\nzstd-lzma-test\n")
+	body := []byte("network-status-version 3 microdesc\nzstd-lzma-test\n")
 	if err := os.WriteFile(filepath.Join(dir, "cached-microdesc-consensus"), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +786,7 @@ func TestDirCacheZstdAndLzma(t *testing.T) {
 	a := "aaaaaaaaaa1111111111aaaaaaaaaa1111111111"
 	b := "bbbbbbbbbb2222222222bbbbbbbbbb2222222222"
 	filtered := "" +
-		"network-status-version 3\n" +
+		"network-status-version 3 microdesc\n" +
 		"vote-status consensus\n" +
 		"valid-after 2024-01-01 01:00:00\n" +
 		"directory-footer\n" +
@@ -804,5 +804,66 @@ func TestDirCacheZstdAndLzma(t *testing.T) {
 	}
 	if rec5.Header().Get("Content-Encoding") != "x-zstd" {
 		t.Fatalf("过滤体不得实时 x-tor-lzma, got %q", rec5.Header().Get("Content-Encoding"))
+	}
+}
+
+func TestDirCacheNSPathDoesNotServeMicrodesc(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("network-status-version 3 microdesc\nonly-micro\n")
+	if err := os.WriteFile(filepath.Join(dir, directory.ConsensusCacheFile(directory.FlavorMicrodesc)), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(dir, nil)
+
+	micro := httptest.NewRecorder()
+	s.handler().ServeHTTP(micro, httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody))
+	if micro.Code != http.StatusOK || micro.Body.String() != string(body) {
+		t.Fatalf("microdesc 路径应返回本库: status=%d body=%q", micro.Code, micro.Body.String())
+	}
+
+	ns := httptest.NewRecorder()
+	s.handler().ServeHTTP(ns, httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus", http.NoBody))
+	if ns.Code != http.StatusNotFound {
+		t.Fatalf("只有 microdesc 缓存时 ns 路径必须 404, got %d body %q", ns.Code, ns.Body.String())
+	}
+}
+
+func TestDirCacheServesNSAndMicrodescSeparately(t *testing.T) {
+	dir := t.TempDir()
+	md := []byte("network-status-version 3 microdesc\nmd-doc\n")
+	ns := []byte("network-status-version 3\nns-doc\n")
+	if err := os.WriteFile(filepath.Join(dir, directory.ConsensusCacheFile(directory.FlavorMicrodesc)), md, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, directory.ConsensusCacheFile(directory.FlavorNS)), ns, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(dir, nil)
+
+	micro := httptest.NewRecorder()
+	s.handler().ServeHTTP(micro, httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus-microdesc", http.NoBody))
+	if micro.Code != http.StatusOK || micro.Body.String() != string(md) {
+		t.Fatalf("microdesc 路径: status=%d body=%q", micro.Code, micro.Body.String())
+	}
+
+	nsRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(nsRec, httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus", http.NoBody))
+	if nsRec.Code != http.StatusOK || nsRec.Body.String() != string(ns) {
+		t.Fatalf("ns 路径: status=%d body=%q", nsRec.Code, nsRec.Body.String())
+	}
+}
+
+func TestDirCacheRejectsWrongFlavorFile(t *testing.T) {
+	dir := t.TempDir()
+	// 有人把 microdesc 文档放进 cached-consensus：ns 路径必须 404，不得谎报 flavor。
+	wrong := []byte("network-status-version 3 microdesc\nmisfiled\n")
+	if err := os.WriteFile(filepath.Join(dir, directory.ConsensusCacheFile(directory.FlavorNS)), wrong, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(dir, nil)
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/tor/status-vote/current/consensus", http.NoBody))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("错 flavor 文件必须 404, got %d", rec.Code)
 	}
 }

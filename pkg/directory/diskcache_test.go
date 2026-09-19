@@ -14,7 +14,7 @@ func TestEnableConsensusDiskCache(t *testing.T) {
 	if err := c.EnableConsensusDiskCache(dir); err != nil {
 		t.Fatal(err)
 	}
-	c.persistConsensusDisk("network-status-version 3\n")
+	c.persistConsensusDisk("network-status-version 3 microdesc\n")
 	path := filepath.Join(dir, cachedMicrodescConsensusName)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -38,8 +38,8 @@ func TestPersistConsensusDiskKeepsPrevious(t *testing.T) {
 	if err := c.EnableConsensusDiskCache(dir); err != nil {
 		t.Fatal(err)
 	}
-	first := "network-status-version 3\nfirst\ndirectory-signature sha256 AA BB\n-----BEGIN SIGNATURE-----\nA\n-----END SIGNATURE-----\n"
-	second := "network-status-version 3\nsecond\ndirectory-signature sha256 CC DD\n-----BEGIN SIGNATURE-----\nB\n-----END SIGNATURE-----\n"
+	first := "network-status-version 3 microdesc\nfirst\ndirectory-signature sha256 AA BB\n-----BEGIN SIGNATURE-----\nA\n-----END SIGNATURE-----\n"
+	second := "network-status-version 3 microdesc\nsecond\ndirectory-signature sha256 CC DD\n-----BEGIN SIGNATURE-----\nB\n-----END SIGNATURE-----\n"
 	c.persistConsensusDisk(first)
 	c.persistConsensusDisk(second)
 
