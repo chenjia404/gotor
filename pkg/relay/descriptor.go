@@ -82,6 +82,7 @@ type DescriptorConfig struct {
 	Family          []string  // Family members (optional)
 	BandwidthAvg    uint64    // Average bandwidth (default: 1MB/s)
 	BandwidthBurst  uint64    // Burst bandwidth (default: 2MB/s)
+	BandwidthObs    uint64    // 已完成格观测字节/秒；0 表示尚无观测，禁止用平均值冒充
 	IPv6Addr        string    // IPv6 address:port (optional)
 	IsBridge        bool      // Whether this is a bridge relay
 	Uptime          int       // 已运行秒数
@@ -129,8 +130,12 @@ func GenerateServerDescriptor(keys *RelayKeys, config *DescriptorConfig) (*Serve
 		bandwidthBurst = bandwidthAvg * 2 // 2x average
 	}
 
-	// Observed bandwidth starts at average (will be updated by bandwidth measurement)
-	bandwidthObs := bandwidthAvg
+	// Observed：只写调用方给出的已完成格速率；无观测为 0，不得抄 average。
+	// dir-spec：observed ≤ burst。
+	bandwidthObs := config.BandwidthObs
+	if bandwidthObs > bandwidthBurst {
+		bandwidthObs = bandwidthBurst
+	}
 
 	exitPolicy := "reject *:*"
 	if len(config.ExitPolicyLines) > 0 {

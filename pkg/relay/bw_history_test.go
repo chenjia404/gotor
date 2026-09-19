@@ -478,3 +478,44 @@ func TestORListenerSetConnBiDirectWiresExtender(t *testing.T) {
 		t.Fatal("出站中间跳应与入站共用同一份 conn-bi-direct")
 	}
 }
+
+func TestBandwidthHistoryObservedBytesPerSec(t *testing.T) {
+	if NewBandwidthHistory().ObservedBytesPerSec() != 0 {
+		t.Fatal("无观测应为 0")
+	}
+
+	start := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	now := start.Add(time.Minute)
+	h := NewBandwidthHistory()
+	h.now = func() time.Time { return now }
+	h.resetCurrentLocked(now)
+	h.AddRead(900000)
+	h.AddWrite(450000)
+	if h.ObservedBytesPerSec() != 0 {
+		t.Fatal("未完成格不得当作 observed")
+	}
+
+	now = start.Add(15 * time.Minute)
+	h.now = func() time.Time { return now }
+	// min(900000/900, 450000/900) = min(1000, 500) = 500
+	if got := h.ObservedBytesPerSec(); got != 500 {
+		t.Fatalf("observed=%d want 500", got)
+	}
+
+	h.AddRead(90)
+	h.AddWrite(9)
+	if got := h.ObservedBytesPerSec(); got != 500 {
+		t.Fatalf("当前未完成格不得抬高 observed: %d", got)
+	}
+
+	now = start.Add(30 * time.Minute)
+	h.now = func() time.Time { return now }
+	h.AddRead(1800000)
+	h.AddWrite(1800000)
+	now = start.Add(45 * time.Minute)
+	h.now = func() time.Time { return now }
+	// slots: 1000/500 then 2000/2000 → maxR=2000 maxW=2000 → 2000
+	if got := h.ObservedBytesPerSec(); got != 2000 {
+		t.Fatalf("应取各方向峰值再取较小: %d", got)
+	}
+}

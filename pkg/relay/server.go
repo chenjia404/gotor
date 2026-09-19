@@ -184,6 +184,7 @@ func (s *Server) startPublisher(ctx context.Context) error {
 		if s.bwHist != nil {
 			_ = s.bwHist.Persist()
 			stats = s.bwHist.StatsMap()
+			dcfg.BandwidthObs = s.bwHist.ObservedBytesPerSec()
 		}
 		if s.bidi != nil {
 			stats = mergeExtraInfoStats(stats, s.bidi.StatsMap())

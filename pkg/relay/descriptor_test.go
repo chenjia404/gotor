@@ -682,8 +682,46 @@ func TestDescriptorBandwidthCustom(t *testing.T) {
 		t.Errorf("BandwidthBurst: got %d, want %d", desc.BandwidthBurst, config.BandwidthBurst)
 	}
 
-	// Observed bandwidth should start at average
-	if desc.BandwidthObs != config.BandwidthAvg {
-		t.Errorf("BandwidthObs: got %d, want %d", desc.BandwidthObs, config.BandwidthAvg)
+	if desc.BandwidthObs != 0 {
+		t.Errorf("无观测时 BandwidthObs 应为 0，不得抄 average，got %d", desc.BandwidthObs)
+	}
+}
+
+func TestDescriptorBandwidthObsFromConfigAndCap(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc, err := GenerateServerDescriptor(keys, &DescriptorConfig{
+		Nickname:       "ObsCap",
+		Address:        "192.0.2.30",
+		ORPort:         9001,
+		BandwidthAvg:   1000,
+		BandwidthBurst: 2000,
+		BandwidthObs:   1500,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desc.BandwidthObs != 1500 {
+		t.Fatalf("obs=%d want 1500", desc.BandwidthObs)
+	}
+	capped, err := GenerateServerDescriptor(keys, &DescriptorConfig{
+		Nickname:       "ObsCap",
+		Address:        "192.0.2.30",
+		ORPort:         9001,
+		BandwidthAvg:   1000,
+		BandwidthBurst: 2000,
+		BandwidthObs:   5000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capped.BandwidthObs != 2000 {
+		t.Fatalf("obs 应 ≤ burst，got %d", capped.BandwidthObs)
+	}
+	raw := string(capped.RawDescriptor)
+	if !strings.Contains(raw, "bandwidth 1000 2000 2000\n") {
+		t.Fatalf("descriptor 第三个数应为封顶后的观测:\n%s", raw)
 	}
 }

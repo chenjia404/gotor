@@ -32,6 +32,9 @@ func TestGenerateDescriptorPairCrossDigest(t *testing.T) {
 	if !strings.Contains(raw, "extra-info-digest ") {
 		t.Fatal("server descriptor 必须交叉引用 extra-info-digest")
 	}
+	if !strings.Contains(raw, "bandwidth 1048576 2097152 0\n") {
+		t.Fatalf("无观测时 bandwidth 第三个数应为 0，不得抄 average\n%s", raw)
+	}
 	if strings.Contains(string(extra.RawDescriptor), "write-history") ||
 		strings.Contains(string(extra.RawDescriptor), "read-history") ||
 		strings.Contains(string(extra.RawDescriptor), "conn-bi-direct") ||

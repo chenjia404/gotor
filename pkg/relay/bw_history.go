@@ -170,6 +170,39 @@ func (h *BandwidthHistory) AddIPv6Write(n uint64) {
 	h.curIPv6Write += n
 }
 
+// ObservedBytesPerSec 按 C Tor bwhist_bandwidth_assess：已完成 900s 格里
+// max(read)/interval 与 max(write)/interval 取较小值。未完成格不计；无观测返回 0。
+func (h *BandwidthHistory) ObservedBytesPerSec() uint64 {
+	if h == nil {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.rotateLocked(h.now())
+	if len(h.slots) == 0 {
+		return 0
+	}
+	nsec := uint64(intervalSeconds(h.interval))
+	if nsec == 0 {
+		nsec = 900
+	}
+	var maxRead, maxWrite uint64
+	for _, s := range h.slots {
+		rps := s.Read / nsec
+		wps := s.Write / nsec
+		if rps > maxRead {
+			maxRead = rps
+		}
+		if wps > maxWrite {
+			maxWrite = wps
+		}
+	}
+	if maxRead < maxWrite {
+		return maxRead
+	}
+	return maxWrite
+}
+
 // StatsMap 只返回已完成格的 write-history / read-history。
 // 已完成格里有 IPv6 字节时另写 ipv6-*-history（与总量同一时间轴，无 IPv6 的格写 0）。
 // 无观测则空 map；无 IPv6 观测则不写 ipv6 行。
