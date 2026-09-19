@@ -128,7 +128,7 @@ SETCONF key=value [key=value ...]
 < 250 OK
 ```
 
-运行时可写键立即生效；`SocksPort`/`ORPort`/`ExitPolicy`/`MyFamily`/`FamilyID` 等需重启，会报错而非假装已改出口策略或家族。
+运行时可写键立即生效（含 `CircuitPadding`）；`SocksPort`/`SafeSocks`/`ConnectionPadding` 等需重启，会报错而非假装已改 SOCKS 或连接填充。
 
 ### SETEVENTS
 

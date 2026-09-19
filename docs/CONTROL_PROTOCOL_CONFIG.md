@@ -97,7 +97,11 @@ The following configuration parameters can be queried via GETCONF:
 - `IsolateClientProtocol` - Isolate by protocol (0/1)
 
 #### Circuit Padding
-- `EnableCircuitPadding` - Enable circuit padding (0/1)
+- `EnableCircuitPadding` / `CircuitPadding` - Enable circuit padding (0/1；C Tor 键名为 CircuitPadding)
+- `ReducedCircuitPadding` - 精简电路填充（0/1）
+- `ConnectionPadding` - 连接填充：`0` / `1` / `auto`
+- `SafeSocks` - 拒绝 IP 字面量 CONNECT（0/1）
+- `TestSocks` - SOCKS 测试告警（0/1）
 - `PaddingStrategy` - Padding strategy: none, fixed, random, adaptive
 - `PaddingMinInterval` - Minimum interval between padding cells
 - `PaddingMaxInterval` - Maximum interval between padding cells

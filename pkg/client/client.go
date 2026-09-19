@@ -1580,8 +1580,16 @@ func (p *clientConfigProvider) GetConfigValue(key string) (string, bool) {
 		return boolStr(cfg.IsolateClientProtocol), true
 
 	// Circuit padding
-	case "EnableCircuitPadding":
+	case "EnableCircuitPadding", "CircuitPadding":
 		return boolStr(cfg.EnableCircuitPadding), true
+	case "ReducedCircuitPadding":
+		return boolStr(cfg.ReducedCircuitPadding), true
+	case "ConnectionPadding":
+		return cfg.ConnectionPadding, true
+	case "SafeSocks":
+		return boolStr(cfg.SafeSocks), true
+	case "TestSocks":
+		return boolStr(cfg.TestSocks), true
 	case "PaddingStrategy":
 		return cfg.PaddingStrategy, true
 	case "PaddingMinInterval":
@@ -1795,7 +1803,7 @@ func (p *clientConfigProvider) SetConfigValue(key, value string) error {
 		return nil
 
 	// Circuit padding (runtime configurable)
-	case "EnableCircuitPadding":
+	case "EnableCircuitPadding", "CircuitPadding":
 		val, err := parseBool(value)
 		if err != nil {
 			return err
@@ -1977,6 +1985,7 @@ func (p *clientConfigProvider) SetConfigValue(key, value string) error {
 		"CircuitPoolMaxSize", "EnableBufferPooling", "IsolationLevel",
 		"IsolateDestinations", "IsolateSOCKSAuth", "IsolateClientPort",
 		"IsolateClientProtocol", "PaddingDummyTraffic", "RateLimitCleanupInterval",
+		"SafeSocks", "TestSocks", "ReducedCircuitPadding", "ConnectionPadding",
 		"GuardStateBackupCount", "GuardStateSnapshotInterval", "GuardStateLockTimeout",
 		"TracingEndpoint", "TracingExporter", "TracingInsecure", "TracingTimeout",
 		"MemoryHighWaterMark", "MemoryCriticalMark", "MemoryMaxGoroutines",

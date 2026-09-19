@@ -49,6 +49,10 @@ func TestClientConfigProvider_GetConfigValue(t *testing.T) {
 		ExcludeNodes:                    []string{"node1", "node2"},
 		ExcludeExitNodes:                []string{"exit1"},
 		EnableCircuitPadding:            true,
+		ReducedCircuitPadding:           true,
+		ConnectionPadding:               "auto",
+		SafeSocks:                       true,
+		TestSocks:                       true,
 		PaddingStrategy:                 "random",
 		PaddingMinInterval:              3 * time.Second,
 		PaddingMaxInterval:              10 * time.Second,
@@ -153,6 +157,11 @@ func TestClientConfigProvider_GetConfigValue(t *testing.T) {
 		{"ExcludeNodes", "ExcludeNodes", "node1,node2", true},
 		{"ExcludeExitNodes", "ExcludeExitNodes", "exit1", true},
 		{"EnableCircuitPadding", "EnableCircuitPadding", "1", true},
+		{"CircuitPadding", "CircuitPadding", "1", true},
+		{"ReducedCircuitPadding", "ReducedCircuitPadding", "1", true},
+		{"ConnectionPadding", "ConnectionPadding", "auto", true},
+		{"SafeSocks", "SafeSocks", "1", true},
+		{"TestSocks", "TestSocks", "1", true},
 		{"PaddingStrategy", "PaddingStrategy", "random", true},
 		{"PaddingMinInterval", "PaddingMinInterval", "3s", true},
 		{"PaddingMaxInterval", "PaddingMaxInterval", "10s", true},
@@ -384,6 +393,17 @@ func TestClientConfigProvider_SetConfigValue(t *testing.T) {
 			},
 		},
 		{
+			name:    "CircuitPadding aliases EnableCircuitPadding",
+			key:     "CircuitPadding",
+			value:   "1",
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				if !cfg.EnableCircuitPadding {
+					t.Errorf("CircuitPadding 应写入 EnableCircuitPadding")
+				}
+			},
+		},
+		{
 			name:    "PaddingStrategy valid",
 			key:     "PaddingStrategy",
 			value:   "adaptive",
@@ -581,6 +601,18 @@ func TestClientConfigProvider_SetConfigValue(t *testing.T) {
 			name:    "FamilyID requires restart",
 			key:     "FamilyID",
 			value:   "ed25519:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+			wantErr: true,
+		},
+		{
+			name:    "SafeSocks requires restart",
+			key:     "SafeSocks",
+			value:   "1",
+			wantErr: true,
+		},
+		{
+			name:    "ConnectionPadding requires restart",
+			key:     "ConnectionPadding",
+			value:   "0",
 			wantErr: true,
 		},
 		{
