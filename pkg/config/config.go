@@ -100,6 +100,10 @@ type Config struct {
 	DoSConnectionConnectRate         int           // 0=跟共识，否则覆盖；共识缺省 20
 	DoSConnectionConnectBurst        int           // 0=跟共识，否则覆盖；共识缺省 40
 	DoSConnectionConnectDefenseTime  time.Duration // 0=跟共识，否则覆盖；共识缺省 24h
+	DoSStreamCreationEnabled         int           // auto/0/1
+	DoSStreamCreationRate            int           // 0=跟共识，否则覆盖；共识缺省 100
+	DoSStreamCreationBurst           int           // 0=跟共识，否则覆盖；共识缺省 300
+	DoSStreamCreationDefenseType     int           // 0=跟共识；1=无动作 2=RELAY_END 3=DESTROY
 	DoSRefuseSingleHopClient         bool          // 默认 false
 
 	// Relay / OR（中继）设置；ORPort>0 时 gotor 以中继模式启动 OR 监听
@@ -331,6 +335,10 @@ func DefaultConfig() *Config {
 		DoSConnectionConnectRate:         0,
 		DoSConnectionConnectBurst:        0,
 		DoSConnectionConnectDefenseTime:  0,
+		DoSStreamCreationEnabled:         DoSEnabledAuto,
+		DoSStreamCreationRate:            0,
+		DoSStreamCreationBurst:           0,
+		DoSStreamCreationDefenseType:     0,
 		DoSRefuseSingleHopClient:         false,
 		DormantTimeout:                   24 * time.Hour,
 		ORPort:                           0,
@@ -786,6 +794,20 @@ func validateDoSFields(c *Config) error {
 	}
 	if c.DoSConnectionConnectDefenseTime < 0 {
 		return fmt.Errorf("DoSConnectionConnectDefenseTimePeriod must be non-negative")
+	}
+	if c.DoSStreamCreationEnabled != DoSEnabledAuto &&
+		c.DoSStreamCreationEnabled != DoSEnabledOff &&
+		c.DoSStreamCreationEnabled != DoSEnabledOn {
+		return fmt.Errorf("DoSStreamCreationEnabled must be auto, 0, or 1")
+	}
+	if c.DoSStreamCreationRate < 0 {
+		return fmt.Errorf("DoSStreamCreationRate must be non-negative")
+	}
+	if c.DoSStreamCreationBurst < 0 {
+		return fmt.Errorf("DoSStreamCreationBurst must be non-negative")
+	}
+	if c.DoSStreamCreationDefenseType < 0 || c.DoSStreamCreationDefenseType > 3 {
+		return fmt.Errorf("DoSStreamCreationDefenseType must be 0..3")
 	}
 	return nil
 }

@@ -1,9 +1,9 @@
 # 中继官方级 DoS（最小切片）
 
 **日期**：2026-08-20  
-**状态**：PARTIAL（官方 `DoS*` 键 + CREATE2/连接接线 + **auto 跟共识** + **ConnectRate/Burst**；**无** StreamCreation）
+**状态**：PARTIAL（官方 `DoS*` 键 + CREATE2/连接接线 + **auto 跟共识** + **ConnectRate/Burst** + **StreamCreation**；无 AUTHENTICATE 单跳区分）
 
-对照：C Tor `src/core/or/dos.c`、man `DoSCircuitCreation*` / `DoSConnection*` / `DoSRefuseSingleHopClient`。
+对照：C Tor `src/core/or/dos.c`、man `DoSCircuitCreation*` / `DoSConnection*` / `DoSStreamCreation*` / `DoSRefuseSingleHopClient`。
 
 ## 本切片已做
 
@@ -14,10 +14,10 @@
 - `DoSRefuseSingleHopClient 1`：从未**成功** EXTEND（下一跳已登记）的电路上 `BEGIN` / `BEGIN_DIR` / `RESOLVE` 则 DESTROY。截断或失败的 EXTEND2 不打标。
 - 入站 OR 与 `CircuitHandler.handleCreate2` 已接线（不再只停在未接入的 `ProtectionManager`）。
 - **2026-09-19**：`Enabled=auto` 读共识 `DoSCircuitCreationEnabled` / `DoSConnectionEnabled`（0–1，缺省 0）。`DoSConnectionConnectRate` / `Burst` / `ConnectDefenseTimePeriod`：torrc `0` 跟共识（缺省 20/40/24h）；桶空进入防御窗。gotor 拉共识后 `SetDoSConsensusParams`。
+- **2026-09-19**：`DoSStreamCreationEnabled` auto 跟共识；每电路 `BEGIN`/`BEGIN_DIR`/`RESOLVE` 令牌桶（缺省 100/300）。`DefenseType`：1 无动作、2 `RELAY_END` MISC、3 `DESTROY` RESOURCELIMIT（缺省 2）。无 StreamCreation 防御时间窗（C Tor 也没有）。
 
 ## 明确未做
 
-- `DoSStreamCreation*`
 - 按「是否已 AUTHENTICATE 为中继」区分单跳（本切片只看是否 EXTEND 过）
 - `DoSCircuitCreationDefenseType` 除拒绝以外的类型
 - 宣称「已对齐完整 dos.c」或审计文档里的「100% DoS」

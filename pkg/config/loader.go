@@ -461,6 +461,34 @@ func processConfigOption(cfg *Config, key, value string, st *loadState) error {
 		}
 		cfg.DoSConnectionConnectDefenseTime = d
 
+	case "DoSStreamCreationEnabled":
+		n, err := parseDoSEnabled(value)
+		if err != nil {
+			return fmt.Errorf("invalid DoSStreamCreationEnabled: %w", err)
+		}
+		cfg.DoSStreamCreationEnabled = n
+
+	case "DoSStreamCreationRate":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("invalid DoSStreamCreationRate value: %s", value)
+		}
+		cfg.DoSStreamCreationRate = n
+
+	case "DoSStreamCreationBurst":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("invalid DoSStreamCreationBurst value: %s", value)
+		}
+		cfg.DoSStreamCreationBurst = n
+
+	case "DoSStreamCreationDefenseType":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 || n > 3 {
+			return fmt.Errorf("invalid DoSStreamCreationDefenseType value: %s", value)
+		}
+		cfg.DoSStreamCreationDefenseType = n
+
 	case "DoSRefuseSingleHopClient":
 		cfg.DoSRefuseSingleHopClient = parseBool(value)
 
@@ -1256,6 +1284,10 @@ func SaveToFile(path string, cfg *Config) error {
 	fmt.Fprintf(writer, "DoSConnectionConnectRate %d\n", cfg.DoSConnectionConnectRate)
 	fmt.Fprintf(writer, "DoSConnectionConnectBurst %d\n", cfg.DoSConnectionConnectBurst)
 	fmt.Fprintf(writer, "DoSConnectionConnectDefenseTimePeriod %s\n", formatDuration(cfg.DoSConnectionConnectDefenseTime))
+	fmt.Fprintf(writer, "DoSStreamCreationEnabled %s\n", FormatDoSEnabled(cfg.DoSStreamCreationEnabled))
+	fmt.Fprintf(writer, "DoSStreamCreationRate %d\n", cfg.DoSStreamCreationRate)
+	fmt.Fprintf(writer, "DoSStreamCreationBurst %d\n", cfg.DoSStreamCreationBurst)
+	fmt.Fprintf(writer, "DoSStreamCreationDefenseType %d\n", cfg.DoSStreamCreationDefenseType)
 	fmt.Fprintf(writer, "DoSRefuseSingleHopClient %s\n", formatBool(cfg.DoSRefuseSingleHopClient))
 	fmt.Fprintf(writer, "DormantTimeout %s\n\n", formatDuration(cfg.DormantTimeout))
 

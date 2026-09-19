@@ -4,6 +4,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -56,6 +57,9 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 		if err := h.refuseSingleHopIfNeeded(circ, clientConn); err != nil {
 			return err
 		}
+		if err := h.applyStreamDoS(circ, clientConn, relayCell.StreamID); err != nil {
+			return err
+		}
 		if h.circuits.exits == nil {
 			return h.rejectExitAttempt(circ, clientConn, relayCell.StreamID)
 		}
@@ -65,6 +69,9 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 		if err := h.refuseSingleHopIfNeeded(circ, clientConn); err != nil {
 			return err
 		}
+		if err := h.applyStreamDoS(circ, clientConn, relayCell.StreamID); err != nil {
+			return err
+		}
 		if h.circuits.exits == nil {
 			return h.rejectExitAttempt(circ, clientConn, relayCell.StreamID)
 		}
@@ -72,6 +79,9 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 
 	case cell.RelayResolve:
 		if err := h.refuseSingleHopIfNeeded(circ, clientConn); err != nil {
+			return err
+		}
+		if err := h.applyStreamDoS(circ, clientConn, relayCell.StreamID); err != nil {
 			return err
 		}
 		if h.circuits.exits == nil {
@@ -151,6 +161,48 @@ func (h *ForwardingHandler) refuseSingleHopIfNeeded(circ *ServerCircuit, clientC
 	}
 	h.circuits.CloseCircuit(circ.CircuitID)
 	return fmt.Errorf("single-hop client refused")
+}
+
+// applyStreamDoS 对齐 C Tor dos_stream_new_begin_or_resolve_cell：桶空则 RELAY_END MISC 或 DESTROY RESOURCELIMIT。
+func (h *ForwardingHandler) applyStreamDoS(circ *ServerCircuit, clientConn net.Conn, streamID uint16) error {
+	if h.circuits == nil || h.circuits.dos == nil || circ == nil {
+		return nil
+	}
+	err := h.circuits.dos.AllowBeginOrResolve(circ.CircuitID)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, errDoSStreamClose) {
+		h.logger.Warn("DoSStreamCreation: DESTROY", "circuit_id", circ.CircuitID)
+		if clientConn != nil {
+			_ = h.circuits.sendDestroyCell(clientConn, circ.CircuitID, cell.DestroyReasonResourceLimit)
+		}
+		h.circuits.CloseCircuit(circ.CircuitID)
+		return err
+	}
+	h.logger.Warn("DoSStreamCreation: RELAY_END", "circuit_id", circ.CircuitID, "stream_id", streamID)
+	if sendErr := h.sendStreamDoSEnd(circ, clientConn, streamID); sendErr != nil {
+		return sendErr
+	}
+	return errDoSStreamRefuse
+}
+
+func (h *ForwardingHandler) sendStreamDoSEnd(circ *ServerCircuit, clientConn net.Conn, streamID uint16) error {
+	if circ.crypto == nil || clientConn == nil {
+		return nil
+	}
+	rc, err := cell.NewRelayCell(streamID, cell.RelayEnd, []byte{cell.EndReasonMisc})
+	if err != nil {
+		return err
+	}
+	circ.mu.Lock()
+	defer circ.mu.Unlock()
+	enc, err := circ.crypto.originateRelay(rc)
+	if err != nil {
+		return err
+	}
+	out := &cell.Cell{CircID: circ.CircuitID, Command: cell.CmdRelay, Payload: enc}
+	return out.Encode(clientConn)
 }
 
 // rejectExitAttempt sends RELAY_END with EXITPOLICY reason

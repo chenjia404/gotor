@@ -11,56 +11,77 @@ import (
 
 // DoS 拒绝原因（CREATE2 走 DESTROY RESOURCELIMIT；连接在 accept 处关闭）。
 var (
-	errDoSConnection  = fmt.Errorf("DoS: concurrent OR connections from this address")
-	errDoSConnectRate = fmt.Errorf("DoS: connection rate exceeded")
-	errDoSCircuit     = fmt.Errorf("DoS: circuit creation rate exceeded")
+	errDoSConnection   = fmt.Errorf("DoS: concurrent OR connections from this address")
+	errDoSConnectRate  = fmt.Errorf("DoS: connection rate exceeded")
+	errDoSCircuit      = fmt.Errorf("DoS: circuit creation rate exceeded")
+	errDoSStreamRefuse = fmt.Errorf("DoS: stream creation rate exceeded")
+	errDoSStreamClose  = fmt.Errorf("DoS: stream creation rate exceeded, closing circuit")
 )
 
 // 连接速率默认值对齐 C Tor dos.c：Rate 20、Burst 40、防御窗 24h。
+// 流创建：Rate 100、Burst 300；DefenseType 2=拒绝流。
 const (
 	dosConnConnectRateDefault    = 20
 	dosConnConnectBurstDefault   = 40
 	dosConnConnectDefenseDefault = 24 * time.Hour
 	dosParamMax                  = 1<<31 - 1
 	dosConnDefenseMinSec         = 10
+	dosStreamRateDefault         = 100
+	dosStreamBurstDefault        = 300
+	dosStreamDefenseNone         = 1
+	dosStreamDefenseRefuse       = 2
+	dosStreamDefenseClose        = 3
 )
 
 // DoSConfig 是接线用的已解析开关。Enabled=auto 且无共识时调用方应把 Enabled 置 false。
 type DoSConfig struct {
 	CircuitEnabled  bool
 	ConnEnabled     bool
+	StreamEnabled   bool
 	RefuseSingleHop bool
 	MinConnections  int
 	Rate            int
 	Burst           int
 	Defense         time.Duration
 	MaxConcurrent   int
+	StreamRate      int
+	StreamBurst     int
+	StreamDefense   int
 }
 
-// DoSGuard 对齐 C Tor dos.c 的最小切片：每 IP 并发 OR + 连接速率桶 + CREATE2 令牌桶 + 单跳拒绝开关。
-// auto 跟共识 DoSCircuitCreationEnabled / DoSConnectionEnabled。不是完整 dos.c（无 StreamCreation）。
-// 不是 ProtectionManager（那套未接到 CREATE2，也不解析官方 DoS* 键）。
+// DoSGuard 对齐 C Tor dos.c 的最小切片：每 IP 并发 OR + 连接速率桶 + CREATE2 令牌桶 + 每电路流创建桶 + 单跳拒绝。
+// auto 跟共识 DoSCircuitCreationEnabled / DoSConnectionEnabled / DoSStreamCreationEnabled。
+// 不是完整 dos.c（无 AUTHENTICATE 单跳区分）。不是 ProtectionManager。
 type DoSGuard struct {
-	circOn       bool
-	connOn       bool
-	refuseHop    bool
-	circMode     int
-	connMode     int
-	minConns     int
-	rate         float64
-	burst        float64
-	defense      time.Duration
-	maxConns     int
-	connRate     float64
-	connBurst    float64
-	connDef      time.Duration
-	connRateCfg  int
-	connBurstCfg int
-	connDefCfg   time.Duration
-	mu           sync.Mutex
-	ips          map[string]*dosIP
-	lastPurge    time.Time
-	nowFn        func() time.Time
+	circOn         bool
+	connOn         bool
+	streamOn       bool
+	refuseHop      bool
+	circMode       int
+	connMode       int
+	streamMode     int
+	minConns       int
+	rate           float64
+	burst          float64
+	defense        time.Duration
+	maxConns       int
+	connRate       float64
+	connBurst      float64
+	connDef        time.Duration
+	connRateCfg    int
+	connBurstCfg   int
+	connDefCfg     time.Duration
+	streamRate     float64
+	streamBurst    float64
+	streamDef      int
+	streamRateCfg  int
+	streamBurstCfg int
+	streamDefCfg   int
+	mu             sync.Mutex
+	ips            map[string]*dosIP
+	circStreams    map[uint32]*dosCircStream
+	lastPurge      time.Time
+	nowFn          func() time.Time
 }
 
 type dosIP struct {
@@ -73,6 +94,11 @@ type dosIP struct {
 	connMarked  time.Time
 }
 
+type dosCircStream struct {
+	tokens float64
+	last   time.Time
+}
+
 // NewDoSGuardFromConfig 构造守卫。Enabled=auto 时先关，等 ApplyConsensus 读共识 DoS*。
 // 显式 0 保持关；显式 1 立即开。始终返回非空对象，以便后续跟共识。
 func NewDoSGuardFromConfig(cfg *config.Config) *DoSGuard {
@@ -82,24 +108,35 @@ func NewDoSGuardFromConfig(cfg *config.Config) *DoSGuard {
 	g := NewDoSGuard(DoSConfig{
 		CircuitEnabled:  cfg.DoSCircuitCreationEnabled == config.DoSEnabledOn,
 		ConnEnabled:     cfg.DoSConnectionEnabled == config.DoSEnabledOn,
+		StreamEnabled:   cfg.DoSStreamCreationEnabled == config.DoSEnabledOn,
 		RefuseSingleHop: cfg.DoSRefuseSingleHopClient,
 		MinConnections:  cfg.DoSCircuitCreationMinConnections,
 		Rate:            cfg.DoSCircuitCreationRate,
 		Burst:           cfg.DoSCircuitCreationBurst,
 		Defense:         cfg.DoSCircuitCreationDefenseTime,
 		MaxConcurrent:   cfg.DoSConnectionMaxConcurrentCount,
+		StreamRate:      cfg.DoSStreamCreationRate,
+		StreamBurst:     cfg.DoSStreamCreationBurst,
+		StreamDefense:   cfg.DoSStreamCreationDefenseType,
 	})
 	if g == nil {
 		return nil
 	}
 	g.circMode = cfg.DoSCircuitCreationEnabled
 	g.connMode = cfg.DoSConnectionEnabled
+	g.streamMode = cfg.DoSStreamCreationEnabled
 	g.connRateCfg = cfg.DoSConnectionConnectRate
 	g.connBurstCfg = cfg.DoSConnectionConnectBurst
 	g.connDefCfg = cfg.DoSConnectionConnectDefenseTime
+	g.streamRateCfg = cfg.DoSStreamCreationRate
+	g.streamBurstCfg = cfg.DoSStreamCreationBurst
+	g.streamDefCfg = cfg.DoSStreamCreationDefenseType
 	g.connRate = dosConnConnectRateDefault
 	g.connBurst = dosConnConnectBurstDefault
 	g.connDef = dosConnConnectDefenseDefault
+	g.streamRate = dosStreamRateDefault
+	g.streamBurst = dosStreamBurstDefault
+	g.streamDef = dosStreamDefenseRefuse
 	if g.connRateCfg > 0 {
 		g.connRate = float64(g.connRateCfg)
 	}
@@ -109,11 +146,20 @@ func NewDoSGuardFromConfig(cfg *config.Config) *DoSGuard {
 	if g.connDefCfg > 0 {
 		g.connDef = g.connDefCfg
 	}
+	if g.streamRateCfg > 0 {
+		g.streamRate = float64(g.streamRateCfg)
+	}
+	if g.streamBurstCfg > 0 {
+		g.streamBurst = float64(g.streamBurstCfg)
+	}
+	if g.streamDefCfg >= dosStreamDefenseNone && g.streamDefCfg <= dosStreamDefenseClose {
+		g.streamDef = g.streamDefCfg
+	}
 	return g
 }
 
-// ApplyConsensus 在 Enabled=auto 时用共识 DoSCircuitCreationEnabled / DoSConnectionEnabled（0–1，缺省 0）。
-// 显式 0/1 不被共识覆盖。ConnectRate/Burst/Defense 在 torrc 为 0 时跟共识，否则用配置。
+// ApplyConsensus 在 Enabled=auto 时用共识 DoSCircuitCreationEnabled / DoSConnectionEnabled / DoSStreamCreationEnabled（0–1，缺省 0）。
+// 显式 0/1 不被共识覆盖。ConnectRate/Burst/Defense 与 Stream Rate/Burst/DefenseType 在 torrc 为 0 时跟共识。
 func (g *DoSGuard) ApplyConsensus(params map[string]int) {
 	if g == nil {
 		return
@@ -122,6 +168,7 @@ func (g *DoSGuard) ApplyConsensus(params map[string]int) {
 	defer g.mu.Unlock()
 	g.circOn = dosModeEnabled(g.circMode, params, "DoSCircuitCreationEnabled")
 	g.connOn = dosModeEnabled(g.connMode, params, "DoSConnectionEnabled")
+	g.streamOn = dosModeEnabled(g.streamMode, params, "DoSStreamCreationEnabled")
 	rate := dosConnConnectRateDefault
 	burst := dosConnConnectBurstDefault
 	if g.connRateCfg > 0 {
@@ -142,6 +189,22 @@ func (g *DoSGuard) ApplyConsensus(params map[string]int) {
 		sec := clampDoSParam(params, "DoSConnectionConnectDefenseTimePeriod",
 			int(dosConnConnectDefenseDefault/time.Second), dosConnDefenseMinSec, dosParamMax)
 		g.connDef = time.Duration(sec) * time.Second
+	}
+	if g.streamRateCfg > 0 {
+		g.streamRate = float64(g.streamRateCfg)
+	} else {
+		g.streamRate = float64(clampDoSParam(params, "DoSStreamCreationRate", dosStreamRateDefault, 1, dosParamMax))
+	}
+	if g.streamBurstCfg > 0 {
+		g.streamBurst = float64(g.streamBurstCfg)
+	} else {
+		g.streamBurst = float64(clampDoSParam(params, "DoSStreamCreationBurst", dosStreamBurstDefault, 1, dosParamMax))
+	}
+	if g.streamDefCfg >= dosStreamDefenseNone && g.streamDefCfg <= dosStreamDefenseClose {
+		g.streamDef = g.streamDefCfg
+	} else {
+		g.streamDef = clampDoSParam(params, "DoSStreamCreationDefenseType",
+			dosStreamDefenseRefuse, dosStreamDefenseNone, dosStreamDefenseClose)
 	}
 }
 
@@ -195,21 +258,38 @@ func NewDoSGuard(cfg DoSConfig) *DoSGuard {
 	if def <= 0 {
 		def = time.Hour
 	}
+	streamRate := cfg.StreamRate
+	if streamRate < 1 {
+		streamRate = dosStreamRateDefault
+	}
+	streamBurst := cfg.StreamBurst
+	if streamBurst < 1 {
+		streamBurst = dosStreamBurstDefault
+	}
+	streamDef := cfg.StreamDefense
+	if streamDef < dosStreamDefenseNone || streamDef > dosStreamDefenseClose {
+		streamDef = dosStreamDefenseRefuse
+	}
 	g := &DoSGuard{
-		circOn:    cfg.CircuitEnabled,
-		connOn:    cfg.ConnEnabled,
-		refuseHop: cfg.RefuseSingleHop,
-		minConns:  minC,
-		rate:      float64(rate),
-		burst:     float64(burst),
-		defense:   def,
-		maxConns:  maxC,
-		connRate:  dosConnConnectRateDefault,
-		connBurst: dosConnConnectBurstDefault,
-		connDef:   dosConnConnectDefenseDefault,
-		ips:       make(map[string]*dosIP),
-		lastPurge: time.Now(),
-		nowFn:     time.Now,
+		circOn:      cfg.CircuitEnabled,
+		connOn:      cfg.ConnEnabled,
+		streamOn:    cfg.StreamEnabled,
+		refuseHop:   cfg.RefuseSingleHop,
+		minConns:    minC,
+		rate:        float64(rate),
+		burst:       float64(burst),
+		defense:     def,
+		maxConns:    maxC,
+		connRate:    dosConnConnectRateDefault,
+		connBurst:   dosConnConnectBurstDefault,
+		connDef:     dosConnConnectDefenseDefault,
+		streamRate:  float64(streamRate),
+		streamBurst: float64(streamBurst),
+		streamDef:   streamDef,
+		ips:         make(map[string]*dosIP),
+		circStreams: make(map[uint32]*dosCircStream),
+		lastPurge:   time.Now(),
+		nowFn:       time.Now,
 	}
 	if cfg.CircuitEnabled {
 		g.circMode = config.DoSEnabledOn
@@ -220,6 +300,11 @@ func NewDoSGuard(cfg DoSConfig) *DoSGuard {
 		g.connMode = config.DoSEnabledOn
 	} else {
 		g.connMode = config.DoSEnabledOff
+	}
+	if cfg.StreamEnabled {
+		g.streamMode = config.DoSEnabledOn
+	} else {
+		g.streamMode = config.DoSEnabledOff
 	}
 	return g
 }
@@ -309,6 +394,59 @@ func (g *DoSGuard) AllowCreate2(ip string) error {
 	}
 	st.markedUntil = now.Add(g.defense)
 	return errDoSCircuit
+}
+
+// AllowBeginOrResolve 每电路 BEGIN/BEGIN_DIR/RESOLVE 令牌桶。桶空时按 DefenseType 拒绝流或拆路。
+func (g *DoSGuard) AllowBeginOrResolve(circID uint32) error {
+	if g == nil || !g.streamOn || circID == 0 {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := g.now()
+	st := g.getCircStreamLocked(circID, now)
+	elapsed := now.Sub(st.last).Seconds()
+	if elapsed > 0 {
+		st.tokens += elapsed * g.streamRate
+		if st.tokens > g.streamBurst {
+			st.tokens = g.streamBurst
+		}
+		st.last = now
+	}
+	if st.tokens >= 1 {
+		st.tokens--
+		return nil
+	}
+	switch g.streamDef {
+	case dosStreamDefenseNone:
+		return nil
+	case dosStreamDefenseClose:
+		return errDoSStreamClose
+	default:
+		return errDoSStreamRefuse
+	}
+}
+
+// OnCircuitClose 丢掉该电路的流创建桶。
+func (g *DoSGuard) OnCircuitClose(circID uint32) {
+	if g == nil || circID == 0 {
+		return
+	}
+	g.mu.Lock()
+	delete(g.circStreams, circID)
+	g.mu.Unlock()
+}
+
+func (g *DoSGuard) getCircStreamLocked(circID uint32, now time.Time) *dosCircStream {
+	if g.circStreams == nil {
+		g.circStreams = make(map[uint32]*dosCircStream)
+	}
+	st, ok := g.circStreams[circID]
+	if !ok {
+		st = &dosCircStream{tokens: g.streamBurst, last: now}
+		g.circStreams[circID] = st
+	}
+	return st
 }
 
 func (g *DoSGuard) getLocked(ip string) *dosIP {

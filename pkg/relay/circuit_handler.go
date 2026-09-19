@@ -345,6 +345,9 @@ func (h *CircuitHandler) CloseCircuit(circuitID uint32) {
 	if h.exits != nil {
 		h.exits.CloseCircuit(circuitID)
 	}
+	if h.dos != nil {
+		h.dos.OnCircuitClose(circuitID)
+	}
 	if h.forwarder != nil {
 		if circ != nil {
 			h.forwarder.forgetHS(circ)

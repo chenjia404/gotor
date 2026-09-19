@@ -98,6 +98,8 @@ func TestLoadTorrcDoSOfficialKeys(t *testing.T) {
 		"DoSConnectionEnabled auto\nDoSConnectionMaxConcurrentCount 50\n" +
 		"DoSConnectionConnectRate 20\nDoSConnectionConnectBurst 40\n" +
 		"DoSConnectionConnectDefenseTimePeriod 86400 seconds\n" +
+		"DoSStreamCreationEnabled 1\nDoSStreamCreationRate 100\n" +
+		"DoSStreamCreationBurst 300\nDoSStreamCreationDefenseType 2\n" +
 		"DoSRefuseSingleHopClient 1\nConnLimit 2000\n"
 	if err := os.WriteFile(torrc, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -126,6 +128,12 @@ func TestLoadTorrcDoSOfficialKeys(t *testing.T) {
 	}
 	if cfg.DoSConnectionConnectDefenseTime != 24*time.Hour {
 		t.Fatalf("connect defense %s", cfg.DoSConnectionConnectDefenseTime)
+	}
+	if cfg.DoSStreamCreationEnabled != DoSEnabledOn {
+		t.Fatalf("stream enabled %d", cfg.DoSStreamCreationEnabled)
+	}
+	if cfg.DoSStreamCreationRate != 100 || cfg.DoSStreamCreationBurst != 300 || cfg.DoSStreamCreationDefenseType != 2 {
+		t.Fatalf("stream params rate=%d burst=%d type=%d", cfg.DoSStreamCreationRate, cfg.DoSStreamCreationBurst, cfg.DoSStreamCreationDefenseType)
 	}
 	if cfg.ConnLimit != 2000 {
 		t.Fatalf("ConnLimit 语义被改写: %d", cfg.ConnLimit)

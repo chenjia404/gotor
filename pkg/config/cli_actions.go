@@ -173,6 +173,10 @@ func DumpConfig(cfg *Config, mode string) string {
 		{"DoSConnectionConnectRate", fmt.Sprintf("%d", cfg.DoSConnectionConnectRate)},
 		{"DoSConnectionConnectBurst", fmt.Sprintf("%d", cfg.DoSConnectionConnectBurst)},
 		{"DoSConnectionConnectDefenseTimePeriod", formatDuration(cfg.DoSConnectionConnectDefenseTime)},
+		{"DoSStreamCreationEnabled", FormatDoSEnabled(cfg.DoSStreamCreationEnabled)},
+		{"DoSStreamCreationRate", fmt.Sprintf("%d", cfg.DoSStreamCreationRate)},
+		{"DoSStreamCreationBurst", fmt.Sprintf("%d", cfg.DoSStreamCreationBurst)},
+		{"DoSStreamCreationDefenseType", fmt.Sprintf("%d", cfg.DoSStreamCreationDefenseType)},
 		{"DoSRefuseSingleHopClient", formatBool(cfg.DoSRefuseSingleHopClient)},
 	}
 	defMap := map[string]string{
@@ -235,6 +239,10 @@ func DumpConfig(cfg *Config, mode string) string {
 		"DoSConnectionConnectRate":              fmt.Sprintf("%d", defaults.DoSConnectionConnectRate),
 		"DoSConnectionConnectBurst":             fmt.Sprintf("%d", defaults.DoSConnectionConnectBurst),
 		"DoSConnectionConnectDefenseTimePeriod": formatDuration(defaults.DoSConnectionConnectDefenseTime),
+		"DoSStreamCreationEnabled":              FormatDoSEnabled(defaults.DoSStreamCreationEnabled),
+		"DoSStreamCreationRate":                 fmt.Sprintf("%d", defaults.DoSStreamCreationRate),
+		"DoSStreamCreationBurst":                fmt.Sprintf("%d", defaults.DoSStreamCreationBurst),
+		"DoSStreamCreationDefenseType":          fmt.Sprintf("%d", defaults.DoSStreamCreationDefenseType),
 		"DoSRefuseSingleHopClient":              formatBool(defaults.DoSRefuseSingleHopClient),
 	}
 

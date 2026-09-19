@@ -19,11 +19,11 @@ func TestNewDoSGuardFromConfigAutoIsOff(t *testing.T) {
 	if g == nil {
 		t.Fatal("auto 也应构造守卫以便后续跟共识")
 	}
-	if g.circOn || g.connOn {
+	if g.circOn || g.connOn || g.streamOn {
 		t.Fatal("auto 且无共识时不得启用 DoS 子系统")
 	}
 	g.ApplyConsensus(nil)
-	if g.circOn || g.connOn {
+	if g.circOn || g.connOn || g.streamOn {
 		t.Fatal("无共识参数仍应保持关闭")
 	}
 }
@@ -223,29 +223,33 @@ func TestDoSGuardApplyConsensusAutoAndExplicit(t *testing.T) {
 	g.ApplyConsensus(map[string]int{
 		"DoSCircuitCreationEnabled": 1,
 		"DoSConnectionEnabled":      1,
+		"DoSStreamCreationEnabled":  1,
 	})
-	if !g.circOn || !g.connOn {
+	if !g.circOn || !g.connOn || !g.streamOn {
 		t.Fatal("auto 应跟共识打开")
 	}
 	g.ApplyConsensus(map[string]int{
 		"DoSCircuitCreationEnabled": 0,
 		"DoSConnectionEnabled":      0,
+		"DoSStreamCreationEnabled":  0,
 	})
-	if g.circOn || g.connOn {
+	if g.circOn || g.connOn || g.streamOn {
 		t.Fatal("共识改回 0 时 auto 应关闭")
 	}
 
 	cfg.DoSCircuitCreationEnabled = config.DoSEnabledOn
 	cfg.DoSConnectionEnabled = config.DoSEnabledOff
+	cfg.DoSStreamCreationEnabled = config.DoSEnabledOff
 	g = NewDoSGuardFromConfig(cfg)
 	g.ApplyConsensus(map[string]int{
 		"DoSCircuitCreationEnabled": 0,
 		"DoSConnectionEnabled":      1,
+		"DoSStreamCreationEnabled":  1,
 	})
 	if !g.circOn {
 		t.Fatal("显式 1 不得被共识 0 关掉")
 	}
-	if g.connOn {
+	if g.connOn || g.streamOn {
 		t.Fatal("显式 0 不得被共识 1 打开")
 	}
 }
@@ -310,5 +314,131 @@ func TestDoSGuardConnectRateDoesNotChangeConnLimit(t *testing.T) {
 		if err := g.OnConnect("198.51.100.42"); err != nil {
 			t.Fatalf("auto 关闭时连接速率不得拒绝: %v", err)
 		}
+	}
+}
+
+func TestDoSGuardStreamCreationTokenBucket(t *testing.T) {
+	now := time.Date(2026, 9, 19, 13, 0, 0, 0, time.UTC)
+	g := NewDoSGuard(DoSConfig{
+		StreamEnabled: true,
+		StreamRate:    1,
+		StreamBurst:   1,
+		StreamDefense: dosStreamDefenseRefuse,
+	})
+	g.nowFn = func() time.Time { return now }
+	if err := g.AllowBeginOrResolve(7); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.AllowBeginOrResolve(7); !errors.Is(err, errDoSStreamRefuse) {
+		t.Fatalf("同电路桶空应拒绝流: %v", err)
+	}
+	if err := g.AllowBeginOrResolve(8); err != nil {
+		t.Fatal("其它电路有独立桶")
+	}
+	now = now.Add(time.Second)
+	if err := g.AllowBeginOrResolve(7); err != nil {
+		t.Fatalf("补令牌后应允许: %v", err)
+	}
+}
+
+func TestDoSGuardStreamCreationDefenseTypes(t *testing.T) {
+	closeG := NewDoSGuard(DoSConfig{
+		StreamEnabled: true,
+		StreamRate:    1,
+		StreamBurst:   1,
+		StreamDefense: dosStreamDefenseClose,
+	})
+	_ = closeG.AllowBeginOrResolve(3)
+	if err := closeG.AllowBeginOrResolve(3); !errors.Is(err, errDoSStreamClose) {
+		t.Fatalf("type 3 应拆路: %v", err)
+	}
+
+	none := NewDoSGuard(DoSConfig{
+		StreamEnabled: true,
+		StreamRate:    1,
+		StreamBurst:   1,
+		StreamDefense: dosStreamDefenseNone,
+	})
+	_ = none.AllowBeginOrResolve(3)
+	if err := none.AllowBeginOrResolve(3); err != nil {
+		t.Fatalf("type 1 桶空仍应放行: %v", err)
+	}
+}
+
+func TestDoSGuardStreamCreationTorrcOverridesConsensus(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DoSStreamCreationEnabled = config.DoSEnabledOn
+	cfg.DoSStreamCreationRate = 2
+	cfg.DoSStreamCreationBurst = 2
+	cfg.DoSStreamCreationDefenseType = dosStreamDefenseRefuse
+	g := NewDoSGuardFromConfig(cfg)
+	g.ApplyConsensus(map[string]int{
+		"DoSStreamCreationRate":  1,
+		"DoSStreamCreationBurst": 1,
+	})
+	if err := g.AllowBeginOrResolve(9); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.AllowBeginOrResolve(9); err != nil {
+		t.Fatalf("torrc burst=2 应允许第二次: %v", err)
+	}
+	if err := g.AllowBeginOrResolve(9); !errors.Is(err, errDoSStreamRefuse) {
+		t.Fatalf("第三次应拒绝: %v", err)
+	}
+}
+
+func TestApplyStreamDoSClosesCircuit(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Destroy()
+	h := NewCircuitHandler(keys, nil)
+	h.SetDoS(NewDoSGuard(DoSConfig{
+		StreamEnabled: true,
+		StreamRate:    1,
+		StreamBurst:   1,
+		StreamDefense: dosStreamDefenseClose,
+	}))
+	circ := &ServerCircuit{CircuitID: 7}
+	h.mu.Lock()
+	h.circuits[7] = circ
+	h.mu.Unlock()
+	if err := h.forwarder.applyStreamDoS(circ, nil, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.forwarder.applyStreamDoS(circ, nil, 2); !errors.Is(err, errDoSStreamClose) {
+		t.Fatalf("type 3 应得 DESTROY: %v", err)
+	}
+	if h.GetCircuitCount() != 0 {
+		t.Fatal("DefenseType 3 应拆掉电路")
+	}
+}
+
+func TestApplyStreamDoSRefuseKeepsCircuit(t *testing.T) {
+	keys, err := GenerateRelayKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Destroy()
+	h := NewCircuitHandler(keys, nil)
+	h.SetDoS(NewDoSGuard(DoSConfig{
+		StreamEnabled: true,
+		StreamRate:    1,
+		StreamBurst:   1,
+		StreamDefense: dosStreamDefenseRefuse,
+	}))
+	circ := &ServerCircuit{CircuitID: 11}
+	h.mu.Lock()
+	h.circuits[11] = circ
+	h.mu.Unlock()
+	if err := h.forwarder.applyStreamDoS(circ, nil, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.forwarder.applyStreamDoS(circ, nil, 2); !errors.Is(err, errDoSStreamRefuse) {
+		t.Fatalf("type 2 应得 RELAY_END: %v", err)
+	}
+	if h.GetCircuitCount() != 1 {
+		t.Fatal("拒绝流不得拆路")
 	}
 }

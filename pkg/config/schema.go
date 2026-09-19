@@ -201,6 +201,26 @@ func GenerateJSONSchema() (*JSONSchema, error) {
 				Description: "Connect-rate defense window; 0 follows consensus (default 24h)",
 				Default:     "0s",
 			},
+			"DoSStreamCreationEnabled": {
+				Type:        "integer",
+				Description: "DoS per-circuit BEGIN/RESOLVE defense: -1=auto, 0=off, 1=on",
+				Default:     -1,
+			},
+			"DoSStreamCreationRate": {
+				Type:        "integer",
+				Description: "Per-circuit stream creation rate; 0 follows consensus (default 100)",
+				Default:     0,
+			},
+			"DoSStreamCreationBurst": {
+				Type:        "integer",
+				Description: "Per-circuit stream creation burst; 0 follows consensus (default 300)",
+				Default:     0,
+			},
+			"DoSStreamCreationDefenseType": {
+				Type:        "integer",
+				Description: "1=none 2=RELAY_END 3=DESTROY; 0 follows consensus (default 2)",
+				Default:     0,
+			},
 			"DoSRefuseSingleHopClient": {
 				Type:        "boolean",
 				Description: "DESTROY circuits that send BEGIN/BEGIN_DIR/RESOLVE without ever EXTEND",

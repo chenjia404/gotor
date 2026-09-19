@@ -380,6 +380,8 @@ func KnownTorrcOptions() []string {
 		"DoSConnectionEnabled", "DoSConnectionMaxConcurrentCount",
 		"DoSConnectionConnectRate", "DoSConnectionConnectBurst",
 		"DoSConnectionConnectDefenseTimePeriod",
+		"DoSStreamCreationEnabled", "DoSStreamCreationRate",
+		"DoSStreamCreationBurst", "DoSStreamCreationDefenseType",
 		"DoSRefuseSingleHopClient",
 		"ClientUseIPv4", "ClientUseIPv6", "ClientPreferIPv6ORPort",
 		"MapAddress", "AutomapHostsOnResolve", "AutomapHostsSuffixes",
