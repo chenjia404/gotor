@@ -722,7 +722,9 @@ func (s *Service) createDescriptor() error {
 	s.logger.Info("Descriptor created",
 		"descriptor_id", fmt.Sprintf("%x", descriptorID[:8]),
 		"intro_points", len(introPoints),
-		"lifetime", s.config.DescriptorLifetime)
+		"lifetime", s.config.DescriptorLifetime,
+		"pow_enabled", s.config != nil && s.config.PoWDefensesEnabled,
+		"pow_effort", powEffortLog(desc.PoWParams))
 
 	return nil
 }

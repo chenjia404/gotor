@@ -299,5 +299,18 @@ func (s *Service) verifyIntroducePoW(req *Introduce2Request, blinded []byte) err
 	if matched == nil {
 		return fmt.Errorf("seed-head 与服务种子不符")
 	}
-	return VerifyOnionPoW(proof, matched, blinded)
+	if err := VerifyOnionPoW(proof, matched, blinded); err != nil {
+		return err
+	}
+	s.logger.Info("INTRODUCE2 PoW verified",
+		"effort", proof.Effort,
+		"suggested", matched.SuggestedEffort)
+	return nil
+}
+
+func powEffortLog(p *PoWParams) uint32 {
+	if p == nil {
+		return 0
+	}
+	return p.SuggestedEffort
 }

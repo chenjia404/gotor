@@ -2145,6 +2145,14 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 	if err != nil {
 		return 0, fmt.Errorf("onion pow: %w", err)
 	}
+	if desc.PoWParams != nil && desc.PoWParams.SuggestedEffort > 0 {
+		if proof == nil {
+			return 0, fmt.Errorf("onion pow: suggested-effort %d 但未得到证明", desc.PoWParams.SuggestedEffort)
+		}
+		c.logger.Info("Onion PoW solved",
+			"effort", proof.Effort,
+			"suggested", desc.PoWParams.SuggestedEffort)
+	}
 	req.PoW = proof
 
 	introduce1Data, err := intro.BuildIntroduce1Cell(req)
