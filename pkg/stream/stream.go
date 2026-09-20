@@ -456,6 +456,42 @@ func (m *Manager) Count() int {
 	return len(m.streams)
 }
 
+// StreamSnapshot 是 GETINFO stream-status 用的只读快照。
+type StreamSnapshot struct {
+	ID        uint16
+	CircuitID uint32
+	Target    string
+	Port      uint16
+	State     State
+}
+
+// ListSnapshots 返回未关闭流的快照。CLOSED 已从 map 删除的不会出现。
+func (m *Manager) ListSnapshots() []StreamSnapshot {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]StreamSnapshot, 0, len(m.streams))
+	for _, s := range m.streams {
+		if s == nil {
+			continue
+		}
+		st := s.GetState()
+		if st == StateClosed {
+			continue
+		}
+		out = append(out, StreamSnapshot{
+			ID:        s.ID,
+			CircuitID: s.CircuitID,
+			Target:    s.Target,
+			Port:      s.Port,
+			State:     st,
+		})
+	}
+	return out
+}
+
 // SetIsolationKey sets the isolation key for a stream
 func (s *Stream) SetIsolationKey(key *circuit.IsolationKey) {
 	s.mu.Lock()

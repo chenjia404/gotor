@@ -84,6 +84,11 @@ type CircuitStatusSource interface {
 	GetCircuitStatus() string
 }
 
+// StreamStatusSource 提供 GETINFO stream-status。未实现则返回空（无流）。
+type StreamStatusSource interface {
+	GetStreamStatus() string
+}
+
 // RouterDocSource 提供 GETINFO ns/id 与 desc/id。未找到对应文档时调用方回 551。
 type RouterDocSource interface {
 	LookupNS(id string) (string, bool)
@@ -640,6 +645,12 @@ func (s *Server) lookupGetInfo(key string, stats StatsProvider) (string, int, st
 		}
 		return "", 250, ""
 	}
+	if key == "stream-status" {
+		if src, ok := s.clientGetter.(StreamStatusSource); ok {
+			return src.GetStreamStatus(), 250, ""
+		}
+		return "", 250, ""
+	}
 	if rest, ok := strings.CutPrefix(key, "ns/id/"); ok {
 		if rest == "" {
 			return "", 551, "Not found"
@@ -772,6 +783,7 @@ func (s *Server) getInfoNames() string {
 		"net/listeners/or",
 		"net/listeners/dir",
 		"circuit-status",
+		"stream-status",
 		"ns/id/",
 		"desc/id/",
 		"info/names",

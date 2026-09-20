@@ -38,6 +38,7 @@ type mockClientGetter struct {
 	configText          string
 	config              map[string]string
 	circuitStatus       string
+	streamStatus        string
 	nsByID              map[string]string
 	descByID            map[string]string
 }
@@ -182,6 +183,10 @@ func (m *mockClientGetter) GetConfigText() string {
 
 func (m *mockClientGetter) GetCircuitStatus() string {
 	return m.circuitStatus
+}
+
+func (m *mockClientGetter) GetStreamStatus() string {
+	return m.streamStatus
 }
 
 func (m *mockClientGetter) LookupNS(id string) (string, bool) {
@@ -921,6 +926,7 @@ func TestGetInfoNames(t *testing.T) {
 		"net/listeners/or",
 		"config-text",
 		"circuit-status",
+		"stream-status",
 		"info/names",
 	}
 

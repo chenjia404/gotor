@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/circuit"
 	"github.com/opd-ai/go-tor/pkg/onion"
+	"github.com/opd-ai/go-tor/pkg/stream"
 )
 
 // Dial 经 Tor 打开 host:port。成功返回时已收到 RELAY_CONNECTED。
@@ -46,6 +48,7 @@ func (s *Server) dialOnion(ctx context.Context, host string, port uint16) (net.C
 	if err != nil {
 		return nil, fmt.Errorf("RELAY_BEGIN to onion: %w", err)
 	}
+	s.trackDialStream(sc, circ.ID, host, port)
 	return sc, nil
 }
 
@@ -78,5 +81,37 @@ func (s *Server) dialExit(ctx context.Context, host string, port uint16) (net.Co
 		circuitPool.Put(circ)
 		return nil, err
 	}
+	s.trackDialStream(sc, circ.ID, host, port)
 	return sc, nil
+}
+
+// trackDialStream 把 HTTP CONNECT / Dial 成功的流登记进 streamMgr，供 GETINFO stream-status。
+func (s *Server) trackDialStream(sc *circuit.StreamConn, circuitID uint32, host string, port uint16) {
+	if s == nil || sc == nil || s.streamMgr == nil {
+		return
+	}
+	sid := sc.StreamID()
+	if sid == 0 {
+		return
+	}
+	strm, err := s.streamMgr.CreateStreamWithID(sid, circuitID, host, port)
+	if err != nil {
+		s.logger.Debug("stream-status 未登记 Dial 流", "error", err)
+		return
+	}
+	strm.SetState(stream.StateConnected)
+	target := net.JoinHostPort(host, strconv.Itoa(int(port)))
+	s.publishStream(uint32(sid), circuitID, "SUCCEEDED", target)
+	sc.AfterClose(func() {
+		_ = s.streamMgr.RemoveStream(circuitID, sid)
+		s.publishStream(uint32(sid), circuitID, "CLOSED", target)
+	})
+}
+
+// ListStreamSnapshots 返回 SOCKS / HTTP CONNECT 当前未关闭的流。
+func (s *Server) ListStreamSnapshots() []stream.StreamSnapshot {
+	if s == nil || s.streamMgr == nil {
+		return nil
+	}
+	return s.streamMgr.ListSnapshots()
 }

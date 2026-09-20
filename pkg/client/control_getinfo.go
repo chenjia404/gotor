@@ -1,16 +1,24 @@
 package client
 
 import (
+	"net"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/opd-ai/go-tor/pkg/circuit"
 	"github.com/opd-ai/go-tor/pkg/control"
 	"github.com/opd-ai/go-tor/pkg/directory"
+	"github.com/opd-ai/go-tor/pkg/onion"
+	"github.com/opd-ai/go-tor/pkg/stream"
 )
 
 func (a *clientStatsAdapter) GetCircuitStatus() string {
 	return a.client.controlCircuitStatus()
+}
+
+func (a *clientStatsAdapter) GetStreamStatus() string {
+	return a.client.controlStreamStatus()
 }
 
 func (a *clientStatsAdapter) LookupNS(id string) (string, bool) {
@@ -46,6 +54,66 @@ func (c *Client) controlCircuitStatus() string {
 		lines = append(lines, control.FormatCircuitStatusLine(id, status, path, flags, purpose, circ.CreatedAt))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (c *Client) controlStreamStatus() string {
+	if c == nil || c.socksServer == nil {
+		return ""
+	}
+	snaps := c.socksServer.ListStreamSnapshots()
+	sort.Slice(snaps, func(i, j int) bool {
+		if snaps[i].CircuitID != snaps[j].CircuitID {
+			return snaps[i].CircuitID < snaps[j].CircuitID
+		}
+		return snaps[i].ID < snaps[j].ID
+	})
+	var lines []string
+	for _, sn := range snaps {
+		status, purpose := controlStreamMeta(sn.State, sn.Target)
+		if status == "" {
+			continue
+		}
+		target := controlStreamTarget(sn.Target, sn.Port)
+		lines = append(lines, control.FormatStreamStatusLine(sn.ID, status, sn.CircuitID, target, purpose, ""))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func controlStreamMeta(st stream.State, target string) (status, purpose string) {
+	switch st {
+	case stream.StateNew:
+		status = "NEW"
+	case stream.StateConnecting:
+		status = "SENTCONNECT"
+	case stream.StateConnected:
+		status = "SUCCEEDED"
+	case stream.StateFailed:
+		status = "FAILED"
+	default:
+		return "", ""
+	}
+	purpose = "USER"
+	host := target
+	if h, _, err := net.SplitHostPort(target); err == nil {
+		host = h
+	}
+	if onion.IsOnionAddress(host) || strings.HasSuffix(strings.ToLower(host), ".onion") {
+		purpose = "HS_CLIENT"
+	}
+	return status, purpose
+}
+
+func controlStreamTarget(host string, port uint16) string {
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return host
+	}
+	if port == 0 {
+		return host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(int(port)))
 }
 
 func (c *Client) controlNS(id string) (string, bool) {

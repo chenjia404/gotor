@@ -30,6 +30,17 @@ func TestFormatCircuitStatusLine(t *testing.T) {
 	}
 }
 
+func TestFormatStreamStatusLine(t *testing.T) {
+	got := FormatStreamStatusLine(15, "SUCCEEDED", 7, "example.com:80", "USER", "")
+	if got != "15 SUCCEEDED 7 example.com:80 PURPOSE=USER" {
+		t.Fatalf("%s", got)
+	}
+	got = FormatStreamStatusLine(2, "FAILED", 1, "example.com:443", "USER", "TIMEOUT")
+	if got != "2 FAILED 1 example.com:443 REASON=TIMEOUT PURPOSE=USER" {
+		t.Fatalf("%s", got)
+	}
+}
+
 func TestGetInfoCircuitStatusPlusData(t *testing.T) {
 	server, mock := setupTestServer(t)
 	mock.circuitStatus = "1 BUILT $AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA~a,$BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB~b BUILD_FLAGS=NEED_CAPACITY PURPOSE=GENERAL TIME_CREATED=2024-01-01T12:00:00.000000\n2 BUILT $CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC~c BUILD_FLAGS=ONEHOP_TUNNEL,IS_INTERNAL PURPOSE=GENERAL TIME_CREATED=2024-01-01T12:00:01.000000"
@@ -55,6 +66,35 @@ func TestGetInfoCircuitStatusPlusData(t *testing.T) {
 		body = append(body, line)
 	}
 	if len(body) != 2 || !strings.HasPrefix(body[0], "1 BUILT ") || !strings.HasPrefix(body[1], "2 BUILT ") {
+		t.Fatalf("%q", body)
+	}
+}
+
+func TestGetInfoStreamStatusPlusData(t *testing.T) {
+	server, mock := setupTestServer(t)
+	mock.streamStatus = "15 SUCCEEDED 7 example.com:80 PURPOSE=USER\n16 SENTCONNECT 7 example.net:443 PURPOSE=USER"
+	conn := connectToServer(t, server)
+	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+	readResponse(t, reader)
+	writer.WriteString("AUTHENTICATE\r\n")
+	writer.Flush()
+	readResponse(t, reader)
+	writer.WriteString("GETINFO stream-status\r\n")
+	writer.Flush()
+	header := readResponse(t, reader)
+	if header != "250+stream-status=" {
+		t.Fatalf("header %s", header)
+	}
+	var body []string
+	for {
+		line := readResponse(t, reader)
+		if line == "." {
+			break
+		}
+		body = append(body, line)
+	}
+	if len(body) != 2 || body[0] != "15 SUCCEEDED 7 example.com:80 PURPOSE=USER" || body[1] != "16 SENTCONNECT 7 example.net:443 PURPOSE=USER" {
 		t.Fatalf("%q", body)
 	}
 }

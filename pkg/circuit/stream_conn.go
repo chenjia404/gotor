@@ -99,6 +99,28 @@ func (s *StreamConn) Close() error {
 func (s *StreamConn) LocalAddr() net.Addr  { return streamAddr("tor-stream") }
 func (s *StreamConn) RemoteAddr() net.Addr { return streamAddr("tor-exit") }
 
+// StreamID 是本连接占用的电路 StreamID。
+func (s *StreamConn) StreamID() uint16 {
+	if s == nil {
+		return 0
+	}
+	return s.id
+}
+
+// AfterClose 在已有 onClose 之后追加清理（例如 stream.Manager.RemoveStream）。
+func (s *StreamConn) AfterClose(fn func()) {
+	if s == nil || fn == nil {
+		return
+	}
+	prev := s.onClose
+	s.onClose = func() {
+		if prev != nil {
+			prev()
+		}
+		fn()
+	}
+}
+
 func (s *StreamConn) SetDeadline(t time.Time) error {
 	_ = t
 	return nil

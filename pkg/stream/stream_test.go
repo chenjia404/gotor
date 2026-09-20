@@ -307,6 +307,24 @@ func TestManagerConcurrentOperations(t *testing.T) {
 	}
 }
 
+func TestListSnapshotsSkipsClosed(t *testing.T) {
+	mgr := NewManager(logger.NewDefault())
+	a, err := mgr.CreateStreamWithID(1, 10, "example.com", 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := mgr.CreateStreamWithID(2, 10, "example.net", 443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.SetState(StateConnected)
+	b.SetState(StateClosed)
+	got := mgr.ListSnapshots()
+	if len(got) != 1 || got[0].ID != 1 || got[0].State != StateConnected {
+		t.Fatalf("%+v", got)
+	}
+}
+
 func TestStateString(t *testing.T) {
 	tests := []struct {
 		state    State

@@ -97,6 +97,24 @@ func FormatCircuitStatusLine(id uint32, status, path, buildFlags, purpose string
 	return strings.Join(parts, " ")
 }
 
+// FormatStreamStatusLine 是 GETINFO stream-status 的一行，等于 STREAM 事件去掉 "650 STREAM "。
+func FormatStreamStatusLine(streamID uint16, status string, circID uint32, target, purpose, reason string) string {
+	if status == "" {
+		status = "NEW"
+	}
+	if target == "" {
+		target = "0.0.0.0:0"
+	}
+	parts := []string{fmt.Sprintf("%d %s %d %s", streamID, status, circID, target)}
+	if reason != "" {
+		parts = append(parts, "REASON="+reason)
+	}
+	if purpose != "" {
+		parts = append(parts, "PURPOSE="+purpose)
+	}
+	return strings.Join(parts, " ")
+}
+
 // StreamEvent represents a stream status change event
 // Format: 650 STREAM <StreamID> <Status> <CircuitID> <Target>
 type StreamEvent struct {

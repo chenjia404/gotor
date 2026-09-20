@@ -87,6 +87,7 @@ GETINFO key [key ...]
 | `config-file` | 实际 torrc 路径；未从文件加载则为空（不用 DataDirectory 冒充） | `/etc/tor/torrc` |
 | `config-text` | `--dump-config short`（非默认项）；含换行时用 250+ | `Nickname gotorRelay` |
 | `circuit-status` | 每条电路一行，格式同 CIRC 事件去掉 `650 CIRC `；无电路为空 | `7 BUILT $FP~nick,... PURPOSE=GENERAL` |
+| `stream-status` | 每条活动流一行，格式同 STREAM 事件去掉 `650 STREAM `；无流为空。SOCKS CONNECT 与 HTTP CONNECT Dial 登记；洋葱 SOCKS 旧路径未登记 | `15 SUCCEEDED 7 example.com:80 PURPOSE=USER` |
 | `ns/id/<OR identity>` | 共识对该中继的 v3 router status（microdesc 为 8 字段 r 行 + m）；找不到 551 | `r nickname ident ...` |
 | `desc/id/<OR identity>` | server descriptor。默认只拉 microdesc，故 551 Descriptor is not available | （551） |
 
@@ -282,7 +283,7 @@ with Controller.from_port(port=9051) as controller:
 | Basic protocol server | ✅ Complete |
 | PROTOCOLINFO command | ✅ Complete |
 | AUTHENTICATE command | ✅ Complete (NULL auth only) |
-| GETINFO command | ✅ Partial（含 circuit-status / ns/id / desc/id；无 ns/all、md/id、stream-status） |
+| GETINFO command | ✅ Partial（含 circuit-status / stream-status / ns/id / desc/id；无 ns/all、md/id） |
 | GETCONF command | ✅ 已实现键返回当前值（含 HTTPTunnelPort/DNSPort） |
 | SETCONF command | ✅ 可写子集立即生效；监听端口需重启 |
 | SETEVENTS command | ✅ Complete |
