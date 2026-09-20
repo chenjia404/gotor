@@ -282,7 +282,7 @@ with Controller.from_port(port=9051) as controller:
 | Basic protocol server | ✅ Complete |
 | PROTOCOLINFO command | ✅ Complete |
 | AUTHENTICATE command | ✅ Complete (NULL auth only) |
-| GETINFO command | ✅ Partial (core keys implemented) |
+| GETINFO command | ✅ Partial（含 circuit-status / ns/id / desc/id；无 ns/all、md/id、stream-status） |
 | GETCONF command | ✅ 已实现键返回当前值（含 HTTPTunnelPort/DNSPort） |
 | SETCONF command | ✅ 可写子集立即生效；监听端口需重启 |
 | SETEVENTS command | ✅ Complete |
