@@ -17,7 +17,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	mrand "math/rand"
 	"net"
 	"strings"
 	"sync"
@@ -2302,7 +2301,7 @@ func (rp *RendezvousProtocol) SelectRendezvousPoint(relays []*HSDirectory) (*HSD
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no suitable rendezvous candidates")
 	}
-	selected := candidates[mrand.Intn(len(candidates))]
+	selected := candidates[cryptoIntn(len(candidates))]
 
 	rp.logger.Debug("Selected rendezvous point",
 		"candidates", len(candidates),

@@ -381,6 +381,31 @@ func (d *DirCacheServer) readCachedFlavor(flavor directory.ConsensusFlavor) (str
 }
 
 func (d *DirCacheServer) readCachedFile(name string) (string, bool) {
+	path, ok := d.safeCachePath(name)
+	if !ok {
+		return "", false
+	}
+	data, err := os.ReadFile(path) // #nosec G304,G703 -- 仅允许 CacheDirectory 固定文件名
+	if err != nil || len(data) == 0 || len(data) > maxDirServeBytes {
+		return "", false
+	}
+	return string(data), true
+}
+
+func (d *DirCacheServer) cachedModTime(name string) time.Time {
+	path, ok := d.safeCachePath(name)
+	if !ok {
+		return time.Time{}
+	}
+	st, err := os.Stat(path) // #nosec G703 -- 仅 CacheDirectory 下固定文件名
+	if err != nil {
+		return time.Time{}
+	}
+	return st.ModTime()
+}
+
+// safeCachePath 只允许 CacheDirectory 下的相对固定名，拒绝 .. 逃逸。
+func (d *DirCacheServer) safeCachePath(name string) (string, bool) {
 	if d.cacheDir == "" {
 		return "", false
 	}
@@ -389,22 +414,7 @@ func (d *DirCacheServer) readCachedFile(name string) (string, bool) {
 	if !strings.HasPrefix(path, base+string(os.PathSeparator)) && path != base {
 		return "", false
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- 仅允许 CacheDirectory 固定文件名
-	if err != nil || len(data) == 0 || len(data) > maxDirServeBytes {
-		return "", false
-	}
-	return string(data), true
-}
-
-func (d *DirCacheServer) cachedModTime(name string) time.Time {
-	if d.cacheDir == "" {
-		return time.Time{}
-	}
-	st, err := os.Stat(filepath.Join(d.cacheDir, name))
-	if err != nil {
-		return time.Time{}
-	}
-	return st.ModTime()
+	return path, true
 }
 
 func consensusLastModified(doc string, fallback time.Time) time.Time {
