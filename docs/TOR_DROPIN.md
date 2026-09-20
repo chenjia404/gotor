@@ -51,7 +51,7 @@ gotor --version                   # Tor version 0.4.9.11 (gotor).
 | RunAsDaemon | Unix re-exec；Windows 警告 |
 | ClientOnly | 与 ExitRelay/ORPort 冲突则拒绝 |
 | DisableNetwork | 起监听，不拉共识/不建路 |
-| HTTPTunnelPort | HTTP CONNECT，经电路转发；复用 SafeSocks/RejectInternal/MapAddress；非回环绑定告警 |
+| HTTPTunnelPort | HTTP CONNECT，经电路转发；`unix:` 监听；复用 SafeSocks/RejectInternal/MapAddress；**RELAY_CONNECTED 成功后才 200**；失败 403/502/504；非回环绑定告警。不接受 GET（curl 对 HTTPS 会自动 CONNECT） |
 | DNSPort | UDP DNS，经 RELAY_RESOLVE，禁止本机 DNS；非回环绑定告警 |
 | CookieAuthentication / CookieAuthFile | `control_auth_cookie` 0600 |
 | HashedControlPassword | RFC2440 S2K |

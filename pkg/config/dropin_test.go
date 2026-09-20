@@ -300,3 +300,22 @@ func TestCloneCopiesNewSlices(t *testing.T) {
 		t.Fatal("clone alias")
 	}
 }
+
+func TestHTTPTunnelPortUnix(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "torrc")
+	sock := filepath.Join(dir, "ht.sock")
+	if err := os.WriteFile(main, []byte("HTTPTunnelPort unix:\""+sock+"\"\nSocksPort 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultCLIConfig()
+	if err := LoadFromFile(main, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTPTunnelUnixPath != sock || cfg.HTTPTunnelPort != 0 {
+		t.Fatalf("unix %q port %d", cfg.HTTPTunnelUnixPath, cfg.HTTPTunnelPort)
+	}
+	if !cfg.HTTPTunnelEnabled() {
+		t.Fatal("HTTPTunnelEnabled")
+	}
+}

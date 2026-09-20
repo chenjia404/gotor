@@ -39,6 +39,7 @@ type Config struct {
 	DisableNetwork         bool   // 起监听但不拉共识/不建电路
 	HTTPTunnelPort         int    // HTTP CONNECT 隧道端口（0=关闭）
 	HTTPTunnelListenAddr   string // HTTPTunnelPort 绑定地址
+	HTTPTunnelUnixPath     string // HTTPTunnelPort unix:/path
 	DNSPort                int    // UDP DNS 端口（0=关闭）
 	DNSPortListenAddr      string // DNSPort 绑定地址
 	ControlSocket          string // Control 的 unix socket 路径

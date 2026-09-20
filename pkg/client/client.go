@@ -1088,7 +1088,7 @@ func (c *Client) GetStats() Stats {
 		UptimeSeconds:       metricsSnap.UptimeSeconds,
 		SocksListener:       listenerFromConfig(c.config.SocksListenAddr, c.config.SocksPort, c.config.SocksUnixPath, c.config.SocksUnixPath != ""),
 		ControlListener:     listenerFromConfig(c.config.ControlListenAddr, c.config.ControlPort, c.config.ControlSocket, c.config.ControlSocket != "" && c.config.ControlPort <= 0),
-		HTTPTunnelListener:  listenerFromConfig(c.config.HTTPTunnelListenAddr, c.config.HTTPTunnelPort, "", false),
+		HTTPTunnelListener:  c.httpTunnelListener(),
 		DNSListener:         listenerFromConfig(c.config.DNSPortListenAddr, c.config.DNSPort, "", false),
 		ORListener:          orDirListener(c.config.ORListenAddr, orPort),
 		DirListener:         orDirListener(c.config.DirListenAddr, dirPort),
@@ -1302,6 +1302,18 @@ func listenerFromConfig(host string, port int, unixPath string, unixTakesOver bo
 		host = "127.0.0.1"
 	}
 	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+func (c *Client) httpTunnelListener() string {
+	if c.httpTunnel != nil {
+		if a := c.httpTunnel.Addr(); a != nil {
+			return a.String()
+		}
+	}
+	if c.config == nil {
+		return ""
+	}
+	return listenerFromConfig(c.config.HTTPTunnelListenAddr, c.config.HTTPTunnelPort, c.config.HTTPTunnelUnixPath, c.config.HTTPTunnelUnixPath != "")
 }
 
 // PublishEvent publishes an event to the control protocol

@@ -53,6 +53,11 @@ func (c *Config) SocksEnabled() bool {
 	return c != nil && (c.SocksPort > 0 || c.SocksUnixPath != "")
 }
 
+// HTTPTunnelEnabled 表示需要启动 HTTP CONNECT 隧道。
+func (c *Config) HTTPTunnelEnabled() bool {
+	return c != nil && (c.HTTPTunnelPort > 0 || c.HTTPTunnelUnixPath != "")
+}
+
 // ControlEnabled 表示需要启动控制口（TCP 端口或 ControlSocket）。
 func (c *Config) ControlEnabled() bool {
 	return c != nil && (c.ControlPort > 0 || c.ControlSocket != "")
@@ -127,6 +132,7 @@ func DumpConfig(cfg *Config, mode string) string {
 		{"ClientOnly", formatBool(cfg.ClientOnly)},
 		{"DisableNetwork", formatBool(cfg.DisableNetwork)},
 		{"HTTPTunnelPort", fmt.Sprintf("%d", cfg.HTTPTunnelPort)},
+		{"HTTPTunnelUnixPath", cfg.HTTPTunnelUnixPath},
 		{"DNSPort", fmt.Sprintf("%d", cfg.DNSPort)},
 		{"CookieAuthentication", formatBool(cfg.CookieAuthentication)},
 		{"CookieAuthFile", cfg.CookieAuthFile},
@@ -194,6 +200,7 @@ func DumpConfig(cfg *Config, mode string) string {
 		"ClientOnly":                            formatBool(defaults.ClientOnly),
 		"DisableNetwork":                        formatBool(defaults.DisableNetwork),
 		"HTTPTunnelPort":                        fmt.Sprintf("%d", defaults.HTTPTunnelPort),
+		"HTTPTunnelUnixPath":                    defaults.HTTPTunnelUnixPath,
 		"DNSPort":                               fmt.Sprintf("%d", defaults.DNSPort),
 		"CookieAuthentication":                  formatBool(defaults.CookieAuthentication),
 		"CookieAuthFile":                        defaults.CookieAuthFile,

@@ -1,9 +1,12 @@
 // Package httptunnel 实现 C Tor HTTPTunnelPort：HTTP CONNECT，经电路转发。
+// 对齐 C Tor：只接受 CONNECT；RELAY_CONNECTED 成功后才回 200；失败映射 403/502/504。
+// 不实现 Arti prop 365 扩展头（P2）。
 package httptunnel
 
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,23 +15,25 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/opd-ai/go-tor/pkg/datadir"
 	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
-// StreamFunc 把已建立的客户端连接接到目标 host:port（经 Tor 电路）。
-// 实现方禁止对本机做 DNS。
-type StreamFunc func(ctx context.Context, conn net.Conn, host string, port uint16) error
+// DialFunc 在回复 200 之前建立电路流。实现方禁止对本机做 DNS。
+type DialFunc func(ctx context.Context, host string, port uint16) (net.Conn, error)
 
-// CheckFunc 在回复 200 之前改写或拒绝目标（MapAddress / SafeSocks 等）。
+// CheckFunc 在拨号之前改写或拒绝目标（MapAddress / SafeSocks 等）。
 type CheckFunc func(host string, port uint16) (string, uint16, error)
+
+const connectedReply = "HTTP/1.0 200 Connection established\r\n\r\n"
 
 // Server 是 HTTP CONNECT 隧道。
 type Server struct {
 	network string
 	address string
-	stream  StreamFunc
+	dial    DialFunc
 	check   CheckFunc
 	logger  *logger.Logger
 	ln      net.Listener
@@ -40,14 +45,14 @@ func (s *Server) SetCheck(fn CheckFunc) {
 	s.check = fn
 }
 
-func New(addr string, stream StreamFunc, log *logger.Logger) *Server {
+func New(addr string, dial DialFunc, log *logger.Logger) *Server {
 	if log == nil {
 		log = logger.NewDefault()
 	}
 	return &Server{
 		network: "tcp",
 		address: addr,
-		stream:  stream,
+		dial:    dial,
 		logger:  log.Component("httptunnel"),
 	}
 }
@@ -59,8 +64,8 @@ func (s *Server) SetUnix(path string) {
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
-	if s.stream == nil {
-		return fmt.Errorf("httptunnel: stream handler required")
+	if s.dial == nil {
+		return fmt.Errorf("httptunnel: dial handler required")
 	}
 	if s.network == "unix" {
 		if err := datadir.PrepareUnixSocket(s.address); err != nil {
@@ -109,29 +114,84 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		s.logger.Debug("httptunnel read request", "error", err)
 		return
 	}
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
 	if req.Method != http.MethodConnect {
-		_, _ = io.WriteString(conn, "HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n")
+		writeStatus(conn, 405)
 		return
 	}
-	host, port, err := splitHostPortDefault(req.Host, 443)
+	target := connectAuthority(req)
+	host, port, err := splitHostPortDefault(target, 443)
 	if err != nil {
-		_, _ = io.WriteString(conn, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+		writeStatus(conn, 400)
 		return
 	}
 	if s.check != nil {
 		host, port, err = s.check(host, port)
 		if err != nil {
-			_, _ = io.WriteString(conn, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
-			s.logger.Debug("httptunnel rejected target", "host", host, "error", err)
+			s.logger.Info("HTTP CONNECT rejected", "host", host, "error", err)
+			writeStatus(conn, 403)
 			return
 		}
 	}
-	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
+	s.logger.Info("HTTP CONNECT", "host", host, "port", port)
+	dialCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	remote, err := s.dial(dialCtx, host, port)
+	cancel()
+	if err != nil {
+		s.logger.Info("HTTP CONNECT failed", "host", host, "port", port, "error", err)
+		writeStatus(conn, statusForDialError(err))
 		return
 	}
-	if err := s.stream(ctx, conn, host, port); err != nil {
-		s.logger.Debug("httptunnel stream", "host", host, "error", err)
+	defer func() { _ = remote.Close() }()
+	if _, err := io.WriteString(conn, connectedReply); err != nil {
+		return
 	}
+	s.logger.Info("HTTP CONNECT established", "host", host, "port", port)
+	client := &prefixConn{Conn: conn, r: io.MultiReader(br, conn)}
+	relayBidir(client, remote)
+}
+
+func connectAuthority(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	if req.URL != nil && req.URL.Host != "" {
+		return req.URL.Host
+	}
+	if req.Host != "" {
+		return req.Host
+	}
+	return req.RequestURI
+}
+
+func statusForDialError(err error) int {
+	if err == nil {
+		return 200
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return 504
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "safesocks"),
+		strings.Contains(msg, "clientrejectinternal"),
+		strings.Contains(msg, "forbidden"),
+		strings.Contains(msg, "disablenetwork"),
+		strings.Contains(msg, "not allowed"):
+		return 403
+	default:
+		return 502
+	}
+}
+
+func writeStatus(w io.Writer, code int) {
+	reason := http.StatusText(code)
+	if reason == "" {
+		reason = "Error"
+	}
+	_, _ = fmt.Fprintf(w, "HTTP/1.0 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", code, reason)
 }
 
 func splitHostPortDefault(hostport string, def uint16) (string, uint16, error) {
@@ -151,6 +211,39 @@ func splitHostPortDefault(hostport string, def uint16) (string, uint16, error) {
 		return "", 0, fmt.Errorf("bad port")
 	}
 	return h, uint16(n), nil
+}
+
+func relayBidir(a, b net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(b, a)
+		_ = closeWrite(b)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(a, b)
+		_ = closeWrite(a)
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
+}
+
+func closeWrite(c net.Conn) error {
+	type cw interface{ CloseWrite() error }
+	if x, ok := c.(cw); ok {
+		return x.CloseWrite()
+	}
+	return c.Close()
+}
+
+type prefixConn struct {
+	net.Conn
+	r io.Reader
+}
+
+func (c *prefixConn) Read(p []byte) (int, error) {
+	return c.r.Read(p)
 }
 
 func (s *Server) Close() error {

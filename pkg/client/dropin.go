@@ -6,7 +6,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/opd-ai/go-tor/pkg/circuit"
 	"github.com/opd-ai/go-tor/pkg/config"
@@ -31,15 +30,21 @@ func mapAddressToMap(entries []config.MapAddressEntry) map[string]string {
 }
 
 func (c *Client) startExtraListeners(ctx context.Context) {
-	if c.config.HTTPTunnelPort > 0 {
-		host := c.config.HTTPTunnelListenAddr
-		if host == "" {
-			host = "127.0.0.1"
+	if c.config.HTTPTunnelEnabled() {
+		ht := httptunnel.New("127.0.0.1:0", c.dialThroughCircuit, c.logger)
+		if c.config.HTTPTunnelUnixPath != "" {
+			ht.SetUnix(c.config.HTTPTunnelUnixPath)
+		} else {
+			host := c.config.HTTPTunnelListenAddr
+			if host == "" {
+				host = "127.0.0.1"
+			}
+			addr := net.JoinHostPort(host, strconv.Itoa(c.config.HTTPTunnelPort))
+			c.warnIfNonLoopback("HTTPTunnelPort", host, addr)
+			ht = httptunnel.New(addr, c.dialThroughCircuit, c.logger)
 		}
-		addr := net.JoinHostPort(host, strconv.Itoa(c.config.HTTPTunnelPort))
-		c.warnIfNonLoopback("HTTPTunnelPort", host, addr)
-		c.httpTunnel = httptunnel.New(addr, c.streamThroughCircuit, c.logger)
-		c.httpTunnel.SetCheck(c.checkHTTPTunnelTarget)
+		ht.SetCheck(c.checkHTTPTunnelTarget)
+		c.httpTunnel = ht
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
@@ -120,63 +125,14 @@ func (c *Client) rewriteAndCheckTarget(host string, port uint16) (string, uint16
 	return host, port, nil
 }
 
-func (c *Client) streamThroughCircuit(ctx context.Context, conn net.Conn, host string, port uint16) error {
-	host, port, err := c.rewriteAndCheckTarget(host, port)
-	if err != nil {
-		return err
+func (c *Client) dialThroughCircuit(ctx context.Context, host string, port uint16) (net.Conn, error) {
+	if c.config != nil && c.config.DisableNetwork {
+		return nil, fmt.Errorf("DisableNetwork is set")
 	}
-	circ, release, err := c.acquireCircuit(ctx, host, port)
-	if err != nil {
-		return err
+	if c.socksServer == nil {
+		return nil, fmt.Errorf("HTTP CONNECT 需要 SOCKS 电路栈")
 	}
-	defer release()
-
-	streamID, err := circ.AllocateStreamID()
-	if err != nil {
-		return err
-	}
-	defer circ.ReleaseStreamID(streamID)
-	if err := circ.OpenStream(ctx, streamID, host, port); err != nil {
-		return err
-	}
-	relayConnThroughCircuit(ctx, conn, circ, streamID)
-	return nil
-}
-
-func relayConnThroughCircuit(ctx context.Context, conn net.Conn, circ *circuit.Circuit, streamID uint16) {
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, circ.RelayDataMax())
-		for {
-			n, err := conn.Read(buf)
-			if n > 0 {
-				if werr := circ.WriteToStream(streamID, buf[:n]); werr != nil {
-					return
-				}
-			}
-			if err != nil {
-				_ = circ.EndStream(streamID, 6)
-				return
-			}
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		for {
-			data, err := circ.ReadFromStream(ctx, streamID)
-			if err != nil {
-				_ = conn.Close()
-				return
-			}
-			if _, err := conn.Write(data); err != nil {
-				_ = circ.EndStream(streamID, 6)
-				return
-			}
-		}
-	}()
-	wg.Wait()
+	return c.socksServer.Dial(ctx, host, port)
 }
 
 func (c *Client) resolveThroughCircuit(ctx context.Context, name string) ([]net.IP, uint32, error) {

@@ -745,11 +745,27 @@ func parseMapAddress(value string) (from, to string, err error) {
 }
 
 func parseHTTPTunnelPort(cfg *Config, value string) error {
-	p, host, err := parsePortOrAddr(value)
+	fields, err := tokenizeQuoted(value)
+	if err != nil {
+		return err
+	}
+	if len(fields) == 0 {
+		return fmt.Errorf("empty HTTPTunnelPort")
+	}
+	addrPort := fields[0]
+	if strings.HasPrefix(addrPort, "unix:") {
+		cfg.HTTPTunnelUnixPath = strings.TrimPrefix(addrPort, "unix:")
+		cfg.HTTPTunnelPort = 0
+		return nil
+	}
+	p, host, err := parsePortOrAddr(addrPort)
 	if err != nil {
 		return fmt.Errorf("invalid HTTPTunnelPort: %w", err)
 	}
 	cfg.HTTPTunnelPort = p
+	if p == 0 {
+		cfg.HTTPTunnelUnixPath = ""
+	}
 	if host != "" {
 		cfg.HTTPTunnelListenAddr = host
 	}
