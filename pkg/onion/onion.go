@@ -1591,6 +1591,8 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 			}
 		}
 
+		var best *Descriptor
+		var encryptedFallback *Descriptor
 		for _, hsdir := range selectedHSDirs {
 			desc, err := h.fetchFromHSDir(ctx, hsdir, blindedPubkey, -1)
 			if err != nil {
@@ -1605,6 +1607,7 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 			h.logger.Info("Successfully fetched descriptor",
 				"address", addr.String(),
 				"hsdir", hsdir.Fingerprint,
+				"revision", desc.RevisionCounter,
 				"attempt", attempt+1)
 
 			desc.Address = addr
@@ -1622,18 +1625,45 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 
 			decryptedDesc, err := DecryptDescriptor(desc, addr, timePeriod)
 			if err != nil {
-				h.logger.Warn("Descriptor decryption failed (may not be encrypted)",
+				h.logger.Warn("Descriptor decryption failed (may need client auth)",
 					"address", addr.String(),
 					"hsdir", hsdir.Fingerprint,
+					"revision", desc.RevisionCounter,
 					"error", err)
-				return desc, nil
+				encryptedFallback = desc
+				lastErr = err
+				continue
+			}
+
+			if len(decryptedDesc.IntroPoints) == 0 {
+				h.logger.Warn("Descriptor decrypted without intro points",
+					"address", addr.String(),
+					"hsdir", hsdir.Fingerprint,
+					"revision", decryptedDesc.RevisionCounter)
+				encryptedFallback = decryptedDesc
+				continue
 			}
 
 			h.logger.Debug("Descriptor decrypted successfully",
 				"address", addr.String(),
-				"intro_points", len(decryptedDesc.IntroPoints))
+				"revision", decryptedDesc.RevisionCounter,
+				"intro_points", len(decryptedDesc.IntroPoints),
+				"pow_effort", powEffortLog(decryptedDesc.PoWParams))
 
-			return decryptedDesc, nil
+			if best == nil || decryptedDesc.RevisionCounter > best.RevisionCounter {
+				best = decryptedDesc
+			}
+		}
+		if best != nil {
+			h.logger.Info("Selected onion descriptor",
+				"address", addr.String(),
+				"revision", best.RevisionCounter,
+				"intro_points", len(best.IntroPoints),
+				"pow_effort", powEffortLog(best.PoWParams))
+			return best, nil
+		}
+		if encryptedFallback != nil {
+			return encryptedFallback, nil
 		}
 	}
 
@@ -2075,6 +2105,30 @@ func (ip *IntroductionProtocol) SendIntroduce1(ctx context.Context, circuitID ui
 	return nil
 }
 
+// establishIntroductionCircuit 依次尝试描述符中的引言点。
+func (c *Client) establishIntroductionCircuit(ctx context.Context, intro *IntroductionProtocol, desc *Descriptor) (*IntroductionPoint, uint32, error) {
+	if desc == nil || len(desc.IntroPoints) == 0 {
+		return nil, 0, fmt.Errorf("no introduction points available")
+	}
+	var lastErr error
+	for i := range desc.IntroPoints {
+		candidate := &desc.IntroPoints[i]
+		circuitID, err := intro.CreateIntroductionCircuit(ctx, candidate, c.circuitBuilder)
+		if err == nil {
+			return candidate, circuitID, nil
+		}
+		lastErr = err
+		c.logger.Warn("Introduction circuit failed, trying next intro point",
+			"index", i,
+			"remaining", len(desc.IntroPoints)-i-1,
+			"error", err)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no introduction points available")
+	}
+	return nil, 0, lastErr
+}
+
 // ConnectToOnionService orchestrates the full connection process to an onion service
 // This combines descriptor fetching, introduction, and rendezvous protocols
 func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint32, error) {
@@ -2086,7 +2140,10 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 		return 0, fmt.Errorf("failed to get descriptor: %w", err)
 	}
 
-	c.logger.Debug("Descriptor retrieved", "intro_points", len(desc.IntroPoints))
+	c.logger.Info("Descriptor retrieved",
+		"intro_points", len(desc.IntroPoints),
+		"revision", desc.RevisionCounter,
+		"pow_effort", powEffortLog(desc.PoWParams))
 
 	// Step 2: Generate cryptographically secure rendezvous cookie
 	rendezvousCookie := make([]byte, 20)
@@ -2105,18 +2162,11 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 		"circuit_id", rendezvousCircuitID,
 		"fingerprint", rendezvousPoint.Fingerprint)
 
-	// Step 4: Select an introduction point
+	// Step 4–5: 轮换引言点建路（过期描述符里的节点可能缺 extend 密钥）
 	intro := NewIntroductionProtocol(c.logger)
-	introPoint, err := intro.SelectIntroductionPoint(desc)
+	introPoint, introCircuitID, err := c.establishIntroductionCircuit(ctx, intro, desc)
 	if err != nil {
-		return 0, fmt.Errorf("failed to select introduction point: %w", err)
-	}
-
-	c.logger.Debug("Introduction point selected")
-
-	// Step 5: Create circuit to introduction point
-	introCircuitID, err := intro.CreateIntroductionCircuit(ctx, introPoint, c.circuitBuilder)
-	if err != nil {
+		c.cache.Remove(addr)
 		return 0, fmt.Errorf("failed to create introduction circuit: %w", err)
 	}
 
