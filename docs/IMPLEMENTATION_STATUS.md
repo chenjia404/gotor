@@ -48,6 +48,7 @@
 | RELAY_BEGIN/CONNECTED/DATA/END | WORKING | 真实 exit 流已拉取 check.torproject.org |
 | SENDME / flow control | WORKING | FlowCtrl=2 TOR_VEGAS；1MB **1059120** + 10MB **10497056** + 多流 **753152** 真实验收；电路未 DESTROY |
 | SOCKS5 | WORKING | SOCKS5 + `https://check.torproject.org/api/ip` 已返回 `IsTor=true` |
+| HTTP CONNECT（HTTPTunnelPort） | WORKING | `curl -x` HTTP 隧道 HTTPS `check.torproject.org/api/ip` 返回 `IsTor=true`；`RELAY_CONNECTED` 之后才 200。不接受 GET。Arti prop 365 扩展头未做 |
 | DNS / RELAY_RESOLVE | WORKING | 真实 3-hop RESOLVE 得 IPv4+IPv6；本机 resolver 不可达仍成功 |
 | Guard / Path selection | WORKING | 选路存在；family-ids（Desc=4）避让已真实验收（抽样 128：with_ids=44；共享 ID 对 InSameFamily；8/8 多样路径）。非测试电路要求 Fast；MiddleOnly 不得作 Guard/Exit；BadExit 不得作 Exit（见 `docs/interop/path-flags.md`） |
 | Exit policy | WORKING | 已解析 `p`/`p6` 与完整 accept/reject；IPv6 字面量按 p6 选路。`TestRealExitPolicyP6` 通过（2026-08-19：抽样 64 Exit，p=64 p6=51，选路 Exit=`eisbaer`） |
