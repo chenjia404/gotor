@@ -86,6 +86,9 @@ GETINFO key [key ...]
 | `net/listeners/dir` | DirPort 实际绑定；未开或 ClientOnly 为空 | `0.0.0.0:9030` |
 | `config-file` | 实际 torrc 路径；未从文件加载则为空（不用 DataDirectory 冒充） | `/etc/tor/torrc` |
 | `config-text` | `--dump-config short`（非默认项）；含换行时用 250+ | `Nickname gotorRelay` |
+| `circuit-status` | 每条电路一行，格式同 CIRC 事件去掉 `650 CIRC `；无电路为空 | `7 BUILT $FP~nick,... PURPOSE=GENERAL` |
+| `ns/id/<OR identity>` | 共识对该中继的 v3 router status（microdesc 为 8 字段 r 行 + m）；找不到 551 | `r nickname ident ...` |
+| `desc/id/<OR identity>` | server descriptor。默认只拉 microdesc，故 551 Descriptor is not available | （551） |
 
 **Example:**
 ```

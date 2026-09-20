@@ -48,7 +48,7 @@ func TestCircuitEventFormat(t *testing.T) {
 				Purpose:     "GENERAL",
 				TimeCreated: time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC),
 			},
-			expected: "650 CIRC 999 BUILT $ABC~A,$DEF~B,$GHI~C BUILD_FLAGS=NEED_CAPACITY PURPOSE=GENERAL TIME_CREATED=2024-01-01T12:00:00Z",
+			expected: "650 CIRC 999 BUILT $ABC~A,$DEF~B,$GHI~C BUILD_FLAGS=NEED_CAPACITY PURPOSE=GENERAL TIME_CREATED=2024-01-01T12:00:00.000000",
 		},
 	}
 

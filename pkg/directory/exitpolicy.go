@@ -115,6 +115,32 @@ func parsePort(s string) (int, error) {
 	return n, nil
 }
 
+// ControlLine 写成共识 p / p6 行（不含前缀时 prefix="p"）。
+func (p *ExitPolicySummary) ControlLine(prefix string) string {
+	if p == nil {
+		return ""
+	}
+	verb := "reject"
+	if p.acceptList {
+		verb = "accept"
+	}
+	parts := make([]string, 0, len(p.ranges))
+	for _, r := range p.ranges {
+		if r.lo == r.hi {
+			parts = append(parts, strconv.Itoa(r.lo))
+		} else {
+			parts = append(parts, fmt.Sprintf("%d-%d", r.lo, r.hi))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	if prefix == "" {
+		prefix = "p"
+	}
+	return prefix + " " + verb + " " + strings.Join(parts, ",")
+}
+
 // Allows 按 dir-spec 摘要语义判断端口。
 func (p *ExitPolicySummary) Allows(port int) bool {
 	if p == nil || port < 1 || port > 65535 {

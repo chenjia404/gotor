@@ -702,10 +702,19 @@ func (c *Client) parseConsensusWithMetadata(r io.Reader) ([]*Relay, *ConsensusMe
 				dirPortIdx = 7
 			}
 
+			pubStr := ""
+			if len(parts) >= 9 {
+				pubStr = parts[4] + " " + parts[5]
+			} else {
+				pubStr = parts[3] + " " + parts[4]
+			}
+			published, _ := time.Parse("2006-01-02 15:04:05", pubStr)
+
 			currentRelay = &Relay{
 				Nickname:    nickname,
 				Fingerprint: fingerprint,
 				Address:     address,
+				Published:   published,
 			}
 			if rsaID, err := DecodeRSAIdentity(fingerprint); err == nil {
 				currentRelay.RSAIdentity = rsaID

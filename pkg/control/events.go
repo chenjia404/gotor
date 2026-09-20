@@ -58,26 +58,42 @@ func (e *CircuitEvent) Type() EventType {
 
 // Format formats the event for transmission
 func (e *CircuitEvent) Format() string {
-	parts := []string{
-		fmt.Sprintf("650 CIRC %d %s", e.CircuitID, e.Status),
-	}
+	return "650 CIRC " + FormatCircuitStatusLine(e.CircuitID, e.Status, e.Path, e.BuildFlags, e.Purpose, e.TimeCreated)
+}
 
-	if e.Path != "" {
-		parts = append(parts, e.Path)
+// LongName 是 control-spec VERBOSE_NAMES：`$` + 40 hex [`~` nickname]。
+func LongName(fingerprint, nickname string) string {
+	fp := strings.ToUpper(strings.TrimPrefix(strings.TrimSpace(fingerprint), "$"))
+	if len(fp) != 40 {
+		return ""
 	}
-
-	if e.BuildFlags != "" {
-		parts = append(parts, fmt.Sprintf("BUILD_FLAGS=%s", e.BuildFlags))
+	for _, c := range fp {
+		if (c < '0' || c > '9') && (c < 'A' || c > 'F') {
+			return ""
+		}
 	}
-
-	if e.Purpose != "" {
-		parts = append(parts, fmt.Sprintf("PURPOSE=%s", e.Purpose))
+	if nickname != "" {
+		return "$" + fp + "~" + nickname
 	}
+	return "$" + fp
+}
 
-	if !e.TimeCreated.IsZero() {
-		parts = append(parts, fmt.Sprintf("TIME_CREATED=%s", e.TimeCreated.Format(time.RFC3339)))
+// FormatCircuitStatusLine 是 GETINFO circuit-status 的一行，等于 CIRC 事件去掉 "650 CIRC "。
+func FormatCircuitStatusLine(id uint32, status, path, buildFlags, purpose string, created time.Time) string {
+	parts := []string{fmt.Sprintf("%d", id), status}
+	if path != "" {
+		parts = append(parts, path)
 	}
-
+	if buildFlags != "" {
+		parts = append(parts, "BUILD_FLAGS="+buildFlags)
+	}
+	if purpose != "" {
+		parts = append(parts, "PURPOSE="+purpose)
+	}
+	if !created.IsZero() {
+		u := created.UTC()
+		parts = append(parts, fmt.Sprintf("TIME_CREATED=%s.%06d", u.Format("2006-01-02T15:04:05"), u.Nanosecond()/1000))
+	}
 	return strings.Join(parts, " ")
 }
 

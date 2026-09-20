@@ -809,16 +809,12 @@ func (c *Client) buildCircuitForTarget(ctx context.Context, target path.ExitTarg
 	}
 
 	// Publish circuit built event
-	circPath := fmt.Sprintf("%s~%s,%s~%s,%s~%s",
-		selectedPath.Guard.Fingerprint, selectedPath.Guard.Nickname,
-		selectedPath.Middle.Fingerprint, selectedPath.Middle.Nickname,
-		selectedPath.Exit.Fingerprint, selectedPath.Exit.Nickname)
-
 	c.PublishEvent(&control.CircuitEvent{
 		CircuitID:   circ.ID,
 		Status:      "BUILT",
-		Path:        circPath,
+		Path:        circuitEventPath(selectedPath.Guard, selectedPath.Middle, selectedPath.Middle2, selectedPath.Exit),
 		Purpose:     "GENERAL",
+		BuildFlags:  "NEED_CAPACITY",
 		TimeCreated: startTime,
 	})
 

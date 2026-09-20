@@ -79,6 +79,17 @@ type ClientInfoGetter interface {
 	GetConfig() ConfigProvider
 }
 
+// CircuitStatusSource 提供 GETINFO circuit-status。未实现则返回空（无电路）。
+type CircuitStatusSource interface {
+	GetCircuitStatus() string
+}
+
+// RouterDocSource 提供 GETINFO ns/id 与 desc/id。未找到对应文档时调用方回 551。
+type RouterDocSource interface {
+	LookupNS(id string) (string, bool)
+	LookupDesc(id string) (string, bool)
+}
+
 // StatsProvider provides statistics information
 type StatsProvider interface {
 	GetActiveCircuits() int
@@ -586,20 +597,20 @@ func (s *Server) handleGetInfo(conn *connection, args []string) {
 
 	var replies []string
 	for i, key := range args {
-		value, ok := s.getInfoValue(key, stats)
-		if !ok {
-			conn.writeReply(552, fmt.Sprintf("Unrecognized key %q", key))
+		value, code, msg := s.lookupGetInfo(key, stats)
+		if code != 250 {
+			conn.writeReply(code, msg)
 			return
 		}
 		if strings.Contains(value, "\n") {
 			replies = append(replies, plusDataReply(key, value)...)
 			continue
 		}
-		code := "250-"
+		prefix := "250-"
 		if i == len(args)-1 {
-			code = "250 "
+			prefix = "250 "
 		}
-		replies = append(replies, fmt.Sprintf("%s%s=%s", code, key, value))
+		replies = append(replies, fmt.Sprintf("%s%s=%s", prefix, key, value))
 	}
 
 	conn.writeDataReply(replies)
@@ -619,6 +630,43 @@ func plusDataReply(key, value string) []string {
 		}
 	}
 	return append(out, ".")
+}
+
+// lookupGetInfo 分辨 250 / 551（键认识但没有值）/ 552（未知键）。
+func (s *Server) lookupGetInfo(key string, stats StatsProvider) (string, int, string) {
+	if key == "circuit-status" {
+		if src, ok := s.clientGetter.(CircuitStatusSource); ok {
+			return src.GetCircuitStatus(), 250, ""
+		}
+		return "", 250, ""
+	}
+	if rest, ok := strings.CutPrefix(key, "ns/id/"); ok {
+		if rest == "" {
+			return "", 551, "Not found"
+		}
+		if src, ok := s.clientGetter.(RouterDocSource); ok {
+			if v, found := src.LookupNS(rest); found {
+				return v, 250, ""
+			}
+		}
+		return "", 551, "Not found"
+	}
+	if rest, ok := strings.CutPrefix(key, "desc/id/"); ok {
+		if rest == "" {
+			return "", 551, "Descriptor is not available"
+		}
+		if src, ok := s.clientGetter.(RouterDocSource); ok {
+			if v, found := src.LookupDesc(rest); found && v != "" {
+				return v, 250, ""
+			}
+		}
+		return "", 551, "Descriptor is not available"
+	}
+	value, ok := s.getInfoValue(key, stats)
+	if !ok {
+		return "", 552, fmt.Sprintf("Unrecognized key %q", key)
+	}
+	return value, 250, ""
 }
 
 // getInfoValue gets the value for a GETINFO key
@@ -723,6 +771,9 @@ func (s *Server) getInfoNames() string {
 		"net/listeners/dns",
 		"net/listeners/or",
 		"net/listeners/dir",
+		"circuit-status",
+		"ns/id/",
+		"desc/id/",
 		"info/names",
 		"events/names",
 	}

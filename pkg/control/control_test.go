@@ -37,6 +37,9 @@ type mockClientGetter struct {
 	configFile          string
 	configText          string
 	config              map[string]string
+	circuitStatus       string
+	nsByID              map[string]string
+	descByID            map[string]string
 }
 
 func (m *mockClientGetter) GetStats() StatsProvider {
@@ -175,6 +178,35 @@ func (m *mockClientGetter) GetConfigFile() string {
 
 func (m *mockClientGetter) GetConfigText() string {
 	return m.configText
+}
+
+func (m *mockClientGetter) GetCircuitStatus() string {
+	return m.circuitStatus
+}
+
+func (m *mockClientGetter) LookupNS(id string) (string, bool) {
+	if m.nsByID == nil {
+		return "", false
+	}
+	if v, ok := m.nsByID[id]; ok {
+		return v, true
+	}
+	id = strings.TrimPrefix(id, "$")
+	if v, ok := m.nsByID[id]; ok {
+		return v, true
+	}
+	if v, ok := m.nsByID["$"+id]; ok {
+		return v, true
+	}
+	return "", false
+}
+
+func (m *mockClientGetter) LookupDesc(id string) (string, bool) {
+	if m.descByID == nil {
+		return "", false
+	}
+	v, ok := m.descByID[id]
+	return v, ok
 }
 
 // Helper to create test server
@@ -888,6 +920,7 @@ func TestGetInfoNames(t *testing.T) {
 		"net/listeners/httptunnel",
 		"net/listeners/or",
 		"config-text",
+		"circuit-status",
 		"info/names",
 	}
 

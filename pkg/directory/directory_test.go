@@ -604,6 +604,9 @@ v Tor 0.4.8.21
 	if relays[0].MicrodescDigest != expectedDigest {
 		t.Errorf("Expected microdesc digest '%s', got '%s'", expectedDigest, relays[0].MicrodescDigest)
 	}
+	if relays[0].Published.IsZero() {
+		t.Fatal("r 行 published 应写入 Relay.Published")
+	}
 }
 
 func TestParseMicrodescriptors(t *testing.T) {
