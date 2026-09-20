@@ -1,7 +1,7 @@
 # 洋葱服务 v1 PoW（hspow-spec）
 
 **日期**：2026-09-20  
-**状态**：PARTIAL（客户端解析 + Equi-X 求解 + INTRODUCE1 内层扩展；托管侧 `HiddenServicePoWDefensesEnabled` 写 `pow-params` 并校验 INTRODUCE2 EXT 0x02；**无**真网 PoW 服务验收；**无** prop 362 控制环）
+**状态**：WORKING（客户端解析 + Equi-X 求解 + INTRODUCE1 内层 EXT 0x02；托管 `HiddenServicePoWDefensesEnabled` 写 `pow-params` 并校验 INTRODUCE2。真网 SOCKS HTTP 200 且日志有求解与校验。**无** prop 362 控制环）
 
 对照：
 
@@ -27,6 +27,7 @@
 - 工作量：`R = ntohl(blake2b_32(challenge || S))`，`R * E` 不得溢出 uint32
 - INTRODUCE **加密段**扩展：TYPE=0x02，LEN=41（scheme/nonce/effort/seed-head/solution）
 - 托管：种子寿命 2 小时；INTRODUCE2 接受当前或上一轮种子；缺 EXT 且 effort>0 则拒绝
+- 客户端拉取：在负责 HSDir 中选最高 `revision-counter` 且含引言点的描述符，避免过期副本挡住 PoW
 
 ## 命令
 
@@ -39,4 +40,6 @@ go test ./pkg/crypto/hashx ./pkg/crypto/equix ./pkg/onion -count=1 -timeout 120s
 - HashX / Equi-X 官方向量通过
 - 描述符含 `pow-params v1` 且 effort>0 时，INTRODUCE1 内层带 EXT 0x02
 - 托管开启时拒绝无证明的 INTRODUCE2，接受合法 Equi-X 解
+- 真网：独立 ClientOnly 进程开启 `HiddenServicePoWDefensesEnabled`；SOCKS HTTP 200；日志 `Onion PoW solved` 与 `INTRODUCE2 PoW verified`
 - **不要**把无 PoW 的 `.onion` HTTP 200 写成「PoW WORKING」
+- **不要**把 prop 362 控制环写成已完成
