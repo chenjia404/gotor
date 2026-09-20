@@ -149,8 +149,8 @@ func NewCircuit(id uint32) *Circuit {
 		paddingInterval:  5 * time.Second,                // SPEC-002: Default 5-second padding interval
 		lastPaddingTime:  now,                            // SPEC-002: Initialize padding timer
 		lastActivityTime: now,                            // SPEC-002: Initialize activity timer
-		forwardDigest:    sha1.New(),                     // CRYPTO-001: Initialize forward digest
-		backwardDigest:   sha1.New(),                     // CRYPTO-001: Initialize backward digest
+		forwardDigest:    sha1.New(),                     // #nosec G401 -- tor-spec.txt §6.1
+		backwardDigest:   sha1.New(),                     // #nosec G401 -- tor-spec.txt §6.1
 		relayReceiveChan: make(chan *cell.RelayCell, 32), // Buffer for incoming relay cells
 		streamManager:    nil,                            // Stream manager set later
 		nextStreamID:     1,                              // spec：RESOLVE/BEGIN 都必须用非 0 StreamID

@@ -216,7 +216,7 @@ func copyFile(src, dst string) error {
 		return fmt.Errorf("read source: %w", err)
 	}
 
-	if err := os.WriteFile(dst, data, 0o600); err != nil {
+	if err := os.WriteFile(dst, data, 0o600); err != nil { // #nosec G304,G703 -- 检查点路径由配置指定
 		return fmt.Errorf("write destination: %w", err)
 	}
 

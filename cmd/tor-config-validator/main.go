@@ -370,7 +370,7 @@ func generateFromTemplate(templateName, outputPath string, verbose bool) error {
 		}
 
 		// Write file
-		if err := os.WriteFile(outputPath, content, 0o644); err != nil {
+		if err := os.WriteFile(outputPath, content, 0o644); err != nil { // #nosec G304,G703 -- CLI 输出路径由用户指定
 			return fmt.Errorf("failed to write file: %w", err)
 		}
 

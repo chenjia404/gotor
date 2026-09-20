@@ -115,11 +115,11 @@ func main() {
 	}
 	out := os.Stdout
 	if cfg.LogFile != "" {
-		if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o700); err != nil { // #nosec G703 -- LogFile 由操作者配置
 			fmt.Fprintf(os.Stderr, "log file dir: %v\n", err)
 			os.Exit(1)
 		}
-		f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304
+		f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304,G703 -- LogFile 由操作者配置
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "open log file: %v\n", err)
 			os.Exit(1)
@@ -155,7 +155,7 @@ func main() {
 
 func runKeygen(cfg *config.Config) error {
 	keysDir := filepath.Join(cfg.DataDirectory, "keys")
-	if _, err := os.Stat(filepath.Join(keysDir, "ed25519_identity_secret_key")); err == nil {
+	if _, err := os.Stat(filepath.Join(keysDir, "ed25519_identity_secret_key")); err == nil { // #nosec G703 -- DataDirectory 由操作者配置
 		fmt.Println("Identity keys already exist in", keysDir)
 		return printFingerprint(cfg, "rsa")
 	}

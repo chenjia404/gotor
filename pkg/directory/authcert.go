@@ -3,7 +3,7 @@ package directory
 import (
 	"crypto"
 	"crypto/rsa"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- dir-spec 权威证书 PKCS#1 SHA-1
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
@@ -230,7 +230,7 @@ func parseRSAPublicKeyPEM(pemBytes []byte) (*rsa.PublicKey, error) {
 
 func rsaSHA1Digest(pub *rsa.PublicKey) []byte {
 	der := x509.MarshalPKCS1PublicKey(pub)
-	sum := sha1.Sum(der)
+	sum := sha1.Sum(der) // #nosec G401 -- dir-spec 身份指纹 SHA-1(PKCS1)
 	return sum[:]
 }
 
@@ -267,7 +267,7 @@ func verifyDirKeyCertification(cert *AuthorityCert) error {
 	if block == nil {
 		return fmt.Errorf("invalid dir-key-certification signature PEM")
 	}
-	digest := sha1.Sum(body)
+	digest := sha1.Sum(body) // #nosec G401 -- dir-spec dir-key-certification SHA-1
 	if err := rsa.VerifyPKCS1v15(cert.IdentityKey, crypto.Hash(0), digest[:], block.Bytes); err != nil {
 		return fmt.Errorf("dir-key-certification PKCS#1 verify failed: %w", err)
 	}
@@ -290,7 +290,7 @@ func verifyDirKeyCrosscert(cert *AuthorityCert) error {
 		return fmt.Errorf("invalid dir-key-crosscert PEM")
 	}
 	idDER := x509.MarshalPKCS1PublicKey(cert.IdentityKey)
-	digest := sha1.Sum(idDER)
+	digest := sha1.Sum(idDER) // #nosec G401 -- dir-spec crosscert SHA-1(PKCS1(identity))
 	if err := rsa.VerifyPKCS1v15(cert.SigningKey, crypto.Hash(0), digest[:], block.Bytes); err != nil {
 		return fmt.Errorf("dir-key-crosscert PKCS#1 verify failed: %w", err)
 	}

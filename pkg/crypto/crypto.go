@@ -365,7 +365,7 @@ func CloneHash(h hash.Hash) (hash.Hash, error) {
 	case strings.Contains(typeName, "sha3"):
 		candidates = []hash.Hash{sha3.New256()}
 	case h.Size() == 20:
-		candidates = []hash.Hash{sha1.New()}
+		candidates = []hash.Hash{sha1.New()} // #nosec G401 -- 克隆 Tor1 电路摘要
 	case h.Size() == 32 && strings.Contains(typeName, "sha256"):
 		candidates = []hash.Hash{sha256.New(), sha3.New256()}
 	case h.Size() == 32:

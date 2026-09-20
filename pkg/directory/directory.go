@@ -9,7 +9,7 @@ import (
 	"compress/zlib"
 	"context"
 	"crypto/rsa"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- dir-spec 共识签名仍支持 sha1
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
@@ -203,7 +203,7 @@ func NewClient(log *logger.Logger) *Client {
 	// This is acceptable because consensus documents are cryptographically signed
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true, // Required for IP-based directory authorities
+			InsecureSkipVerify: true, // #nosec G402 -- 权威按 IP 访问；共识文档另有签名校验
 		},
 	}
 
@@ -1360,7 +1360,7 @@ func (c *Client) VerifyConsensusSignatures(ctx context.Context, consensusBody []
 			h := sha256.Sum256(consensusBody)
 			hash = h[:]
 		case "sha1", "":
-			h := sha1.Sum(consensusBody)
+			h := sha1.Sum(consensusBody) // #nosec G401 -- dir-spec 遗留 sha1 签名算法
 			hash = h[:]
 		default:
 			c.logger.Debug("Unknown signature algorithm", "algorithm", sig.Algorithm)

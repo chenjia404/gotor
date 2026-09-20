@@ -209,7 +209,7 @@ func ExportKeys(stateDir, outputPath string) error {
 	}
 
 	// Write to output
-	if err := os.WriteFile(outputPath, data, 0o600); err != nil {
+	if err := os.WriteFile(outputPath, data, 0o600); err != nil { // #nosec G304,G703 -- 导出路径由调用方指定
 		return fmt.Errorf("failed to write export file: %w", err)
 	}
 
@@ -231,7 +231,7 @@ func ImportKeys(inputPath, stateDir string) error {
 
 	// Write to state file
 	stateFile := filepath.Join(stateDir, "obfs4_state.json")
-	if err := os.WriteFile(stateFile, data, 0o600); err != nil {
+	if err := os.WriteFile(stateFile, data, 0o600); err != nil { // #nosec G304,G703 -- stateDir 由调用方指定
 		return fmt.Errorf("failed to save state file: %w", err)
 	}
 

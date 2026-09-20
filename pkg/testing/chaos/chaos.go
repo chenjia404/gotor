@@ -89,7 +89,7 @@ func NewEngine(cfg *Config, log *logger.Logger) *Engine {
 		config:  cfg,
 		logger:  log,
 		enabled: false,
-		rand:    rand.New(rand.NewSource(time.Now().UnixNano())), //nolint:gosec // Cryptographic randomness not needed for chaos testing
+		rand:    rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404 -- 混沌注入不需要密码学随机
 	}
 }
 
@@ -280,7 +280,7 @@ func NewNetworkFaultInjector(log *logger.Logger) *NetworkFaultInjector {
 	}
 	return &NetworkFaultInjector{
 		logger: log,
-		rand:   rand.New(rand.NewSource(time.Now().UnixNano())), //nolint:gosec // G404: Use of weak random number generator is acceptable for network fault simulation
+		rand:   rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404 -- 故障注入不需要密码学随机
 	}
 }
 
@@ -422,7 +422,7 @@ func NewRelaySimulator(log *logger.Logger) *RelaySimulator {
 		logger:            log,
 		healthy:           true,
 		overloadThreshold: 100,
-		rand:              rand.New(rand.NewSource(time.Now().UnixNano())), //nolint:gosec // G404: Use of weak random number generator is acceptable for relay simulation
+		rand:              rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404 -- 中继模拟不需要密码学随机
 	}
 }
 

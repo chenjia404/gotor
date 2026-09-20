@@ -9,7 +9,7 @@ package config
 
 import (
 	"crypto/rand"
-	"crypto/sha1" //nolint:gosec // C Tor 规定 SHA-1 S2K，非自选
+	"crypto/sha1" // #nosec G505 -- C Tor HashedControlPassword RFC2440 S2K
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
@@ -79,7 +79,7 @@ func secretToKeyRFC2440(password string, salt []byte, indicator byte) []byte {
 		return make([]byte, s2kDigestLen)
 	}
 	// #nosec G401 -- C Tor HashedControlPassword 强制 RFC2440 迭代加盐 SHA-1 S2K，非自选口令哈希
-	h := sha1.New() //nolint:gosec
+	h := sha1.New() // #nosec G401
 	written := 0
 	for written < count {
 		n := len(input)

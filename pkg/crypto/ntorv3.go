@@ -119,8 +119,8 @@ func ntorV3AESCTR(key, plaintext []byte) ([]byte, error) {
 		return nil, err
 	}
 	out := append([]byte(nil), plaintext...)
-	iv := make([]byte, aes.BlockSize)
-	cipher.NewCTR(block, iv).XORKeyStream(out, out)
+	iv := make([]byte, aes.BlockSize) // ntor-v3 规范 AES-CTR IV 全零，密钥由握手派生且一次性
+	cipher.NewCTR(block, iv).XORKeyStream(out, out) // #nosec G407
 	return out, nil
 }
 

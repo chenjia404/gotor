@@ -198,7 +198,7 @@ func (d *ServerDescriptor) build() error {
 	if err != nil {
 		return fmt.Errorf("identity-ed25519 cert: %w", err)
 	}
-	tapKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	tapKey, err := rsa.GenerateKey(rand.Reader, 1024) // #nosec G403 -- TAP onion-key 为 RSA-1024
 	if err != nil {
 		return fmt.Errorf("generate TAP onion-key: %w", err)
 	}

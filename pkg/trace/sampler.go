@@ -53,7 +53,7 @@ func ProbabilitySample(probability float64) Sampler {
 	}
 	return &probabilitySampler{
 		probability: probability,
-		rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
+		rng:         rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404 -- 采样率抖动，不是密钥或选路
 	}
 }
 

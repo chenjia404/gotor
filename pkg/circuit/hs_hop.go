@@ -28,10 +28,11 @@ func NewHopFromHSKeyMaterial(keyMaterial []byte) (*Hop, error) {
 	if err != nil {
 		return nil, fmt.Errorf("AES-256 backward: %w", err)
 	}
+	// rend-spec：会合层 AES-CTR 用全零 IV，Kf/Kb 由 hs-ntor 派生且每条电路唯一。
 	ivFwd := make([]byte, aes.BlockSize)
 	ivBwd := make([]byte, aes.BlockSize)
-	fwd := cipher.NewCTR(fwdBlock, ivFwd)
-	bwd := cipher.NewCTR(bwdBlock, ivBwd)
+	fwd := cipher.NewCTR(fwdBlock, ivFwd) // #nosec G407
+	bwd := cipher.NewCTR(bwdBlock, ivBwd) // #nosec G407
 
 	fwdDig := sha3.New256()
 	_, _ = fwdDig.Write(df)

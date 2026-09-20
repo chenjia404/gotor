@@ -91,7 +91,7 @@ func GenerateRelayKeys() (*RelayKeys, error) {
 	keys.Identity.Private = priv
 
 	// Generate RSA identity key (1024 bits per Tor spec)
-	rsaKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 1024) // #nosec G403 -- tor-spec 遗留 RSA-1024 身份钥
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate RSA key: %w", err)
 	}

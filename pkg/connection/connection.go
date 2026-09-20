@@ -118,7 +118,7 @@ func createTorTLSConfig() *tls.Config {
 	return &tls.Config{
 		// Tor 中继使用自签证书，无法走系统 CA；InsecureSkipVerify 只跳过默认 CA 链，
 		// 真正的结构/有效期校验在 VerifyConnection（会话恢复也会走）。
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, // #nosec G402 -- 自签 OR 证书，结构/有效期在 VerifyConnection
 		VerifyConnection:   verifyTorRelayConnection,
 		// 客户端 OR 连接不依赖会话恢复；关掉 tickets 避免恢复路径绕过校验。
 		SessionTicketsDisabled: true,

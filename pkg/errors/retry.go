@@ -13,7 +13,7 @@ import (
 // Thread-safe random source for jitter calculation
 var (
 	rngMu sync.Mutex
-	rng   = rand.New(rand.NewSource(time.Now().UnixNano()))
+	rng   = rand.New(rand.NewSource(time.Now().UnixNano())) // #nosec G404 -- 重试抖动，不是密钥或选路
 )
 
 // RetryPolicy defines how retry attempts should be executed
