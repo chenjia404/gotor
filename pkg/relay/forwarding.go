@@ -44,6 +44,9 @@ func (h *ForwardingHandler) handleLocalRelayCell(ctx context.Context, circuitID 
 	joinedConn := circ.joinedConn
 	circ.mu.RUnlock()
 	if joined != nil && joinedConn != nil {
+		if h.hidserv != nil {
+			h.hidserv.NoteRendCell()
+		}
 		return sendRelayToClient(joined, joinedConn, relayCell.StreamID, relayCell.Command, relayCell.Data)
 	}
 

@@ -121,6 +121,13 @@ func NewServerFromConfig(cfg *config.Config, log *logger.Logger) (*Server, error
 			})
 		}
 	}
+	hidserv := NewHidservStats()
+	if ln.circuitHandler != nil {
+		ln.circuitHandler.SetHidservStats(hidserv)
+	}
+	if s.dirCache != nil {
+		s.dirCache.SetHidservStats(hidserv)
+	}
 	s.logger.Info("relay configured",
 		"nickname", cfg.Nickname,
 		"or_listen", listen,
@@ -194,6 +201,12 @@ func (s *Server) startPublisher(ctx context.Context) error {
 		}
 		if s.listener != nil && s.listener.circuitHandler != nil && s.listener.circuitHandler.exits != nil {
 			stats = mergeExtraInfoStats(stats, s.listener.circuitHandler.exits.StatsExit())
+		}
+		if s.listener != nil && s.listener.circuitHandler != nil {
+			stats = mergeExtraInfoStats(stats, s.listener.circuitHandler.StatsHidserv())
+		}
+		if s.dirCache != nil {
+			stats = mergeExtraInfoStats(stats, s.dirCache.StatsHidserv())
 		}
 		desc, extra, err := GenerateDescriptorPair(s.keys, dcfg, stats)
 		if err != nil {

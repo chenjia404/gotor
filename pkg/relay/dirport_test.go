@@ -625,6 +625,62 @@ func TestDirCacheHSDirPublishAndFetch(t *testing.T) {
 	}
 }
 
+func TestDirCacheHSDirHidservUniqueOnions(t *testing.T) {
+	_, priv1, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, priv2, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw1, _, err := onion.BuildSignedHSDescriptor(priv1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw1b, _, err := onion.BuildSignedHSDescriptorAtRevision(priv1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw2, _, err := onion.BuildSignedHSDescriptor(priv2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewDirCacheServer(t.TempDir(), nil)
+	clk := time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)
+	s.hidserv.now = func() time.Time { return clk }
+	s.hidserv.periodStart = clk
+	s.hidserv.rand = func() float64 { return 0.5 }
+	pub := func(body []byte) int {
+		rec := httptest.NewRecorder()
+		s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/tor/hs/3/publish", strings.NewReader(string(body))))
+		return rec.Code
+	}
+	if code := pub(raw1); code != http.StatusOK {
+		t.Fatalf("publish first %d", code)
+	}
+	if code := pub(raw1); code == http.StatusOK {
+		t.Fatal("同一修订不得再接受")
+	}
+	if code := pub(raw1b); code != http.StatusOK {
+		t.Fatalf("publish higher revision %d", code)
+	}
+	if code := pub(raw2); code != http.StatusOK {
+		t.Fatalf("publish second onion %d", code)
+	}
+	if got := s.StatsHidserv(); got != nil {
+		t.Fatalf("未满 24h 不得写 hidserv: %+v", got)
+	}
+	s.hidserv.now = func() time.Time { return clk.Add(24 * time.Hour) }
+	got := s.StatsHidserv()
+	if got["hidserv-dir-v3-onions-seen"] != "8 delta_f=8 epsilon=0.30 binsize=8" {
+		t.Fatalf("两个唯一盲化公钥应写入混淆后的 8, got %q", got["hidserv-dir-v3-onions-seen"])
+	}
+	if _, ok := got["hidserv-dir-onions-seen"]; ok {
+		t.Fatal("无 v2 观测不得写 hidserv-dir-onions-seen")
+	}
+}
+
 func TestDirCacheHSDirRejectsTamperAndStaleRevision(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {

@@ -260,7 +260,7 @@ func (h *ForwardingHandler) addHSStat(fn func(*HSRelayStats)) {
 	h.hsMu.Unlock()
 }
 
-// HSRelayStats 是中继侧 intro/rend 内存计数（不写 extra-info hidserv-*）。
+// HSRelayStats 是中继侧 intro/rend 内存计数。extra-info hidserv-v3-* 见 HidservStats。
 type HSRelayStats struct {
 	EstIntro    uint64
 	EstRend     uint64

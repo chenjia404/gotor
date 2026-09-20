@@ -1,6 +1,6 @@
 # extra-info 与 extra-info-digest
 
-**日期**：2026-08-20  
+**日期**：2026-09-20  
 **状态**：PARTIAL（离线单测；权威曾对无 digest 的单独 extra-info 回 400；出站中间跳 OR 已计入）
 
 对照：[dir-spec extra-info](https://spec.torproject.org/dir-spec/extra-info-document-format.html)、[server descriptor extra-info-digest](https://spec.torproject.org/dir-spec/server-descriptor-format.html)、C Tor `router.c` / `rephist.c`。
@@ -23,12 +23,15 @@
 - `dirreq-v3-ips` / `dirreq-v3-reqs`：无 geoip，一律 `??=N`（规范允许无法映射时用 `??`）；ips 为 24h 窗内 unique IP（DirPort 对端或 BEGIN_DIR 相邻 OR），reqs 为请求次数；向上取 8。不写国家码。空地址不计入 ips。
 - `dirreq-v3-direct-dl` / `dirreq-v3-tunneled-dl`：DirPort HTTP 为 direct，BEGIN_DIR 为 tunneled；HTTP 200 且未满 10 分钟记 `complete`；开始发送后 10 分钟未完成记 `timeout`；测量期末仍在传且未满 10 分钟记 `running`。满 24h 且该通道有上述计数才写。无字节速率观测，不写 min/d1/…/max。
 - `exit-stats-end` / `exit-kibibytes-written` / `exit-kibibytes-read` / `exit-streams-opened`：仅 RELAY_BEGIN 成功出口 TCP；BEGIN_DIR / RESOLVE 不计。C Tor interesting ports 分列，其余 `other`。KiB 向上取整，流数向上取 4。满 24h 且有观测、且策略允许退出才写。
+- `hidserv-v3-stats-end` / `hidserv-rend-v3-relayed-cells` / `hidserv-dir-v3-onions-seen`：会合点成功处理 RENDEZVOUS1 之后每转发一格 RELAY 计数；HSDir 接受的盲化公钥 24h unique。满 24h 且该窗有计数才写。先向上取 `binsize` 再加 Laplace（`b = delta_f/epsilon`，可负）；噪声在窗旋转时采样一次。rend 默认 `delta_f=2048 epsilon=0.30 binsize=1024`，dir 默认 `delta_f=8 epsilon=0.30 binsize=8`。无 v2 观测不写旧 `hidserv-*` 行。
 
 ## 明确未做
 
 - `dirreq-v3-ips` / `dirreq-v3-reqs` 的真实国家码（无 GeoIP 库）
-- `hidserv-*` / `padding-counts`（无 24h 观测不写）
 - `dirreq-v3-*-dl` 的 B/s 分位数（无下载速率观测不写）
+- `padding-counts`（无 24h 观测不写）
+- `hidserv-stats-end` / `hidserv-rend-relayed-cells` / `hidserv-dir-onions-seen`（v2；本实现无 v2 洋葱，不写）
+- 共识 `hidserv-stats-*` 覆盖 delta_f / epsilon / binsize
 - 进程空闲但在跑时的全零格（无心跳；有流量的格才入列）
 - 真网权威归档 extra-info 的观察证据
 

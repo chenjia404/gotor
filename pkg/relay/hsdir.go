@@ -47,6 +47,7 @@ type hsDirStore struct {
 	byBlind map[string]*hsDirEntry
 	selfID  []byte
 	ring    *hsDirRingSnapshot
+	hidserv *HidservStats
 }
 
 func (s *hsDirStore) setIdentity(id []byte) {
@@ -113,6 +114,9 @@ func (s *hsDirStore) put(body []byte) hsDirPutStatus {
 		s.evictOldestLocked()
 	}
 	s.byBlind[key] = &hsDirEntry{body: canonical, mod: now, revision: revision}
+	if s.hidserv != nil {
+		s.hidserv.NoteDirOnion(blinded)
+	}
 	return hsDirPutOK
 }
 

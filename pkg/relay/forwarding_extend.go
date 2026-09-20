@@ -52,6 +52,7 @@ type ForwardingHandler struct {
 	introDoSCons onion.IntroDoSParams
 	nowFn        func() time.Time
 	hsStats      HSRelayStats
+	hidserv      *HidservStats
 }
 
 type hsRoleSlot struct {
@@ -71,6 +72,7 @@ func NewForwardingHandler(circuits *CircuitHandler, log *logger.Logger) *Forward
 		extended:     make(map[uint32]*ExtendedCircuit),
 		introByAuth:  make(map[string]*hsRoleSlot),
 		rendByCookie: make(map[string]*hsRoleSlot),
+		hidserv:      NewHidservStats(),
 		logger:       log.Component("forwarding"),
 	}
 }

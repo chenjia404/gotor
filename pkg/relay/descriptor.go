@@ -605,7 +605,7 @@ func writeExtraInfoStats(buf *bytes.Buffer, stats map[string]string) {
 	if len(stats) == 0 {
 		return
 	}
-	preferred := []string{"write-history", "read-history", "ipv6-write-history", "ipv6-read-history", "conn-bi-direct", "ipv6-conn-bi-direct", "dirreq-stats-end", "dirreq-v3-ips", "dirreq-v3-reqs", "dirreq-v3-resp", "dirreq-v3-direct-dl", "dirreq-v3-tunneled-dl", "exit-stats-end", "exit-kibibytes-written", "exit-kibibytes-read", "exit-streams-opened"}
+	preferred := []string{"write-history", "read-history", "ipv6-write-history", "ipv6-read-history", "conn-bi-direct", "ipv6-conn-bi-direct", "dirreq-stats-end", "dirreq-v3-ips", "dirreq-v3-reqs", "dirreq-v3-resp", "dirreq-v3-direct-dl", "dirreq-v3-tunneled-dl", "exit-stats-end", "exit-kibibytes-written", "exit-kibibytes-read", "exit-streams-opened", "hidserv-v3-stats-end", "hidserv-rend-v3-relayed-cells", "hidserv-dir-v3-onions-seen"}
 	seen := make(map[string]bool, len(preferred))
 	for _, k := range preferred {
 		v := strings.TrimSpace(stats[k])

@@ -511,6 +511,14 @@ func TestJoinedCircuitsForwardRelay(t *testing.T) {
 	if fwd.Command != cell.RelayData || fwd.StreamID != 7 || !bytes.Equal(fwd.Data, []byte("hello")) {
 		t.Fatalf("会合后 DATA 必须转到对端 cmd=%d sid=%d data=%x", fwd.Command, fwd.StreamID, fwd.Data)
 	}
+	clk := time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)
+	h.forwarder.hidserv.now = func() time.Time { return clk.Add(24 * time.Hour) }
+	h.forwarder.hidserv.periodStart = clk
+	h.forwarder.hidserv.rand = func() float64 { return 0.5 }
+	got := h.forwarder.hidserv.StatsMap()
+	if got["hidserv-rend-v3-relayed-cells"] != "1024 delta_f=2048 epsilon=0.30 binsize=1024" {
+		t.Fatalf("会合转发须计入 hidserv rend cells, got %q", got["hidserv-rend-v3-relayed-cells"])
+	}
 }
 
 func TestHandleRendezvous1UnknownCookie(t *testing.T) {

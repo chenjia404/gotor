@@ -80,6 +80,22 @@ func NewCircuitHandlerWithPolicy(keys *RelayKeys, policy *ExitPolicy, log *logge
 	return h
 }
 
+// SetHidservStats 注入与 DirCache 共用的 hidserv extra-info 计数。
+func (h *CircuitHandler) SetHidservStats(s *HidservStats) {
+	if h == nil || h.forwarder == nil {
+		return
+	}
+	h.forwarder.hidserv = s
+}
+
+// StatsHidserv 已完成 24h 窗的 hidserv-v3-*；无观测则空。
+func (h *CircuitHandler) StatsHidserv() map[string]string {
+	if h == nil || h.forwarder == nil {
+		return nil
+	}
+	return h.forwarder.hidserv.StatsMap()
+}
+
 // HandleCellFromConnection processes cells from a client connection
 // This handles CREATE2 cells for circuit creation and RELAY cells for forwarding
 func (h *CircuitHandler) HandleCellFromConnection(conn net.Conn, c *cell.Cell) error {

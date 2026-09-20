@@ -38,8 +38,9 @@ type DirCacheServer struct {
 	diffByFrom map[string]string
 	diffWait   map[string]chan struct{}
 
-	hs     *hsDirStore
-	dirreq *DirReqStats
+	hs      *hsDirStore
+	dirreq  *DirReqStats
+	hidserv *HidservStats
 }
 
 const maxCachedConsensusDiffs = 72
@@ -48,7 +49,14 @@ func NewDirCacheServer(cacheDir string, log *logger.Logger) *DirCacheServer {
 	if log == nil {
 		log = logger.NewDefault()
 	}
-	return &DirCacheServer{cacheDir: cacheDir, logger: log.Component("dircache"), hs: &hsDirStore{}, dirreq: NewDirReqStats()}
+	hidserv := NewHidservStats()
+	return &DirCacheServer{
+		cacheDir: cacheDir,
+		logger:   log.Component("dircache"),
+		hs:       &hsDirStore{hidserv: hidserv},
+		dirreq:   NewDirReqStats(),
+		hidserv:  hidserv,
+	}
 }
 
 func (d *DirCacheServer) handler() http.Handler {
@@ -780,6 +788,25 @@ func (d *DirCacheServer) StatsDirReq() map[string]string {
 		return nil
 	}
 	return d.dirreq.StatsMap()
+}
+
+// SetHidservStats 注入与会合点共用的 hidserv extra-info 计数。
+func (d *DirCacheServer) SetHidservStats(s *HidservStats) {
+	if d == nil {
+		return
+	}
+	d.hidserv = s
+	if d.hs != nil {
+		d.hs.hidserv = s
+	}
+}
+
+// StatsHidserv 已完成 24h 窗的 hidserv-v3-*；无观测则空。
+func (d *DirCacheServer) StatsHidserv() map[string]string {
+	if d == nil {
+		return nil
+	}
+	return d.hidserv.StatsMap()
 }
 
 type pipeResponse struct {

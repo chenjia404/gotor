@@ -39,8 +39,9 @@ func TestGenerateDescriptorPairCrossDigest(t *testing.T) {
 		strings.Contains(string(extra.RawDescriptor), "read-history") ||
 		strings.Contains(string(extra.RawDescriptor), "conn-bi-direct") ||
 		strings.Contains(string(extra.RawDescriptor), "dirreq-v3-resp") ||
-		strings.Contains(string(extra.RawDescriptor), "exit-stats-end") {
-		t.Fatal("无观测不得写 history / conn-bi-direct / dirreq / exit")
+		strings.Contains(string(extra.RawDescriptor), "exit-stats-end") ||
+		strings.Contains(string(extra.RawDescriptor), "hidserv-") {
+		t.Fatal("无观测不得写 history / conn-bi-direct / dirreq / exit / hidserv")
 	}
 
 	const marker = "router-signature\n"
@@ -78,22 +79,25 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats := map[string]string{
-		"write-history":          "2026-08-20 12:15:00 (900 s) 400",
-		"read-history":           "2026-08-20 12:15:00 (900 s) 1000",
-		"ipv6-write-history":     "2026-08-20 12:15:00 (900 s) 40",
-		"ipv6-read-history":      "2026-08-20 12:15:00 (900 s) 100",
-		"conn-bi-direct":         "2026-08-21 12:00:00 (86400 s) 10,2,1,3",
-		"ipv6-conn-bi-direct":    "2026-08-21 12:00:00 (86400 s) 4,1,0,2",
-		"dirreq-stats-end":       "2026-08-21 12:00:00 (86400 s)",
-		"dirreq-v3-ips":          "??=8",
-		"dirreq-v3-reqs":         "??=8",
-		"dirreq-v3-resp":         "ok=4,not-found=4",
-		"dirreq-v3-direct-dl":    "complete=1",
-		"dirreq-v3-tunneled-dl":  "complete=2",
-		"exit-stats-end":         "2026-08-21 12:00:00 (86400 s)",
-		"exit-kibibytes-written": "80=1,other=1",
-		"exit-kibibytes-read":    "80=2",
-		"exit-streams-opened":    "80=4,other=4",
+		"write-history":                 "2026-08-20 12:15:00 (900 s) 400",
+		"read-history":                  "2026-08-20 12:15:00 (900 s) 1000",
+		"ipv6-write-history":            "2026-08-20 12:15:00 (900 s) 40",
+		"ipv6-read-history":             "2026-08-20 12:15:00 (900 s) 100",
+		"conn-bi-direct":                "2026-08-21 12:00:00 (86400 s) 10,2,1,3",
+		"ipv6-conn-bi-direct":           "2026-08-21 12:00:00 (86400 s) 4,1,0,2",
+		"dirreq-stats-end":              "2026-08-21 12:00:00 (86400 s)",
+		"dirreq-v3-ips":                 "??=8",
+		"dirreq-v3-reqs":                "??=8",
+		"dirreq-v3-resp":                "ok=4,not-found=4",
+		"dirreq-v3-direct-dl":           "complete=1",
+		"dirreq-v3-tunneled-dl":         "complete=2",
+		"exit-stats-end":                "2026-08-21 12:00:00 (86400 s)",
+		"exit-kibibytes-written":        "80=1,other=1",
+		"exit-kibibytes-read":           "80=2",
+		"exit-streams-opened":           "80=4,other=4",
+		"hidserv-v3-stats-end":          "2026-08-21 12:00:00 (86400 s)",
+		"hidserv-rend-v3-relayed-cells": "1024 delta_f=2048 epsilon=0.30 binsize=1024",
+		"hidserv-dir-v3-onions-seen":    "8 delta_f=8 epsilon=0.30 binsize=8",
 	}
 	_, extra, err := GenerateDescriptorPair(keys, &DescriptorConfig{
 		Nickname: "ObsRelay",
@@ -170,6 +174,18 @@ func TestGenerateDescriptorPairObservedHistoryOnly(t *testing.T) {
 	eo := strings.Index(raw, "exit-streams-opened 80=4,other=4\n")
 	if eo < 0 || eo < er {
 		t.Fatal("exit-streams-opened 应在 read 后")
+	}
+	hs := strings.Index(raw, "hidserv-v3-stats-end 2026-08-21 12:00:00 (86400 s)\n")
+	if hs < 0 || hs < eo {
+		t.Fatal("hidserv-v3-stats-end 应在 exit-streams-opened 后")
+	}
+	hr := strings.Index(raw, "hidserv-rend-v3-relayed-cells 1024 delta_f=2048 epsilon=0.30 binsize=1024\n")
+	if hr < 0 || hr < hs {
+		t.Fatal("hidserv-rend-v3-relayed-cells 应在 hidserv-v3-stats-end 后")
+	}
+	ho := strings.Index(raw, "hidserv-dir-v3-onions-seen 8 delta_f=8 epsilon=0.30 binsize=8\n")
+	if ho < 0 || ho < hr {
+		t.Fatal("hidserv-dir-v3-onions-seen 应在 rend-v3-relayed-cells 后")
 	}
 }
 
