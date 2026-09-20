@@ -49,8 +49,8 @@ This repository uses a multi-file GitHub Actions workflow setup for automated te
 
 **What it does:**
 - Builds linux/amd64 and linux/arm64 images
-- Pushes to `ghcr.io/chenjia404/gotor`
-- Tags `latest` on main, plus git SHA and semver tags
+- Pushes to `ghcr.io/chenjia404/gotor` as `latest` only
+- Deletes older GHCR package versions after each push (keeps the current `latest`)
 
 **How to use:**
 ```bash
