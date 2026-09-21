@@ -294,6 +294,22 @@ func (c *Client) applyMicrodescsFromDisk(relays []*Relay) []*Relay {
 	return needed
 }
 
+// HydrateRelayMicrodescs 用磁盘缓存补齐 ntor 与 Ed25519。
+// HSDir 哈希环必须用全网目录的 Ed25519 身份；只给建路过的节点补密钥时，环是残的，负责目录会 404。
+func (c *Client) HydrateRelayMicrodescs(relays []*Relay) int {
+	if c == nil {
+		return 0
+	}
+	c.applyMicrodescsFromDisk(relays)
+	n := 0
+	for _, r := range relays {
+		if r != nil && len(r.IdentityKey) == 32 {
+			n++
+		}
+	}
+	return n
+}
+
 func (c *Client) persistFetchedMicrodescs(relays []*Relay) {
 	c.mu.RLock()
 	md := c.microdescDisk

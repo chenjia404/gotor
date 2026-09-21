@@ -1,6 +1,8 @@
 package directory
 
 import (
+	"bytes"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,5 +66,23 @@ func TestMicrodescDiskCompactsJournal(t *testing.T) {
 	got := md2.lookup(microdescriptorDigest(body))
 	if len(got) == 0 {
 		t.Fatal("compacted microdesc must reload")
+	}
+}
+
+func TestHydrateRelayMicrodescsFillsEd25519(t *testing.T) {
+	id := bytes.Repeat([]byte{0x42}, 32)
+	ntor := bytes.Repeat([]byte{0x11}, 32)
+	body := []byte("ntor-onion-key " + base64.StdEncoding.EncodeToString(ntor) + "\n" +
+		"id ed25519 " + base64.StdEncoding.EncodeToString(id) + "\n")
+	c := &Client{microdescDisk: &microdescDiskCache{byDigest: map[string][]byte{"d1": body}}}
+	r := &Relay{
+		MicrodescDigest: "d1",
+		RSAIdentity:     bytes.Repeat([]byte{3}, 20),
+	}
+	if n := c.HydrateRelayMicrodescs([]*Relay{r}); n != 1 {
+		t.Fatalf("with_ed25519=%d", n)
+	}
+	if !bytes.Equal(r.IdentityKey, id) || !bytes.Equal(r.NtorOnionKey, ntor) {
+		t.Fatal("disk microdesc must fill Ed25519 and ntor before the HSDir ring is built")
 	}
 }

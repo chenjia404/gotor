@@ -1565,12 +1565,15 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 		}
 	}
 
-	h.logger.Debug("Fetching descriptor",
+	srvSource := "consensus"
+	if len(h.sharedRandCurrent) != 32 && len(h.sharedRandPrev) != 32 {
+		srvSource = "disaster"
+	}
+	h.logger.Info("Fetching onion descriptor",
 		"address", addr.String(),
 		"time_period", timePeriod,
-		"descriptor_id", fmt.Sprintf("%x", descriptorID[:8]),
 		"responsible", len(selectedHSDirs),
-		"srv_prefix", fmt.Sprintf("%x", srv[:minInt(4, len(srv))]))
+		"srv", srvSource)
 
 	// AUDIT-003 FIX: Add retry backoff logic
 	var lastErr error

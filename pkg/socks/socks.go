@@ -337,6 +337,10 @@ func (s *Server) SetOnionNetwork(
 	s.onionClient.UpdateHSDirs(hsdirs)
 	s.onionClient.SetNetworkRelays(relays)
 	if dirClient != nil {
+		identities := dirClient.HydrateRelayMicrodescs(relays)
+		s.logger.Info("HSDir identities from microdesc cache",
+			"with_ed25519", identities,
+			"relays", len(relays))
 		cur, prev := dirClient.SharedRandomValues()
 		s.onionClient.SetSharedRandom(cur, prev)
 		s.onionClient.SetHSDirRingParams(onion.HSDirRingParamsFromConsensus(dirClient.LastConsensusParams()))
