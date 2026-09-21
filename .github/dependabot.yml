@@ -35,6 +35,12 @@ updates:
       - "ci"
     commit-message:
       prefix: "deps(actions)"
+    groups:
+      # CodeQL 的 init/autobuild/analyze/upload-sarif 必须同一版本，
+      # 拆开升级会报 Loaded a configuration file for version X, but running version Y。
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
 
   # Docker base image updates
   - package-ecosystem: "docker"
