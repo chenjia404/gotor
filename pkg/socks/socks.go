@@ -698,8 +698,8 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 		s.logger.Info("Onion service connection requested", "address", host)
 
-		// 整段会合限制在 80 秒内，给 curl 的 90 秒留出余量；数据中继不受这个截止时间影响。
-		onionCtx, onionCancel := context.WithTimeout(ctx, 80*time.Second)
+		// 整段会合限制在 85 秒内，留在 curl 的 90 秒里面；数据中继不套这个截止时间。
+		onionCtx, onionCancel := context.WithTimeout(ctx, 85*time.Second)
 		circuitID, err := s.onionClient.ConnectToOnionService(onionCtx, addr)
 		onionCancel()
 		if err != nil {

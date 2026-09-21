@@ -1574,7 +1574,7 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 
 	// AUDIT-003 FIX: Add retry backoff logic
 	var lastErr error
-	maxRetries := 2
+	maxRetries := 1
 	baseBackoff := 100 * time.Millisecond
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -1597,7 +1597,7 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 			}
 			desc, err := h.fetchFromHSDir(ctx, hsdir, blindedPubkey, -1)
 			if err != nil {
-				h.logger.Debug("Failed to fetch from HSDir",
+				h.logger.Info("HSDir descriptor miss",
 					"hsdir", hsdir.Fingerprint,
 					"attempt", attempt+1,
 					"error", err)

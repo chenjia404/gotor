@@ -57,8 +57,8 @@ func (f *BegindirFetcher) SetVanguards(v *path.VanguardSet, gm *path.GuardManage
 }
 
 // beginDirAttemptBudget 是单个 HSDir 建路的上限。
-// 父 context 剩余时间更短时跟着缩短，避免把即将到期的请求再拖 30 秒。
-const beginDirAttemptBudget = 15 * time.Second
+// 健康的四跳大约 2 秒；超时就换下一个目录，不再对同一个目录建第二次。
+const beginDirAttemptBudget = 12 * time.Second
 
 func beginDirBudget(ctx context.Context) time.Duration {
 	budget := beginDirAttemptBudget
@@ -95,33 +95,15 @@ func (f *BegindirFetcher) Fetch(ctx context.Context, relay *directory.Relay, htt
 
 	var circ *circuit.Circuit
 	var lastBuild error
-	// 单个 HSDir 最多建两次。预算跟父级 deadline 走，不再把不足 30 秒的剩余时间抬回 30 秒，
-	// 否则一条慢电路会吃掉整个洋葱连接。
-	for attempt := 0; attempt < 2; attempt++ {
-		if attempt > 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			p, err = f.selectAnonPath(relay)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if err := ensurePathKeys(ctx, f.keys, p); err != nil {
-			lastBuild = fmt.Errorf("microdescriptors for BEGIN_DIR path: %w", err)
-			f.logger.Debug("3-hop microdescriptors failed, retrying",
-				"attempt", attempt+1, "error", lastBuild)
-			continue
-		}
-		circ, lastBuild = f.builder.BuildCircuit(ctx, p, beginDirBudget(ctx))
-		if lastBuild == nil {
-			break
-		}
-		f.logger.Debug("3-hop build failed, retrying",
-			"attempt", attempt+1, "error", lastBuild,
-			"guard", p.Guard.Nickname, "middle", p.Middle.Nickname)
+	// 每个 HSDir 只建一次。第二次会把 12 秒预算再花掉，后面真正存着描述符的目录轮不到。
+	if err := ensurePathKeys(ctx, f.keys, p); err != nil {
+		return nil, fmt.Errorf("microdescriptors for BEGIN_DIR path: %w", err)
 	}
+	circ, lastBuild = f.builder.BuildCircuit(ctx, p, beginDirBudget(ctx))
 	if circ == nil {
+		if lastBuild == nil {
+			lastBuild = fmt.Errorf("circuit build returned nil")
+		}
 		return nil, fmt.Errorf("build 3-hop for BEGIN_DIR: %w", lastBuild)
 	}
 	defer circ.Close()
