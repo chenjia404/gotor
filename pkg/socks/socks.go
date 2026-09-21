@@ -698,8 +698,10 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 		s.logger.Info("Onion service connection requested", "address", host)
 
-		// Connect to the onion service using rendezvous protocol
-		circuitID, err := s.onionClient.ConnectToOnionService(ctx, addr)
+		// 整段会合限制在 80 秒内，给 curl 的 90 秒留出余量；数据中继不受这个截止时间影响。
+		onionCtx, onionCancel := context.WithTimeout(ctx, 80*time.Second)
+		circuitID, err := s.onionClient.ConnectToOnionService(onionCtx, addr)
+		onionCancel()
 		if err != nil {
 			s.logger.Error("Failed to connect to onion service", "address", host, "error", err)
 			s.trySendReply(conn, replyHostUnreachable, nil)

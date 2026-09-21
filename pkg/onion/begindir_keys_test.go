@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/opd-ai/go-tor/pkg/circuit"
 	"github.com/opd-ai/go-tor/pkg/directory"
@@ -88,5 +89,17 @@ func hsRelay(fp, nick string) *directory.Relay {
 		Address:     "192.0.2.1",
 		ORPort:      9001,
 		Flags:       []string{"Running", "Valid", "Guard", "Fast", "Stable"},
+	}
+}
+
+func TestBeginDirBudgetFollowsDeadline(t *testing.T) {
+	if got := beginDirBudget(context.Background()); got != beginDirAttemptBudget {
+		t.Fatalf("no deadline: got %s want %s", got, beginDirAttemptBudget)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	got := beginDirBudget(ctx)
+	if got > 4*time.Second || got < 3*time.Second {
+		t.Fatalf("budget %s should follow the 4s deadline, not the 15s cap or a 30s floor", got)
 	}
 }

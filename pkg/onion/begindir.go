@@ -56,6 +56,26 @@ func (f *BegindirFetcher) SetVanguards(v *path.VanguardSet, gm *path.GuardManage
 	f.guards = gm
 }
 
+// beginDirAttemptBudget 是单个 HSDir 建路的上限。
+// 父 context 剩余时间更短时跟着缩短，避免把即将到期的请求再拖 30 秒。
+const beginDirAttemptBudget = 15 * time.Second
+
+func beginDirBudget(ctx context.Context) time.Duration {
+	budget := beginDirAttemptBudget
+	if ctx == nil {
+		return budget
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		if remain := time.Until(dl); remain < budget {
+			budget = remain
+		}
+	}
+	if budget < time.Second {
+		return time.Second
+	}
+	return budget
+}
+
 // Fetch 对 HSDir 建匿名 3-hop 电路（HSDir 为末跳），BEGIN_DIR 后 GET path。
 func (f *BegindirFetcher) Fetch(ctx context.Context, relay *directory.Relay, httpPath string) ([]byte, error) {
 	if f == nil || f.builder == nil {
@@ -68,14 +88,6 @@ func (f *BegindirFetcher) Fetch(ctx context.Context, relay *directory.Relay, htt
 		return nil, fmt.Errorf("path must start with /")
 	}
 
-	timeout := 90 * time.Second
-	if dl, ok := ctx.Deadline(); ok {
-		timeout = time.Until(dl)
-		if timeout < 30*time.Second {
-			timeout = 30 * time.Second
-		}
-	}
-
 	p, err := f.selectAnonPath(relay)
 	if err != nil {
 		return nil, err
@@ -83,8 +95,13 @@ func (f *BegindirFetcher) Fetch(ctx context.Context, relay *directory.Relay, htt
 
 	var circ *circuit.Circuit
 	var lastBuild error
-	for attempt := 0; attempt < 4; attempt++ {
+	// 单个 HSDir 最多建两次。预算跟父级 deadline 走，不再把不足 30 秒的剩余时间抬回 30 秒，
+	// 否则一条慢电路会吃掉整个洋葱连接。
+	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			p, err = f.selectAnonPath(relay)
 			if err != nil {
 				return nil, err
@@ -96,7 +113,7 @@ func (f *BegindirFetcher) Fetch(ctx context.Context, relay *directory.Relay, htt
 				"attempt", attempt+1, "error", lastBuild)
 			continue
 		}
-		circ, lastBuild = f.builder.BuildCircuit(ctx, p, timeout)
+		circ, lastBuild = f.builder.BuildCircuit(ctx, p, beginDirBudget(ctx))
 		if lastBuild == nil {
 			break
 		}

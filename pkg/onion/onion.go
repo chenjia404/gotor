@@ -1574,7 +1574,7 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 
 	// AUDIT-003 FIX: Add retry backoff logic
 	var lastErr error
-	maxRetries := 3
+	maxRetries := 2
 	baseBackoff := 100 * time.Millisecond
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -1590,9 +1590,11 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 			}
 		}
 
-		var best *Descriptor
 		var encryptedFallback *Descriptor
 		for _, hsdir := range selectedHSDirs {
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("context cancelled during HSDir fetch: %w", err)
+			}
 			desc, err := h.fetchFromHSDir(ctx, hsdir, blindedPubkey, -1)
 			if err != nil {
 				h.logger.Debug("Failed to fetch from HSDir",
@@ -1643,23 +1645,15 @@ func (h *HSDir) FetchDescriptor(ctx context.Context, addr *Address, hsdirs []*HS
 				continue
 			}
 
-			h.logger.Debug("Descriptor decrypted successfully",
+			// 已有带引入点的描述符就返回。继续把其余 HSDir 逐个建路会占满 SOCKS 超时，
+			// 客户端先断开，描述符也写不进缓存，下一次又从头拉。
+			h.logger.Info("Selected onion descriptor",
 				"address", addr.String(),
+				"hsdir", hsdir.Fingerprint,
 				"revision", decryptedDesc.RevisionCounter,
 				"intro_points", len(decryptedDesc.IntroPoints),
 				"pow_effort", powEffortLog(decryptedDesc.PoWParams))
-
-			if best == nil || decryptedDesc.RevisionCounter > best.RevisionCounter {
-				best = decryptedDesc
-			}
-		}
-		if best != nil {
-			h.logger.Info("Selected onion descriptor",
-				"address", addr.String(),
-				"revision", best.RevisionCounter,
-				"intro_points", len(best.IntroPoints),
-				"pow_effort", powEffortLog(best.PoWParams))
-			return best, nil
+			return decryptedDesc, nil
 		}
 		if encryptedFallback != nil {
 			return encryptedFallback, nil
