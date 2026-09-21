@@ -563,7 +563,17 @@ func TestVanguardSetDropsL3WhenItBecomesPersistL1(t *testing.T) {
 		t.Fatal(err)
 	}
 	l3 := append([]string{}, v.Layer3Fingerprints()...)
-	promoted := l3[0]
+	targetFP := strings.ToUpper(pool[15].Fingerprint)
+	promoted := ""
+	for _, fp := range l3 {
+		if fp != targetFP {
+			promoted = fp
+			break
+		}
+	}
+	if promoted == "" {
+		t.Fatal("L3 除目标外应有可晋升入口")
+	}
 	p, err := v.SelectHSPath(pool, pool[15], []string{promoted})
 	if err != nil {
 		t.Fatal(err)

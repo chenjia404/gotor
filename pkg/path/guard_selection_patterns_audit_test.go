@@ -247,9 +247,10 @@ func TestBandwidthWeightedSelectionDistribution(t *testing.T) {
 	expectedHighBW := 9091.0
 	expectedLowBW := 909.0
 
-	// Allow 5% statistical variance (±455 for high, ±45 for low)
+	// 二项分布 n=10000、p≈0.0909 的 σ≈29。高带宽原先 ±5%（±455）远宽于 3σ；
+	// 低带宽 ±45 只有约 1.6σ，CI 上会偶发落到 850/980 而失败。两边都按约 3σ。
 	highBWVariance := 455.0
-	lowBWVariance := 45.0
+	lowBWVariance := 90.0
 
 	if float64(highBWCount) < expectedHighBW-highBWVariance || float64(highBWCount) > expectedHighBW+highBWVariance {
 		t.Errorf("HighBW selected %d times, expected %.0f±%.0f (90.9%%)", highBWCount, expectedHighBW, highBWVariance)
