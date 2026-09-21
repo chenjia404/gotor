@@ -61,8 +61,8 @@ func main() {
 	fmt.Printf("Server: %s", greeting)
 
 	// Check PROTOCOLINFO
-	writer.WriteString("PROTOCOLINFO\r\n")
-	writer.Flush()
+	_, _ = writer.WriteString("PROTOCOLINFO\r\n")
+	_ = writer.Flush()
 	for {
 		line, _ := reader.ReadString('\n')
 		fmt.Printf("Server: %s", line)
@@ -72,14 +72,14 @@ func main() {
 	}
 
 	// Authenticate with password
-	writer.WriteString(fmt.Sprintf("AUTHENTICATE %s\r\n", cfg.ControlPassword))
-	writer.Flush()
+	_, _ = writer.WriteString(fmt.Sprintf("AUTHENTICATE %s\r\n", cfg.ControlPassword))
+	_ = writer.Flush()
 	response, _ := reader.ReadString('\n')
 	fmt.Printf("Server: %s", response)
 
 	// Now we can use authenticated commands
-	writer.WriteString("GETINFO version\r\n")
-	writer.Flush()
+	_, _ = writer.WriteString("GETINFO version\r\n")
+	_ = writer.Flush()
 	response, _ = reader.ReadString('\n')
 	fmt.Printf("Server: %s", response)
 

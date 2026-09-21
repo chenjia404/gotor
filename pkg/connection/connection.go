@@ -352,7 +352,7 @@ func (c *Connection) Connect(ctx context.Context, cfg *Config) error {
 
 	tlsConn := tls.Client(conn, tlsConfig)
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		c.setState(StateFailed)
 		return fmt.Errorf("TLS handshake failed: %w", err)
 	}
@@ -456,7 +456,7 @@ func (c *Connection) ReceiveCellWithContext(ctx context.Context) (*cell.Cell, er
 		if res.err != nil {
 			if res.err == io.EOF {
 				c.logger.Info("Connection closed by remote")
-				c.Close()
+				_ = c.Close()
 				return nil, res.err
 			}
 			c.logger.Error("Failed to receive cell", "error", res.err)

@@ -380,8 +380,12 @@ func (d *EventDispatcher) Dispatch(event Event) {
 
 				// Check if connection is still valid
 				if c.conn != nil {
-					c.writer.WriteString(msg + "\r\n")
-					c.writer.Flush()
+					if _, err := c.writer.WriteString(msg + "\r\n"); err != nil {
+						return
+					}
+					if err := c.writer.Flush(); err != nil {
+						return
+					}
 				}
 			}(conn, formatted)
 		}

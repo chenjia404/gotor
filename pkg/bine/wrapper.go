@@ -125,14 +125,14 @@ func ConnectWithOptionsContext(ctx context.Context, opts *Options) (*Client, err
 
 	// Wait for go-tor to be ready
 	if err := goTorClient.WaitUntilReady(opts.StartupTimeout); err != nil {
-		goTorClient.Close()
+		_ = goTorClient.Close()
 		return nil, fmt.Errorf("timeout waiting for go-tor: %w", err)
 	}
 
 	// Create SOCKS5 dialer
 	dialer, err := proxy.SOCKS5("tcp", goTorClient.ProxyAddr(), nil, proxy.Direct)
 	if err != nil {
-		goTorClient.Close()
+		_ = goTorClient.Close()
 		return nil, fmt.Errorf("failed to create SOCKS5 dialer: %w", err)
 	}
 
@@ -145,7 +145,7 @@ func ConnectWithOptionsContext(ctx context.Context, opts *Options) (*Client, err
 	if opts.EnableBine {
 		bineClient, err := tor.Start(ctx, nil)
 		if err != nil {
-			goTorClient.Close()
+			_ = goTorClient.Close()
 			return nil, fmt.Errorf("failed to start bine (Tor binary required): %w", err)
 		}
 		c.bineClient = bineClient

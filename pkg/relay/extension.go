@@ -380,7 +380,7 @@ func (h *ExtensionHandler) connectToNextHop(ctx context.Context, address string,
 
 	// Perform link protocol handshake
 	if err := h.performLinkHandshake(ctx, conn); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("link handshake failed: %w", err)
 	}
 

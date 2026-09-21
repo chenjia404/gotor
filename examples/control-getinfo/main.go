@@ -42,8 +42,8 @@ func main() {
 	fmt.Printf("Server greeting: %s", greeting)
 
 	// Authenticate
-	writer.WriteString("AUTHENTICATE\r\n")
-	writer.Flush()
+	_, _ = writer.WriteString("AUTHENTICATE\r\n")
+	_ = writer.Flush()
 	auth, _ := reader.ReadString('\n')
 	fmt.Printf("Authentication: %s", auth)
 
@@ -111,8 +111,8 @@ func printExampleCommands() {
 
 // queryInfo sends a GETINFO command for a single key and displays the result
 func queryInfo(reader *bufio.Reader, writer *bufio.Writer, key string) {
-	writer.WriteString(fmt.Sprintf("GETINFO %s\r\n", key))
-	writer.Flush()
+	_, _ = writer.WriteString(fmt.Sprintf("GETINFO %s\r\n", key))
+	_ = writer.Flush()
 
 	response, _ := reader.ReadString('\n')
 	response = strings.TrimSpace(response)
@@ -133,8 +133,8 @@ func queryInfo(reader *bufio.Reader, writer *bufio.Writer, key string) {
 
 // queryMultiple sends a GETINFO command for multiple keys and displays results
 func queryMultiple(reader *bufio.Reader, writer *bufio.Writer, keys []string) {
-	writer.WriteString(fmt.Sprintf("GETINFO %s\r\n", strings.Join(keys, " ")))
-	writer.Flush()
+	_, _ = writer.WriteString(fmt.Sprintf("GETINFO %s\r\n", strings.Join(keys, " ")))
+	_ = writer.Flush()
 
 	fmt.Printf("Requesting: %s\n", strings.Join(keys, ", "))
 

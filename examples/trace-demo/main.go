@@ -72,7 +72,7 @@ func demoBasicTracing() {
 	ctx, span := tracer.StartSpan(ctx, "basic-operation", trace.SpanKindInternal)
 	defer func() {
 		span.End()
-		exporter.Export(span)
+		_ = exporter.Export(span)
 	}()
 
 	// Simulate some work
@@ -223,7 +223,7 @@ func demoFileExport() {
 		return
 	}
 	filename := tmpfile.Name()
-	tmpfile.Close()
+	_ = tmpfile.Close()
 	defer os.Remove(filename)
 
 	// Create file exporter
@@ -244,7 +244,7 @@ func demoFileExport() {
 		span.SetAttribute("iteration", i)
 		time.Sleep(10 * time.Millisecond)
 		span.End()
-		exporter.Export(span)
+		_ = exporter.Export(span)
 	}
 
 	fmt.Printf("Exported 3 spans to: %s\n", filename)

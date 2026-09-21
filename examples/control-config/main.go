@@ -38,7 +38,7 @@ func main() {
 	defer cancel()
 
 	go func() {
-		torClient.Start(ctx)
+		_ = torClient.Start(ctx)
 	}()
 
 	// Give the control server time to start
@@ -60,19 +60,19 @@ func main() {
 
 	// Authenticate (no password in this example)
 	fmt.Println("\n--- Authentication ---")
-	conn.Write([]byte("AUTHENTICATE\r\n"))
+	_, _ = conn.Write([]byte("AUTHENTICATE\r\n"))
 	authResp, _ := reader.ReadString('\n')
 	fmt.Printf("Auth response: %s", authResp)
 
 	// Get single configuration value
 	fmt.Println("\n--- GETCONF Single Key ---")
-	conn.Write([]byte("GETCONF SocksPort\r\n"))
+	_, _ = conn.Write([]byte("GETCONF SocksPort\r\n"))
 	resp, _ := reader.ReadString('\n')
 	fmt.Printf("GETCONF SocksPort: %s", resp)
 
 	// Get multiple configuration values
 	fmt.Println("\n--- GETCONF Multiple Keys ---")
-	conn.Write([]byte("GETCONF SocksPort ControlPort LogLevel\r\n"))
+	_, _ = conn.Write([]byte("GETCONF SocksPort ControlPort LogLevel\r\n"))
 	for i := 0; i < 3; i++ {
 		resp, _ = reader.ReadString('\n')
 		fmt.Printf("  %s", resp)
@@ -80,36 +80,36 @@ func main() {
 
 	// Get current log level
 	fmt.Println("\n--- Get Current LogLevel ---")
-	conn.Write([]byte("GETCONF LogLevel\r\n"))
+	_, _ = conn.Write([]byte("GETCONF LogLevel\r\n"))
 	resp, _ = reader.ReadString('\n')
 	fmt.Printf("Current: %s", resp)
 
 	// Set configuration value (LogLevel is writable)
 	fmt.Println("\n--- SETCONF LogLevel ---")
-	conn.Write([]byte("SETCONF LogLevel=debug\r\n"))
+	_, _ = conn.Write([]byte("SETCONF LogLevel=debug\r\n"))
 	resp, _ = reader.ReadString('\n')
 	fmt.Printf("SETCONF response: %s", resp)
 
 	// Verify the change
-	conn.Write([]byte("GETCONF LogLevel\r\n"))
+	_, _ = conn.Write([]byte("GETCONF LogLevel\r\n"))
 	resp, _ = reader.ReadString('\n')
 	fmt.Printf("After change: %s", resp)
 
 	// Try to set a read-only value
 	fmt.Println("\n--- Attempt to Set Read-Only Key ---")
-	conn.Write([]byte("SETCONF SocksPort=9999\r\n"))
+	_, _ = conn.Write([]byte("SETCONF SocksPort=9999\r\n"))
 	resp, _ = reader.ReadString('\n')
 	fmt.Printf("SETCONF SocksPort (read-only): %s", resp)
 
 	// Get unknown configuration key
 	fmt.Println("\n--- Get Unknown Key ---")
-	conn.Write([]byte("GETCONF UnknownKey\r\n"))
+	_, _ = conn.Write([]byte("GETCONF UnknownKey\r\n"))
 	resp, _ = reader.ReadString('\n')
 	fmt.Printf("GETCONF UnknownKey: %s", resp)
 
 	// Demonstrate PROTOCOLINFO with auth methods
 	fmt.Println("\n--- PROTOCOLINFO ---")
-	conn.Write([]byte("PROTOCOLINFO\r\n"))
+	_, _ = conn.Write([]byte("PROTOCOLINFO\r\n"))
 	for {
 		resp, _ = reader.ReadString('\n')
 		fmt.Printf("  %s", resp)
@@ -120,7 +120,7 @@ func main() {
 
 	// Close connection
 	fmt.Println("\n--- Closing Connection ---")
-	conn.Write([]byte("QUIT\r\n"))
+	_, _ = conn.Write([]byte("QUIT\r\n"))
 	resp, _ = reader.ReadString('\n')
 	fmt.Printf("QUIT response: %s", resp)
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -103,7 +104,7 @@ func (mc *ManagedClient) Start(ctx context.Context) error {
 
 	if err := mc.performHandshake(ctx); err != nil {
 		mc.mu.Lock()
-		mc.cmd.Process.Kill()
+		_ = mc.cmd.Process.Kill()
 		mc.running = false
 		mc.mu.Unlock()
 		return errors.Wrap(errors.CategoryProtocol, errors.SeverityHigh, "PT handshake failed", err)
@@ -269,7 +270,7 @@ func (mc *ManagedClient) Dial(ctx context.Context, address string) (net.Conn, er
 
 	if method.SOCKSVersion == 5 {
 		if err := mc.socks5Handshake(socksConn, address); err != nil {
-			socksConn.Close()
+			_ = socksConn.Close()
 			return nil, err
 		}
 	}
@@ -279,7 +280,9 @@ func (mc *ManagedClient) Dial(ctx context.Context, address string) (net.Conn, er
 
 // socks5Handshake performs SOCKS5 handshake to connect through PT.
 func (mc *ManagedClient) socks5Handshake(conn net.Conn, address string) error {
-	conn.Write([]byte{0x05, 0x01, 0x00})
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		return err
+	}
 
 	resp := make([]byte, 2)
 	if _, err := io.ReadFull(conn, resp); err != nil {
@@ -294,15 +297,21 @@ func (mc *ManagedClient) socks5Handshake(conn net.Conn, address string) error {
 		return err
 	}
 
-	portNum := 0
-	fmt.Sscanf(port, "%d", &portNum)
+	portNum, err := strconv.Atoi(port)
+	if err != nil {
+		return fmt.Errorf("invalid SOCKS port: %w", err)
+	}
 
 	if len(host) > 255 {
 		return fmt.Errorf("SOCKS hostname too long: %d", len(host))
 	}
+	if portNum < 0 || portNum > 65535 {
+		return fmt.Errorf("invalid SOCKS port: %d", portNum)
+	}
+	p := security.PortUint16(portNum)
 	req := []byte{0x05, 0x01, 0x00, 0x03, security.ByteLen(len(host))}
 	req = append(req, []byte(host)...)
-	req = append(req, byte(portNum>>8), byte(portNum&0xff))
+	req = append(req, security.Uint16HighByte(p), security.Uint16LowByte(p))
 
 	if _, err := conn.Write(req); err != nil {
 		return err
@@ -369,8 +378,8 @@ func (mc *ManagedClient) Close() error {
 	mc.running = false
 
 	if mc.cmd != nil && mc.cmd.Process != nil {
-		mc.cmd.Process.Kill()
-		mc.cmd.Wait()
+		_ = mc.cmd.Process.Kill()
+		_ = mc.cmd.Wait()
 		mc.log.Info("PT process terminated", "binary", mc.config.BinaryPath)
 	}
 

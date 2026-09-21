@@ -70,7 +70,7 @@ func main() {
 	conn, err := net.Dial("tcp", "127.0.0.1:9051")
 	if err != nil {
 		fmt.Printf("Failed to connect to control port: %v\n", err)
-		torClient.Stop()
+		_ = torClient.Stop()
 		os.Exit(1)
 	}
 	defer conn.Close()
@@ -189,7 +189,7 @@ func main() {
 	fmt.Println("See docs/CONTROL_PROTOCOL_CONFIG.md for complete reference.")
 
 	// Cleanup
-	torClient.Stop()
+	_ = torClient.Stop()
 	fmt.Println()
 	fmt.Println("Example completed successfully!")
 }
