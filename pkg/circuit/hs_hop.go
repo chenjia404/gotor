@@ -11,6 +11,7 @@ import (
 
 // NewHopFromHSKeyMaterial 从 hs-ntor 展开的 128 字节密钥材料构造会合末跳。
 // 布局：Df(32) || Db(32) || Kf(32) || Kb(32)；摘要为 SHA3-256，密码为 AES-256-CTR。
+// 电路级 SENDME 不携带完整 32 字节摘要，只取前 20 字节（C Tor SENDME_TAG_LEN_TOR1）。
 func NewHopFromHSKeyMaterial(keyMaterial []byte) (*Hop, error) {
 	if len(keyMaterial) < crypto.HsNtorCircuitKeyLen {
 		return nil, fmt.Errorf("HS key material too short: %d", len(keyMaterial))

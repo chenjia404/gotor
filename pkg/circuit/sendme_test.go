@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
+	"github.com/opd-ai/go-tor/pkg/crypto"
 )
 
 func TestMaybeRecordSendmeTagAtWindowMultiple(t *testing.T) {
@@ -329,4 +330,106 @@ func TestProcessSendmeSamplesOrconnBlocked(t *testing.T) {
 	if snap.InSlowStart {
 		t.Fatal("orconn_blocked SENDME must exit slow start")
 	}
+}
+
+func TestRecordSendmeTagTruncatesSHA3To20(t *testing.T) {
+	c := NewCircuit(1)
+	full := bytes.Repeat([]byte{0x5a}, 32)
+	c.recordSendmeTag(full)
+	if _, queued := c.SendmeStats(); queued != 1 {
+		t.Fatal("SHA3-256 摘要必须入队，不能因长度 32 被丢掉")
+	}
+	payload, err := cell.EncodeSendmeV1(full[:cell.SendmeV1DigestLen])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.processCircuitSendme(payload); err != nil {
+		t.Fatalf("对端 SENDME 携带 SHA3 前 20 字节时必须通过: %v", err)
+	}
+}
+
+func TestHSRendezvousDeliverSendmeRestoresWindow(t *testing.T) {
+	hop, err := NewHopFromHSKeyMaterial(bytes.Repeat([]byte{9}, 128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 摘要认证与 CTR 无关；去掉密码层才能直接读出发出的 SENDME。
+	hop.ForwardCipher = nil
+	hop.BackwardCipher = nil
+
+	c := NewCircuit(7)
+	if err := c.AddHop(hop); err != nil {
+		t.Fatal(err)
+	}
+	c.SetState(StateOpen)
+	sender := &captureSendmeSender{ch: make(chan *cell.Cell, 1)}
+	c.SetConnection(sender)
+	c.EnableCongestionControl(1)
+	before := c.deliverWindow
+
+	relayCell, err := cell.NewRelayCell(0, cell.RelayData, []byte("onion-page"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := relayCell.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashClone, err := crypto.CloneHash(hop.BackwardDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cellCopy := append([]byte(nil), payload...)
+	cellCopy[5], cellCopy[6], cellCopy[7], cellCopy[8] = 0, 0, 0, 0
+	if _, err := hashClone.Write(cellCopy); err != nil {
+		t.Fatal(err)
+	}
+	full := hashClone.Sum(nil)
+	if len(full) != 32 {
+		t.Fatalf("会合层摘要应为 SHA3-256，got %d", len(full))
+	}
+	copy(payload[5:9], full[:4])
+
+	if err := c.DeliverRelayCell(&cell.Cell{CircID: c.ID, Command: cell.CmdRelay, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case sent := <-sender.ch:
+		rc, err := cell.DecodeRelayCell(sent.Payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rc.Command != cell.RelaySendme {
+			t.Fatalf("command=%d, want SENDME", rc.Command)
+		}
+		version, digest, err := cell.DecodeSendme(rc.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if version != cell.SendmeVersion1 {
+			t.Fatalf("version=%d", version)
+		}
+		if !bytes.Equal(digest, full[:cell.SendmeV1DigestLen]) {
+			t.Fatalf("SENDME tag=%x want SHA3 prefix %x", digest, full[:cell.SendmeV1DigestLen])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("会合末跳收到 DATA 后没有发出电路级 SENDME")
+	}
+
+	if got := c.deliverWindow; got != before {
+		t.Fatalf("deliver window=%d want %d，SENDME 没有把窗口加回去", got, before)
+	}
+}
+
+type captureSendmeSender struct {
+	ch chan *cell.Cell
+}
+
+func (s *captureSendmeSender) SendCell(c *cell.Cell) error {
+	select {
+	case s.ch <- c:
+	default:
+	}
+	return nil
 }

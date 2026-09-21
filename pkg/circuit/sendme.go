@@ -4,9 +4,11 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
+	"github.com/opd-ai/go-tor/pkg/logger"
 )
 
 const (
@@ -31,25 +33,53 @@ func cloneDigest(tag []byte) []byte {
 	return append([]byte(nil), tag...)
 }
 
+var (
+	sendmeLogOnce sync.Once
+	sendmeLog     *logger.Logger
+)
+
+func circuitSendmeLogger() *logger.Logger {
+	sendmeLogOnce.Do(func() {
+		sendmeLog = logger.NewDefault().Component("sendme")
+	})
+	return sendmeLog
+}
+
+// sendmeAuthTag 把 hop 滚动摘要收成电路级 SENDME v1 的 DATA。
+// CGO 原样保留 16 字节 tag。tor1 取前 20 字节：SHA-1 本身就是 20，
+// 会合层 SHA3-256 是 32，C Tor 的 SENDME_TAG_LEN_TOR1 只抄前 20。
+// 不截断时会合电路的 SENDME 会被拒，deliver 窗耗尽后洋葱流被掐断。
+func sendmeAuthTag(raw []byte) ([]byte, bool) {
+	switch {
+	case len(raw) == cell.SendmeCGOTagLen:
+		return cloneDigest(raw), true
+	case len(raw) >= cell.SendmeV1DigestLen:
+		return cloneDigest(raw[:cell.SendmeV1DigestLen]), true
+	default:
+		return nil, false
+	}
+}
+
 // maybeRecordSendmeTag 在发出 DATA 后，若 package window 落到 increment 的倍数，
-// 记下该 cell 的 20 字节滚动摘要，供对端电路级 SENDME v1 校验。
+// 记下该 cell 的 SENDME 认证标签，供对端电路级 SENDME v1 校验。
 // 对照 spec flow-control 与 C Tor sendme_record_cell_digest_on_circ。
 func (c *Circuit) maybeRecordSendmeTag(tag []byte) {
-	if len(tag) != cell.SendmeV1DigestLen && len(tag) != cell.SendmeCGOTagLen {
+	auth, ok := sendmeAuthTag(tag)
+	if !ok {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.vegas != nil {
 		if c.vegas.inflight > 0 && c.vegas.inflight%c.vegas.sendmeInc == 0 {
-			c.enqueueSendmeLocked(tag)
+			c.enqueueSendmeLocked(auth)
 		}
 		return
 	}
 	// window==0 也是 increment 的倍数（第 N 个 DATA），必须入队。
 	inc := c.sendmeIncrementLocked()
 	if c.packageWindow%inc == 0 {
-		c.enqueueSendmeLocked(tag)
+		c.enqueueSendmeLocked(auth)
 	}
 }
 
@@ -117,12 +147,13 @@ func (c *Circuit) decrementPackageWindowForSendme() (record bool, err error) {
 }
 
 func (c *Circuit) recordSendmeTag(tag []byte) {
-	if len(tag) != cell.SendmeV1DigestLen && len(tag) != cell.SendmeCGOTagLen {
+	auth, ok := sendmeAuthTag(tag)
+	if !ok {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.enqueueSendmeLocked(tag)
+	c.enqueueSendmeLocked(auth)
 }
 
 // decrementDeliverWindowAndTakeSendme 原子减 deliver 窗。
@@ -341,11 +372,15 @@ func (c *Circuit) reserveDataWindows(streamID uint16, destCGO bool) (recordSendm
 }
 
 func (c *Circuit) sendCircuitSendme(tag []byte) error {
-	if len(tag) != cell.SendmeV1DigestLen && len(tag) != cell.SendmeCGOTagLen {
-		return fmt.Errorf("missing SENDME v1 tag")
+	auth, ok := sendmeAuthTag(tag)
+	if !ok {
+		err := fmt.Errorf("missing SENDME v1 tag (len=%d)", len(tag))
+		circuitSendmeLogger().Error("circuit SENDME not sent", "circuit_id", c.ID, "error", err)
+		return err
 	}
-	payload, err := cell.EncodeSendmeV1(tag)
+	payload, err := cell.EncodeSendmeV1(auth)
 	if err != nil {
+		circuitSendmeLogger().Error("circuit SENDME not sent", "circuit_id", c.ID, "error", err)
 		return err
 	}
 
@@ -356,9 +391,16 @@ func (c *Circuit) sendCircuitSendme(tag []byte) error {
 
 	sendmeCell, err := cell.NewRelayCell(0, cell.RelaySendme, payload)
 	if err != nil {
-		return fmt.Errorf("failed to create SENDME cell: %w", err)
+		err = fmt.Errorf("failed to create SENDME cell: %w", err)
+		circuitSendmeLogger().Error("circuit SENDME not sent", "circuit_id", c.ID, "error", err)
+		return err
 	}
-	return c.SendRelayCell(sendmeCell)
+	if err := c.SendRelayCell(sendmeCell); err != nil {
+		err = fmt.Errorf("failed to send SENDME cell: %w", err)
+		circuitSendmeLogger().Error("circuit SENDME not sent", "circuit_id", c.ID, "error", err)
+		return err
+	}
+	return nil
 }
 
 // SendmeStats 供测试观察电路级 SENDME 收发次数。
