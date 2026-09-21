@@ -458,6 +458,49 @@ func TestConstantTimeCompare(t *testing.T) {
 	}
 }
 
+func TestByteLen(t *testing.T) {
+	if got := ByteLen(-1); got != 0 {
+		t.Fatalf("ByteLen(-1)=%d", got)
+	}
+	if got := ByteLen(0); got != 0 {
+		t.Fatalf("ByteLen(0)=%d", got)
+	}
+	if got := ByteLen(255); got != 255 {
+		t.Fatalf("ByteLen(255)=%d", got)
+	}
+	if got := ByteLen(256); got != 255 {
+		t.Fatalf("ByteLen(256)=%d", got)
+	}
+}
+
+func TestUint16Bytes(t *testing.T) {
+	v := uint16(0xABCD)
+	if Uint16HighByte(v) != 0xAB || Uint16LowByte(v) != 0xCD {
+		t.Fatalf("got %02x %02x", Uint16HighByte(v), Uint16LowByte(v))
+	}
+}
+
+func TestPortAndSaturatingCasts(t *testing.T) {
+	if PortUint16(-1) != 0 || PortUint16(70000) != math.MaxUint16 || PortUint16(443) != 443 {
+		t.Fatal("PortUint16")
+	}
+	if Uint32ToUint16(70000) != math.MaxUint16 || Uint32ToUint16(80) != 80 {
+		t.Fatal("Uint32ToUint16")
+	}
+	if IntToUint32Sat(-3) != 0 || IntToUint32Sat(9) != 9 {
+		t.Fatal("IntToUint32Sat")
+	}
+	if Uint64ToInt64Sat(math.MaxUint64) != math.MaxInt64 {
+		t.Fatal("Uint64ToInt64Sat saturate")
+	}
+	if Int64ToUint64Sat(-1) != 0 || Int64ToUint64Sat(7) != 7 {
+		t.Fatal("Int64ToUint64Sat")
+	}
+	if UnixHoursUint32(time.Unix(3600, 0)) != 1 {
+		t.Fatal("UnixHoursUint32")
+	}
+}
+
 func TestSecureZeroMemory(t *testing.T) {
 	tests := []struct {
 		name string

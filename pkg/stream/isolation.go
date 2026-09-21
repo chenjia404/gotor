@@ -11,6 +11,7 @@ import (
 
 	"github.com/opd-ai/go-tor/pkg/circuit"
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // IsolationMode defines how stream isolation is enforced.
@@ -253,9 +254,9 @@ func (e *IsolationEnforcer) extractSourcePort(addr net.Addr) uint16 {
 	}
 	switch a := addr.(type) {
 	case *net.TCPAddr:
-		return uint16(a.Port)
+		return security.PortUint16(a.Port)
 	case *net.UDPAddr:
-		return uint16(a.Port)
+		return security.PortUint16(a.Port)
 	default:
 		// Try parsing as string "host:port"
 		_, portStr, err := net.SplitHostPort(addr.String())

@@ -16,6 +16,7 @@ import (
 
 	"github.com/opd-ai/go-tor/pkg/errors"
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // ManagedClient represents a client-side pluggable transport managed as an external process.
@@ -296,7 +297,10 @@ func (mc *ManagedClient) socks5Handshake(conn net.Conn, address string) error {
 	portNum := 0
 	fmt.Sscanf(port, "%d", &portNum)
 
-	req := []byte{0x05, 0x01, 0x00, 0x03, byte(len(host))}
+	if len(host) > 255 {
+		return fmt.Errorf("SOCKS hostname too long: %d", len(host))
+	}
+	req := []byte{0x05, 0x01, 0x00, 0x03, security.ByteLen(len(host))}
 	req = append(req, []byte(host)...)
 	req = append(req, byte(portNum>>8), byte(portNum&0xff))
 

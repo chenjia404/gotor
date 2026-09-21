@@ -109,7 +109,7 @@ func GetTimePeriodWithParams(now time.Time, intervalMin, offsetMin uint64) uint6
 	if unix < 0 {
 		return 0
 	}
-	minutes := uint64(unix) / 60
+	minutes := uint64(unix) / 60 // #nosec G115 -- unix 已排除负值
 	if minutes < offsetMin {
 		return 0
 	}

@@ -54,7 +54,7 @@ func (s *Suite) BenchmarkConcurrentStreams(ctx context.Context) error {
 
 					// Simulate stream data transfer
 					data := make([]byte, dataSize)
-					data[0] = byte(streamID)
+					data[0] = security.ByteLen(streamID)
 
 					// Simulate processing time
 					time.Sleep(time.Duration(1+streamID%10) * time.Millisecond)
@@ -172,7 +172,7 @@ func (s *Suite) BenchmarkStreamScaling(ctx context.Context) error {
 				for j := 0; j < operationsPerStream; j++ {
 					// Simulate work
 					data := make([]byte, 512)
-					data[0] = byte(streamID + j)
+					data[0] = security.ByteLen(streamID + j)
 					atomic.AddInt64(&completedOps, 1)
 
 					// Small delay to simulate I/O
@@ -255,8 +255,8 @@ func (s *Suite) BenchmarkStreamMultiplexing(ctx context.Context) error {
 				for i := 0; i < operationsPerStream; i++ {
 					// Simulate stream operation
 					data := make([]byte, 256)
-					data[0] = byte(cID)
-					data[1] = byte(sID)
+					data[0] = security.ByteLen(cID)
+					data[1] = security.ByteLen(sID)
 					atomic.AddInt64(&completedOps, 1)
 
 					// Small delay

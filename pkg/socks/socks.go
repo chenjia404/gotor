@@ -24,6 +24,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/path"
 	"github.com/opd-ai/go-tor/pkg/pool"
 	"github.com/opd-ai/go-tor/pkg/ratelimit"
+	"github.com/opd-ai/go-tor/pkg/security"
 	"github.com/opd-ai/go-tor/pkg/stream"
 )
 
@@ -1592,7 +1593,7 @@ func (s *Server) sendDNSReplyHostname(conn net.Conn, status byte, hostname strin
 			return fmt.Errorf("hostname length %d exceeds 255 byte limit", len(hostnameBytes))
 		}
 
-		response = append(response, byte(len(hostnameBytes)))
+		response = append(response, security.ByteLen(len(hostnameBytes)))
 		response = append(response, hostnameBytes...)
 
 		// Add TTL (4 bytes, big endian) from the DNS response

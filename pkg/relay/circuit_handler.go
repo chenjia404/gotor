@@ -14,6 +14,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/crypto"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/onion"
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // ServerCircuit represents a server-side circuit
@@ -292,10 +293,13 @@ func (h *CircuitHandler) handleCreate2Auth(conn net.Conn, c *cell.Cell, linkAuth
 
 // sendCreated2 sends a CREATED2 cell with handshake response
 func (h *CircuitHandler) sendCreated2(conn net.Conn, circuitID uint32, response []byte) error {
-	// Build CREATED2 payload: HLEN (2) || HDATA (response)
+	if len(response) > 0xFFFF {
+		return fmt.Errorf("CREATED2 handshake response too long: %d", len(response))
+	}
+	hlen := security.IntToUint16Sat(len(response))
 	payload := make([]byte, 2+len(response))
-	payload[0] = byte(len(response) >> 8)
-	payload[1] = byte(len(response) & 0xff)
+	payload[0] = security.Uint16HighByte(hlen)
+	payload[1] = security.Uint16LowByte(hlen)
 	copy(payload[2:], response)
 
 	// Create CREATED2 cell

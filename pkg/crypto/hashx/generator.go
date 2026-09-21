@@ -56,7 +56,7 @@ func (g *generator) selectRegister(set regSet) (uint8, bool) {
 	case 1:
 		return set.index(0), true
 	default:
-		idx := g.rng.nextU32() % uint32(set.len())
+		idx := g.rng.nextU32() % uint32(set.len()) // #nosec G115 -- 寄存器集合至多 8 个
 		return set.index(int(idx)), true
 	}
 }
@@ -277,7 +277,7 @@ func (g *generator) chooseInstruction(op opcode, p pass, plan instructionPlan) (
 		return instruction{op: opXorConst, dst: dst, imm: srcImm}, w, true
 	case opRotate:
 		w := registerWriter{kind: rwRotate}
-		rot := uint8(g.selectNonzeroU32(63))
+		rot := uint8(g.selectNonzeroU32(63)) // #nosec G115 -- 旋转量已限制 1..63
 		dst, ok := g.chooseDst(op, p, w, nil, plan)
 		if !ok {
 			return instruction{}, registerWriter{}, false

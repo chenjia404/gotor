@@ -19,6 +19,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/path"
+	"github.com/opd-ai/go-tor/pkg/security"
 	"golang.org/x/crypto/curve25519"
 )
 
@@ -592,7 +593,7 @@ func (s *Service) establishIntroductionPoint(ctx context.Context, relay *HSDirec
 		}
 		intro := &ServiceIntroPoint{
 			Relay:       relay,
-			CircuitID:   uint32(3000 + len(s.introPoints)),
+			CircuitID:   security.IntToUint32Sat(3000 + len(s.introPoints)),
 			AuthPrivate: keys.AuthPrivate,
 			AuthPublic:  keys.AuthPublic,
 			EncKey:      keys.EncPrivate,

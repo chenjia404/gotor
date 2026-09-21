@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // CellSender is implemented by types that can send Tor cells.
@@ -329,7 +330,7 @@ func (pm *PaddingMachine) randomDuration(min, max time.Duration) time.Duration {
 		return min
 	}
 
-	rangeSize := uint64(max - min)
+	rangeSize := security.DurationToUint64(max - min)
 	if rangeSize == 0 {
 		return min
 	}
@@ -347,7 +348,7 @@ func (pm *PaddingMachine) randomDuration(min, max time.Duration) time.Duration {
 
 		n := binary.BigEndian.Uint64(buf[:])
 		if n < limit {
-			return min + time.Duration(n%rangeSize)
+			return min + security.Uint64Duration(n%rangeSize)
 		}
 		// Retry if we got a value that would cause bias
 	}
@@ -514,7 +515,7 @@ func AddRandomTimingDelay(minDelay, maxDelay time.Duration) {
 		return
 	}
 
-	rangeSize := uint64(maxDelay - minDelay)
+	rangeSize := security.DurationToUint64(maxDelay - minDelay)
 	if rangeSize == 0 {
 		time.Sleep(minDelay)
 		return
@@ -532,7 +533,7 @@ func AddRandomTimingDelay(minDelay, maxDelay time.Duration) {
 		}
 		n := binary.BigEndian.Uint64(buf[:])
 		if n < limit {
-			delay = minDelay + time.Duration(n%rangeSize)
+			delay = minDelay + security.Uint64Duration(n%rangeSize)
 			break
 		}
 		// Retry if we got a value that would cause bias

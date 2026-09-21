@@ -120,8 +120,8 @@ func (h *Handshake) sendVersions() error {
 
 	payload := make([]byte, len(versions)*2)
 	for i, v := range versions {
-		payload[i*2] = byte(v >> 8)
-		payload[i*2+1] = byte(v)
+		payload[i*2] = security.Uint16HighByte(v)
+		payload[i*2+1] = security.Uint16LowByte(v)
 	}
 
 	versionsCell := cell.NewCell(0, cell.CmdVersions)

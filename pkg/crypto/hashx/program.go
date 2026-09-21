@@ -76,19 +76,19 @@ func interpret(prog []instruction, regs *registerFile) {
 			pc = next
 		case opUMulH:
 			hi, _ := bits.Mul64(regs[inst.dst], regs[inst.src])
-			mulhResult = uint32(hi)
+			mulhResult = uint32(hi) // #nosec G115 -- HashX 32 位寄存器截断
 			regs[inst.dst] = hi
 			pc = next
 		case opSMulH:
 			hi := mulhSigned(regs[inst.dst], regs[inst.src])
-			mulhResult = uint32(hi)
+			mulhResult = uint32(hi) // #nosec G115 -- HashX 32 位寄存器截断
 			regs[inst.dst] = hi
 			pc = next
 		case opXorConst:
-			regs[inst.dst] ^= uint64(int64(int32(inst.imm)))
+			regs[inst.dst] ^= uint64(int64(int32(inst.imm))) // #nosec G115 -- HashX 有符号立即数符号扩展
 			pc = next
 		case opAddConst:
-			regs[inst.dst] += uint64(int64(int32(inst.imm)))
+			regs[inst.dst] += uint64(int64(int32(inst.imm))) // #nosec G115 -- HashX 有符号立即数符号扩展
 			pc = next
 		default:
 			pc = next
@@ -98,10 +98,10 @@ func interpret(prog []instruction, regs *registerFile) {
 
 func mulhSigned(a, b uint64) uint64 {
 	hi, _ := bits.Mul64(a, b)
-	if int64(a) < 0 {
+	if int64(a) < 0 { // #nosec G115 -- HashX 有符号 mulh 把 u64 当 i64
 		hi -= b
 	}
-	if int64(b) < 0 {
+	if int64(b) < 0 { // #nosec G115 -- HashX 有符号 mulh 把 u64 当 i64
 		hi -= a
 	}
 	return hi

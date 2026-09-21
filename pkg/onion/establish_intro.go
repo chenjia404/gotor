@@ -9,6 +9,7 @@ import (
 
 	"github.com/opd-ai/go-tor/pkg/cell"
 	"github.com/opd-ai/go-tor/pkg/crypto"
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 const (
@@ -96,7 +97,7 @@ func BuildEstablishIntroPayloadWithDoS(authPub ed25519.PublicKey, authPriv ed255
 	body = append(body, lenBuf...)
 	body = append(body, authPub...)
 	body = append(body, 1) // N_EXTENSIONS
-	body = append(body, introDoSExtType, byte(len(field)))
+	body = append(body, introDoSExtType, security.ByteLen(len(field)))
 	body = append(body, field...)
 	return signEstablishIntro(body, authPriv, circNonce)
 }
@@ -107,7 +108,7 @@ func signEstablishIntro(body []byte, authPriv ed25519.PrivateKey, circNonce []by
 	lenBuf := make([]byte, 2)
 	signMsg := append([]byte(establishIntroPrefix), body...)
 	sig := ed25519.Sign(authPriv, signMsg)
-	binary.BigEndian.PutUint16(lenBuf, uint16(len(sig)))
+	binary.BigEndian.PutUint16(lenBuf, security.IntToUint16Sat(len(sig)))
 	body = append(body, lenBuf...)
 	body = append(body, sig...)
 	return body, nil

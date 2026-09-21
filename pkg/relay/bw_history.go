@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/datadir"
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // 带宽历史默认与 C Tor 一致：900 秒一格，最多保留 24 小时。
@@ -182,7 +183,7 @@ func (h *BandwidthHistory) ObservedBytesPerSec() uint64 {
 	if len(h.slots) == 0 {
 		return 0
 	}
-	nsec := uint64(intervalSeconds(h.interval))
+	nsec := security.Int64ToUint64Sat(intervalSeconds(h.interval))
 	if nsec == 0 {
 		nsec = 900
 	}

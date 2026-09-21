@@ -13,7 +13,7 @@ func safeInt64ToUint64(val int64) (uint64, error) {
 	if val < 0 {
 		return 0, fmt.Errorf("negative value cannot be converted to uint64: %d", val)
 	}
-	return uint64(val), nil
+	return uint64(val), nil // #nosec G115 -- 已排除负值
 }
 
 // safeInt64ToUint32 safely converts int64 to uint32 with overflow checking
@@ -24,7 +24,7 @@ func safeInt64ToUint32(val int64) (uint32, error) {
 	if val > math.MaxUint32 {
 		return 0, fmt.Errorf("value exceeds uint32 range: %d", val)
 	}
-	return uint32(val), nil
+	return uint32(val), nil // #nosec G115 -- 已夹紧到 uint32
 }
 
 // safeIntToUint16 safely converts int to uint16 with overflow checking
@@ -35,7 +35,7 @@ func safeIntToUint16(val int) (uint16, error) {
 	if val > math.MaxUint16 {
 		return 0, fmt.Errorf("value exceeds uint16 range: %d", val)
 	}
-	return uint16(val), nil
+	return uint16(val), nil // #nosec G115 -- 已夹紧到 uint16
 }
 
 // constantTimeCompare performs constant-time comparison of two byte slices

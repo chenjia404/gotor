@@ -55,7 +55,7 @@ func clampIntroDoSValue(v int) uint64 {
 	if v > introDoSMax {
 		return introDoSMax
 	}
-	return uint64(v)
+	return uint64(v) // #nosec G115 -- 已夹紧非负
 }
 
 func clampIntroDoSUint(v uint64) uint64 {

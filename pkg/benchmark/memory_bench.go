@@ -249,7 +249,7 @@ func (s *Suite) BenchmarkMemoryLeaks(ctx context.Context) error {
 		OperationsPerSec: float64(iterations) / totalDuration.Seconds(),
 		Success:          success,
 		AdditionalMetrics: map[string]interface{}{
-			"memory_growth": FormatBytes(uint64(memoryGrowth)),
+			"memory_growth": FormatBytes(security.Int64ToUint64Sat(memoryGrowth)),
 			"threshold":     FormatBytes(threshold),
 			"before_mb":     float64(memBefore.Alloc) / (1024 * 1024),
 			"after_mb":      float64(memAfter.Alloc) / (1024 * 1024),
@@ -260,16 +260,16 @@ func (s *Suite) BenchmarkMemoryLeaks(ctx context.Context) error {
 
 	if !success {
 		result.Error = fmt.Errorf("memory growth (%s) exceeds threshold (%s)",
-			FormatBytes(uint64(memoryGrowth)), FormatBytes(threshold))
+			FormatBytes(security.Int64ToUint64Sat(memoryGrowth)), FormatBytes(threshold))
 	}
 
 	s.addResult(result)
 	// Safe conversion for display - handle negative growth (AUDIT-005)
 	var growthDisplay string
 	if memoryGrowth < 0 {
-		growthDisplay = fmt.Sprintf("-%s", FormatBytes(uint64(-memoryGrowth)))
+		growthDisplay = fmt.Sprintf("-%s", FormatBytes(security.Int64ToUint64Sat(-memoryGrowth)))
 	} else {
-		growthDisplay = FormatBytes(uint64(memoryGrowth))
+		growthDisplay = FormatBytes(security.Int64ToUint64Sat(memoryGrowth))
 	}
 	s.log.Info("Memory leak detection complete",
 		"growth", growthDisplay,

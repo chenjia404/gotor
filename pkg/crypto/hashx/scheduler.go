@@ -79,8 +79,8 @@ func (s *scheduler) advance(n int) bool {
 	if cyc >= targetCycles {
 		return false
 	}
-	s.subCycle = uint16(res)
-	s.cycle = uint8(cyc)
+	s.subCycle = uint16(res) // #nosec G115 -- res 已校验 < subCycleMax
+	s.cycle = uint8(cyc)     // #nosec G115 -- cyc 已校验 < targetCycles
 	return true
 }
 
@@ -98,7 +98,7 @@ type instructionPlan struct {
 func (p instructionPlan) cycleIssued() uint8 { return p.cycle }
 
 func (p instructionPlan) cycleRetired(op opcode) uint8 {
-	return p.cycle + uint8(instructionLatency(op))
+	return p.cycle + uint8(instructionLatency(op)) // #nosec G115 -- HashX 延迟为个位数
 }
 
 func (s *scheduler) portBusy(port, cycle int) bool {
@@ -118,7 +118,7 @@ func (s *scheduler) microPlan(begin uint8, ports uint8) (cycle uint8, portIdx ui
 	for {
 		for idx := uint8(0); idx < numExecPorts; idx++ {
 			if ports&(1<<idx) != 0 && !s.portBusy(int(idx), c) {
-				return uint8(c), idx, true
+				return uint8(c), idx, true // #nosec G115 -- c < scheduleSize
 			}
 		}
 		c++
@@ -139,8 +139,8 @@ func (s *scheduler) instructionPlan(op opcode) (instructionPlan, bool) {
 	}
 	c := int(s.cycle)
 	for {
-		c1, p1, ok1 := s.microPlan(uint8(c), first)
-		c2, p2, ok2 := s.microPlan(uint8(c), second)
+		c1, p1, ok1 := s.microPlan(uint8(c), first)  // #nosec G115 -- c < scheduleSize
+		c2, p2, ok2 := s.microPlan(uint8(c), second) // #nosec G115 -- c < scheduleSize
 		if ok1 && ok2 && c1 == c2 {
 			return instructionPlan{cycle: c1, firstPort: p1, secondPort: p2, hasSecond: true}, true
 		}

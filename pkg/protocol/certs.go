@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // rsaEd25519CrossCertPrefix 是 type 7 交叉证书的签名前缀。
@@ -490,19 +491,19 @@ func (e *Ed25519Certificate) reconstructSignedBytes() []byte {
 	signedData = append(signedData, e.Version)
 	signedData = append(signedData, e.CertType)
 
-	expirationHours := uint32(e.ExpiresAt.Unix() / 3600)
+	expirationHours := security.UnixHoursUint32(e.ExpiresAt)
 	expBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(expBytes, expirationHours)
 	signedData = append(signedData, expBytes...)
 
 	signedData = append(signedData, e.CertKeyType)
 	signedData = append(signedData, e.CertifiedKey...)
-	signedData = append(signedData, byte(len(e.Extensions)))
+	signedData = append(signedData, security.ByteLen(len(e.Extensions)))
 
 	for _, ext := range e.Extensions {
 		// ExtLen = len(ExtData)，与 cert-spec / Arti encode.rs 一致
 		extLenBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(extLenBytes, uint16(len(ext.ExtData)))
+		binary.BigEndian.PutUint16(extLenBytes, security.IntToUint16Sat(len(ext.ExtData)))
 		signedData = append(signedData, extLenBytes...)
 		signedData = append(signedData, ext.ExtType)
 		signedData = append(signedData, ext.Flags)
@@ -595,7 +596,7 @@ func reconstructRSAEd25519CrossCertFields(cross *Ed25519Certificate) []byte {
 	fields := make([]byte, 0, rsaEd25519CrossCertSignedLen)
 	fields = append(fields, cross.CertifiedKey...)
 	exp := make([]byte, 4)
-	binary.BigEndian.PutUint32(exp, uint32(cross.ExpiresAt.Unix()/3600))
+	binary.BigEndian.PutUint32(exp, security.UnixHoursUint32(cross.ExpiresAt))
 	fields = append(fields, exp...)
 	return fields
 }
