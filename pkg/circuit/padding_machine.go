@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // PaddingMachineType identifies different padding machine implementations
@@ -271,7 +272,7 @@ func (sm *StateMachine) randomRange(min, max int) int {
 	if min >= max {
 		return min
 	}
-	rangeSize := uint32(max - min + 1)
+	rangeSize := security.IntToUint32Sat(max - min + 1)
 	var buf [4]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return min // Fallback on error
@@ -285,13 +286,13 @@ func (sm *StateMachine) randomDuration(min, max time.Duration) time.Duration {
 	if min >= max {
 		return min
 	}
-	rangeSize := uint64(max - min)
+	rangeSize := security.DurationToUint64(max - min)
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return min // Fallback on error
 	}
 	n := binary.BigEndian.Uint64(buf[:])
-	return min + time.Duration(n%rangeSize)
+	return min + security.Uint64Duration(n%rangeSize)
 }
 
 // PaddingNegotiateRequest represents a PADDING_NEGOTIATE cell payload.

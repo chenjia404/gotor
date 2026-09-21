@@ -20,9 +20,9 @@ func (r *rngBuffer) nextU32() uint32 {
 		return r.u32
 	}
 	v := r.next()
-	r.u32 = uint32(v)
+	r.u32 = uint32(v) // #nosec G115 -- HashX 取低 32 位
 	r.hasU32 = true
-	return uint32(v >> 32)
+	return uint32(v >> 32) // #nosec G115 -- HashX 取高 32 位
 }
 
 func (r *rngBuffer) nextU8() uint8 {
@@ -32,7 +32,7 @@ func (r *rngBuffer) nextU8() uint8 {
 	}
 	v := r.next()
 	for i := 0; i < 7; i++ {
-		r.u8buf[i] = byte(v >> (8 * i))
+		r.u8buf[i] = byte(v >> (8 * i)) // #nosec G115 -- HashX 按字节拆 u64
 	}
 	r.u8n = 7
 	return byte(v >> 56)

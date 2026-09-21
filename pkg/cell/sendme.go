@@ -28,7 +28,7 @@ func EncodeSendmeV1(digest []byte) ([]byte, error) {
 	}
 	out := make([]byte, 3+len(digest))
 	out[0] = SendmeVersion1
-	binary.BigEndian.PutUint16(out[1:3], uint16(len(digest)))
+	binary.BigEndian.PutUint16(out[1:3], uint16(len(digest))) // #nosec G115 -- 已校验 16 或 20
 	copy(out[3:], digest)
 	return out, nil
 }

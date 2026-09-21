@@ -370,7 +370,7 @@ func (e *Extension) buildExtend2Data(target string, handshakeType HandshakeType,
 		specs = append(specs, encodeIPv6LinkSpec(extraIP, extraPort))
 	}
 
-	data = append(data, byte(len(specs)))
+	data = append(data, security.ByteLen(len(specs)))
 	for _, spec := range specs {
 		data = append(data, spec...)
 	}

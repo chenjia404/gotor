@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // ConnectionPaddingStrategy defines padding behavior for a connection.
@@ -296,7 +297,7 @@ func (pm *ConnectionPaddingMachine) randomDuration(min, max time.Duration) time.
 		return min
 	}
 
-	rangeSize := uint64(max - min)
+	rangeSize := security.DurationToUint64(max - min)
 	if rangeSize == 0 {
 		return min
 	}
@@ -313,7 +314,7 @@ func (pm *ConnectionPaddingMachine) randomDuration(min, max time.Duration) time.
 
 		n := binary.BigEndian.Uint64(buf[:])
 		if n < limit {
-			return min + time.Duration(n%rangeSize)
+			return min + security.Uint64Duration(n%rangeSize)
 		}
 	}
 }
@@ -411,7 +412,7 @@ func (pm *ConnectionPaddingMachine) randomRange(min, max int) int {
 	if min >= max {
 		return min
 	}
-	rangeSize := uint32(max - min + 1)
+	rangeSize := security.IntToUint32Sat(max - min + 1)
 	var buf [4]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return min

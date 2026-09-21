@@ -24,6 +24,7 @@ import (
 	"github.com/opd-ai/go-tor/pkg/path"
 	"github.com/opd-ai/go-tor/pkg/pool"
 	"github.com/opd-ai/go-tor/pkg/ratelimit"
+	"github.com/opd-ai/go-tor/pkg/security"
 	"github.com/opd-ai/go-tor/pkg/stream"
 )
 
@@ -666,7 +667,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		// Continue with normal CONNECT handling below
 	default:
 		s.logger.Error("Unsupported command", "command", fmt.Sprintf("0x%02X", request.cmd))
-		s.sendReply(conn, replyCommandNotSupported, nil)
+		s.trySendReply(conn, replyCommandNotSupported, nil)
 		return
 	}
 
@@ -691,7 +692,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		addr, err := onion.ParseAddress(host)
 		if err != nil {
 			s.logger.Warn("Invalid onion address", "address", host, "error", err)
-			s.sendReply(conn, replyHostUnreachable, nil)
+			s.trySendReply(conn, replyHostUnreachable, nil)
 			return
 		}
 
@@ -701,7 +702,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		circuitID, err := s.onionClient.ConnectToOnionService(ctx, addr)
 		if err != nil {
 			s.logger.Error("Failed to connect to onion service", "address", host, "error", err)
-			s.sendReply(conn, replyHostUnreachable, nil)
+			s.trySendReply(conn, replyHostUnreachable, nil)
 			return
 		}
 
@@ -719,7 +720,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		}
 
 		// Send success reply
-		s.sendReply(conn, replySuccess, conn.LocalAddr())
+		s.trySendReply(conn, replySuccess, conn.LocalAddr())
 
 		// Relay data through the rendezvous circuit
 		s.logger.Info("Starting onion service data relay", "circuit_id", circuitID, "port", onionPort)
@@ -734,13 +735,13 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	hostStr, portStr, err := net.SplitHostPort(targetAddr)
 	if err != nil {
 		s.logger.Error("Failed to parse target address", "target", targetAddr, "error", err)
-		s.sendReply(conn, replyGeneralFailure, nil)
+		s.trySendReply(conn, replyGeneralFailure, nil)
 		return
 	}
 	var port uint16
 	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil || port < 1 {
 		s.logger.Error("Failed to parse port", "port", portStr, "error", err)
-		s.sendReply(conn, replyGeneralFailure, nil)
+		s.trySendReply(conn, replyGeneralFailure, nil)
 		return
 	}
 	destIP := net.ParseIP(hostStr)
@@ -750,12 +751,12 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		}
 		if s.config.SafeSocks && destIP != nil {
 			s.logger.Warn("SafeSocks rejected IP literal", "target", targetAddr)
-			_ = s.sendReply(conn, replyConnectionNotAllowed, nil)
+			s.trySendReply(conn, replyConnectionNotAllowed, nil)
 			return
 		}
 		if s.config.RejectInternal && destIP != nil && isInternalIP(destIP) {
 			s.logger.Warn("ClientRejectInternalAddresses", "target", targetAddr)
-			_ = s.sendReply(conn, replyConnectionNotAllowed, nil)
+			s.trySendReply(conn, replyConnectionNotAllowed, nil)
 			return
 		}
 	}
@@ -780,7 +781,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			"target", targetAddr,
 			"username", username,
 			"remote", conn.RemoteAddr())
-		s.sendReply(conn, replyConnectionNotAllowed, nil)
+		s.trySendReply(conn, replyConnectionNotAllowed, nil)
 		return
 	}
 
@@ -806,13 +807,13 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		circ, err = circuitPool.GetIf(timeoutCtx, isolationKey, allowExit)
 		if err != nil {
 			s.logger.Error("Failed to get circuit from pool", "error", err, "isolation_key", isolationKey)
-			s.sendReply(conn, replyGeneralFailure, nil)
+			s.trySendReply(conn, replyGeneralFailure, nil)
 			return
 		}
 		circ, err = replaceIfExitRejected(timeoutCtx, circ, destIP, int(port), circuitPool, circuitForExit, isolationKey)
 		if err != nil {
 			s.logger.Error("Exit policy rejects target", "target", targetAddr, "error", err)
-			s.sendReply(conn, replyNetworkUnreachable, nil)
+			s.trySendReply(conn, replyNetworkUnreachable, nil)
 			return
 		}
 
@@ -824,7 +825,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 					"isolation_key", isolationKey.String(),
 					"reason", reason)
 				circuitPool.Put(circ)
-				s.sendReply(conn, replyConnectionNotAllowed, nil)
+				s.trySendReply(conn, replyConnectionNotAllowed, nil)
 				return
 			}
 			s.isolationEnforcer.RegisterCircuit(circ.ID, isolationKey)
@@ -841,7 +842,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		defer circuitPool.Put(circ)
 	} else {
 		s.logger.Error("No circuit pool available for connection")
-		s.sendReply(conn, replyGeneralFailure, nil)
+		s.trySendReply(conn, replyGeneralFailure, nil)
 		return
 	}
 
@@ -849,7 +850,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	streamID, err := circ.AllocateStreamID()
 	if err != nil {
 		s.logger.Error("Failed to allocate stream ID", "error", err)
-		s.sendReply(conn, replyGeneralFailure, nil)
+		s.trySendReply(conn, replyGeneralFailure, nil)
 		return
 	}
 	defer circ.ReleaseStreamID(streamID)
@@ -857,7 +858,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	strm, err := s.streamMgr.CreateStreamWithID(streamID, circ.ID, hostStr, port)
 	if err != nil {
 		s.logger.Error("Failed to create stream", "error", err)
-		s.sendReply(conn, replyGeneralFailure, nil)
+		s.trySendReply(conn, replyGeneralFailure, nil)
 		return
 	}
 	defer s.streamMgr.RemoveStream(circ.ID, strm.ID)
@@ -883,7 +884,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	if err := circ.OpenStream(ctx, strm.ID, hostStr, port); err != nil {
 		s.logger.Error("Failed to open stream", "stream_id", strm.ID, "error", err)
 		s.publishStream(uint32(strm.ID), circ.ID, "FAILED", targetAddr)
-		s.sendReply(conn, replyHostUnreachable, nil)
+		s.trySendReply(conn, replyHostUnreachable, nil)
 		return
 	}
 
@@ -896,7 +897,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		"target", targetAddr)
 
 	// Send SOCKS5 success reply
-	s.sendReply(conn, replySuccess, conn.LocalAddr())
+	s.trySendReply(conn, replySuccess, conn.LocalAddr())
 
 	// Relay data bidirectionally between SOCKS client and Tor circuit
 	s.relayDataThroughCircuit(ctx, conn, circ, strm)
@@ -1036,7 +1037,7 @@ func (s *Server) readRequest(conn net.Conn) (*requestInfo, error) {
 	addrType := header[3]
 
 	if version != socks5Version {
-		s.sendReply(conn, replyGeneralFailure, nil)
+		s.trySendReply(conn, replyGeneralFailure, nil)
 		return nil, fmt.Errorf("unsupported SOCKS version: %d", version)
 	}
 
@@ -1047,15 +1048,15 @@ func (s *Server) readRequest(conn net.Conn) (*requestInfo, error) {
 	case cmdResolve, cmdResolvePTR:
 		// DNS resolution commands - check if enabled
 		if !s.config.EnableDNSResolution {
-			s.sendReply(conn, replyCommandNotSupported, nil)
+			s.trySendReply(conn, replyCommandNotSupported, nil)
 			return nil, fmt.Errorf("DNS resolution disabled (command: 0x%02X)", cmd)
 		}
 	case cmdBind, cmdUDP:
 		// Not supported
-		s.sendReply(conn, replyCommandNotSupported, nil)
+		s.trySendReply(conn, replyCommandNotSupported, nil)
 		return nil, fmt.Errorf("unsupported command: 0x%02X", cmd)
 	default:
-		s.sendReply(conn, replyCommandNotSupported, nil)
+		s.trySendReply(conn, replyCommandNotSupported, nil)
 		return nil, fmt.Errorf("unknown command: 0x%02X", cmd)
 	}
 
@@ -1065,7 +1066,7 @@ func (s *Server) readRequest(conn net.Conn) (*requestInfo, error) {
 	case addrIPv4:
 		ip := make([]byte, 4)
 		if _, err := io.ReadFull(conn, ip); err != nil {
-			s.sendReply(conn, replyGeneralFailure, nil)
+			s.trySendReply(conn, replyGeneralFailure, nil)
 			return nil, fmt.Errorf("failed to read IPv4 address: %w", err)
 		}
 		addr = net.IP(ip).String()
@@ -1073,13 +1074,13 @@ func (s *Server) readRequest(conn net.Conn) (*requestInfo, error) {
 	case addrDomain:
 		domainLen := make([]byte, 1)
 		if _, err := io.ReadFull(conn, domainLen); err != nil {
-			s.sendReply(conn, replyGeneralFailure, nil)
+			s.trySendReply(conn, replyGeneralFailure, nil)
 			return nil, fmt.Errorf("failed to read domain length: %w", err)
 		}
 
 		domain := make([]byte, domainLen[0])
 		if _, err := io.ReadFull(conn, domain); err != nil {
-			s.sendReply(conn, replyGeneralFailure, nil)
+			s.trySendReply(conn, replyGeneralFailure, nil)
 			return nil, fmt.Errorf("failed to read domain: %w", err)
 		}
 		addr = string(domain)
@@ -1087,20 +1088,20 @@ func (s *Server) readRequest(conn net.Conn) (*requestInfo, error) {
 	case addrIPv6:
 		ip := make([]byte, 16)
 		if _, err := io.ReadFull(conn, ip); err != nil {
-			s.sendReply(conn, replyGeneralFailure, nil)
+			s.trySendReply(conn, replyGeneralFailure, nil)
 			return nil, fmt.Errorf("failed to read IPv6 address: %w", err)
 		}
 		addr = net.IP(ip).String()
 
 	default:
-		s.sendReply(conn, replyAddressNotSupported, nil)
+		s.trySendReply(conn, replyAddressNotSupported, nil)
 		return nil, fmt.Errorf("unsupported address type: %d", addrType)
 	}
 
 	// Read port
 	portBytes := make([]byte, 2)
 	if _, err := io.ReadFull(conn, portBytes); err != nil {
-		s.sendReply(conn, replyGeneralFailure, nil)
+		s.trySendReply(conn, replyGeneralFailure, nil)
 		return nil, fmt.Errorf("failed to read port: %w", err)
 	}
 	port := binary.BigEndian.Uint16(portBytes)
@@ -1122,6 +1123,13 @@ func (s *Server) readRequest(conn net.Conn) (*requestInfo, error) {
 		cmd:        cmd,
 		targetAddr: targetAddr,
 	}, nil
+}
+
+// trySendReply 尽力把 SOCKS5 应答写给客户端；对端已断开时只记日志。
+func (s *Server) trySendReply(conn net.Conn, reply byte, bindAddr net.Addr) {
+	if err := s.sendReply(conn, reply, bindAddr); err != nil {
+		s.logger.Debug("SOCKS reply not sent", "error", err)
+	}
 }
 
 // sendReply sends a SOCKS5 reply
@@ -1398,14 +1406,14 @@ func (s *Server) handleResolve(ctx context.Context, conn net.Conn, hostname stri
 
 	if circuitPool == nil {
 		s.logger.Error("No circuit pool available for DNS resolution")
-		s.sendDNSReply(conn, replyGeneralFailure, nil, 0)
+		s.trySendDNSReply(conn, replyGeneralFailure, nil, 0)
 		return
 	}
 
 	circ, err := circuitPool.Get(resolveCtx)
 	if err != nil || circ == nil {
 		s.logger.Error("Failed to get circuit for DNS resolution", "error", err)
-		s.sendDNSReply(conn, replyGeneralFailure, nil, 0)
+		s.trySendDNSReply(conn, replyGeneralFailure, nil, 0)
 		return
 	}
 	defer circuitPool.Put(circ)
@@ -1421,7 +1429,7 @@ func (s *Server) handleResolve(ctx context.Context, conn net.Conn, hostname stri
 			"hostname", hostname,
 			"circuit_id", circ.ID,
 			"error", err)
-		s.sendDNSReply(conn, replyHostUnreachable, nil, 0)
+		s.trySendDNSReply(conn, replyHostUnreachable, nil, 0)
 		return
 	}
 
@@ -1430,7 +1438,7 @@ func (s *Server) handleResolve(ctx context.Context, conn net.Conn, hostname stri
 		s.logger.Warn("DNS resolution returned no addresses",
 			"hostname", hostname,
 			"circuit_id", circ.ID)
-		s.sendDNSReply(conn, replyHostUnreachable, nil, 0)
+		s.trySendDNSReply(conn, replyHostUnreachable, nil, 0)
 		return
 	}
 
@@ -1441,7 +1449,7 @@ func (s *Server) handleResolve(ctx context.Context, conn net.Conn, hostname stri
 		"circuit_id", circ.ID)
 
 	// Send success response with resolved IP addresses
-	s.sendDNSReply(conn, replySuccess, result.Addresses, result.TTL)
+	s.trySendDNSReply(conn, replySuccess, result.Addresses, result.TTL)
 }
 
 // handleResolvePTR handles SOCKS5 RESOLVE_PTR command (0xF1)
@@ -1457,7 +1465,7 @@ func (s *Server) handleResolvePTR(ctx context.Context, conn net.Conn, ipAddr str
 	ip := net.ParseIP(ipAddr)
 	if ip == nil {
 		s.logger.Error("Invalid IP address for RESOLVE_PTR", "ip", ipAddr)
-		s.sendDNSReply(conn, replyAddressNotSupported, nil, 0)
+		s.trySendDNSReply(conn, replyAddressNotSupported, nil, 0)
 		return
 	}
 
@@ -1468,19 +1476,19 @@ func (s *Server) handleResolvePTR(ctx context.Context, conn net.Conn, ipAddr str
 
 	if circuitPool == nil {
 		s.logger.Error("No circuit pool available for reverse DNS")
-		s.sendDNSReply(conn, replyGeneralFailure, nil, 0)
+		s.trySendDNSReply(conn, replyGeneralFailure, nil, 0)
 		return
 	}
 
 	circ, err := circuitPool.Get(resolveCtx)
 	if err != nil {
 		s.logger.Error("Failed to get circuit for reverse DNS", "error", err)
-		s.sendDNSReply(conn, replyGeneralFailure, nil, 0)
+		s.trySendDNSReply(conn, replyGeneralFailure, nil, 0)
 		return
 	}
 	if circ == nil {
 		s.logger.Error("Failed to get circuit for reverse DNS: circuit is nil")
-		s.sendDNSReply(conn, replyGeneralFailure, nil, 0)
+		s.trySendDNSReply(conn, replyGeneralFailure, nil, 0)
 		return
 	}
 	defer circuitPool.Put(circ)
@@ -1496,7 +1504,7 @@ func (s *Server) handleResolvePTR(ctx context.Context, conn net.Conn, ipAddr str
 			"ip", ipAddr,
 			"circuit_id", circ.ID,
 			"error", err)
-		s.sendDNSReply(conn, replyHostUnreachable, nil, 0)
+		s.trySendDNSReply(conn, replyHostUnreachable, nil, 0)
 		return
 	}
 
@@ -1505,7 +1513,7 @@ func (s *Server) handleResolvePTR(ctx context.Context, conn net.Conn, ipAddr str
 		s.logger.Warn("Reverse DNS lookup returned no hostname",
 			"ip", ipAddr,
 			"circuit_id", circ.ID)
-		s.sendDNSReply(conn, replyHostUnreachable, nil, 0)
+		s.trySendDNSReply(conn, replyHostUnreachable, nil, 0)
 		return
 	}
 
@@ -1517,7 +1525,7 @@ func (s *Server) handleResolvePTR(ctx context.Context, conn net.Conn, ipAddr str
 
 	// For RESOLVE_PTR, we send back the hostname as an address
 	// The SOCKS5 protocol extension uses the same format but with domain type
-	s.sendDNSReplyHostname(conn, replySuccess, result.Hostname, result.TTL)
+	s.trySendDNSReplyHostname(conn, replySuccess, result.Hostname, result.TTL)
 }
 
 // sendDNSReply sends a DNS resolution reply (for RESOLVE/RESOLVE_PTR)
@@ -1526,6 +1534,12 @@ func (s *Server) handleResolvePTR(ctx context.Context, conn net.Conn, ipAddr str
 // Note: Currently returns only the first address from the addresses slice.
 // The Tor SOCKS5 extension for DNS does not have a standard way to return
 // multiple addresses. Applications should make multiple RESOLVE requests if needed.
+func (s *Server) trySendDNSReply(conn net.Conn, status byte, addresses []net.IP, ttl uint32) {
+	if err := s.sendDNSReply(conn, status, addresses, ttl); err != nil {
+		s.logger.Debug("SOCKS DNS reply not sent", "error", err)
+	}
+}
+
 func (s *Server) sendDNSReply(conn net.Conn, status byte, addresses []net.IP, ttl uint32) error {
 	// Build basic reply header
 	response := make([]byte, 4)
@@ -1561,6 +1575,12 @@ func (s *Server) sendDNSReply(conn net.Conn, status byte, addresses []net.IP, tt
 
 // sendDNSReplyHostname sends a DNS PTR (reverse) resolution reply with hostname
 // Format: [version][status][reserved][address_type=0x03][hostname_length][hostname][ttl]
+func (s *Server) trySendDNSReplyHostname(conn net.Conn, status byte, hostname string, ttl uint32) {
+	if err := s.sendDNSReplyHostname(conn, status, hostname, ttl); err != nil {
+		s.logger.Debug("SOCKS reverse DNS reply not sent", "error", err)
+	}
+}
+
 func (s *Server) sendDNSReplyHostname(conn net.Conn, status byte, hostname string, ttl uint32) error {
 	// Build basic reply header
 	response := make([]byte, 4)
@@ -1592,7 +1612,7 @@ func (s *Server) sendDNSReplyHostname(conn net.Conn, status byte, hostname strin
 			return fmt.Errorf("hostname length %d exceeds 255 byte limit", len(hostnameBytes))
 		}
 
-		response = append(response, byte(len(hostnameBytes)))
+		response = append(response, security.ByteLen(len(hostnameBytes)))
 		response = append(response, hostnameBytes...)
 
 		// Add TTL (4 bytes, big endian) from the DNS response

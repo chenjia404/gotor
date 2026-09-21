@@ -328,7 +328,7 @@ func (sc *StateCheckpointer) Save(ctx context.Context) error {
 	}
 
 	if err := os.Rename(tmpFile, sc.config.FilePath); err != nil {
-		os.Remove(tmpFile) // Clean up temp file on rename failure
+		_ = os.Remove(tmpFile) // Clean up temp file on rename failure
 		sc.recordMetric(func(m *metrics.Metrics) { m.RecordCheckpointFailed() })
 		return fmt.Errorf("failed to rename checkpoint state file: %w", err)
 	}

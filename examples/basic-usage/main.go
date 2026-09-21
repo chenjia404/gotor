@@ -76,16 +76,16 @@ func demonstrateCircuits() {
 		}
 
 		// Add hops to the circuit
-		circ.AddHop(&circuit.Hop{
+		_ = circ.AddHop(&circuit.Hop{
 			Fingerprint: fmt.Sprintf("GUARD%d", i),
 			Address:     fmt.Sprintf("10.0.0.%d:9001", i+1),
 			IsGuard:     true,
 		})
-		circ.AddHop(&circuit.Hop{
+		_ = circ.AddHop(&circuit.Hop{
 			Fingerprint: fmt.Sprintf("MIDDLE%d", i),
 			Address:     fmt.Sprintf("10.0.1.%d:9001", i+1),
 		})
-		circ.AddHop(&circuit.Hop{
+		_ = circ.AddHop(&circuit.Hop{
 			Fingerprint: fmt.Sprintf("EXIT%d", i),
 			Address:     fmt.Sprintf("10.0.2.%d:9001", i+1),
 			IsExit:      true,

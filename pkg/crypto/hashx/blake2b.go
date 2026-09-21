@@ -28,7 +28,7 @@ func blake2bHashX(data []byte) [64]byte {
 	}
 	var block [128]byte
 	offset := copy(block[:], data)
-	remaining := uint64(128 - offset)
+	remaining := uint64(128 - offset) // #nosec G115 -- offset 由 copy 得到，0..128
 	if c[0] < remaining {
 		c[1]--
 	}

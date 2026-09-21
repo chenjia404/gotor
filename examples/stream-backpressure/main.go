@@ -134,7 +134,7 @@ func main() {
 
 		// Drain buffer to release backpressure
 		for s.GetSendBufferSize() > 0 {
-			s.SendData(ctx)
+			_, _ = s.SendData(ctx)
 			time.Sleep(10 * time.Millisecond)
 		}
 		fmt.Printf("  ✓ Backpressure released at %d bytes\n", s.GetSendBufferSize())

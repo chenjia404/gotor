@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/go-tor/pkg/logger"
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // Config holds profiling configuration options.
@@ -374,7 +375,7 @@ func (p *Profiler) handleGC(w http.ResponseWriter, r *http.Request) {
 	var afterStats runtime.MemStats
 	runtime.ReadMemStats(&afterStats)
 
-	freedBytes := int64(beforeStats.HeapAlloc) - int64(afterStats.HeapAlloc)
+	freedBytes := security.Uint64ToInt64Sat(beforeStats.HeapAlloc) - security.Uint64ToInt64Sat(afterStats.HeapAlloc)
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{

@@ -156,13 +156,13 @@ func copyFile(src, dst string) error {
 		err = fmt.Errorf("close destination: %w", closeErr)
 	}
 	if err != nil {
-		os.Remove(dst) // Clean up partial copy on error
+		_ = os.Remove(dst) // Clean up partial copy on error
 		return fmt.Errorf("copy failed: %w", err)
 	}
 
 	// Verify copy was complete
 	if n != info.Size() {
-		os.Remove(dst)
+		_ = os.Remove(dst)
 		return fmt.Errorf("incomplete copy: wrote %d of %d bytes", n, info.Size())
 	}
 
@@ -255,7 +255,7 @@ func (p *Persistence) Save(ctx context.Context, guards []GuardEntry) error {
 	}
 
 	if err := os.Rename(tmpFile, p.config.FilePath); err != nil {
-		os.Remove(tmpFile) // Clean up temp file on rename failure
+		_ = os.Remove(tmpFile) // Clean up temp file on rename failure
 		return fmt.Errorf("failed to rename guard state file: %w", err)
 	}
 

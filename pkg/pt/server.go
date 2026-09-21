@@ -115,7 +115,7 @@ func (ms *ManagedServer) Start(ctx context.Context) error {
 
 	if err := ms.performHandshake(ctx); err != nil {
 		ms.mu.Lock()
-		ms.cmd.Process.Kill()
+		_ = ms.cmd.Process.Kill()
 		ms.running = false
 		ms.mu.Unlock()
 		return errors.Wrap(errors.CategoryProtocol, errors.SeverityHigh, "PT server handshake failed", err)
@@ -341,7 +341,7 @@ func (ms *ManagedServer) Close() error {
 	// Close all listeners
 	for name, listener := range ms.listeners {
 		if listener != nil {
-			listener.Close()
+			_ = listener.Close()
 			ms.log.Debug("Closed PT listener", "method", name)
 		}
 	}
@@ -350,8 +350,8 @@ func (ms *ManagedServer) Close() error {
 	ms.running = false
 
 	if ms.cmd != nil && ms.cmd.Process != nil {
-		ms.cmd.Process.Kill()
-		ms.cmd.Wait()
+		_ = ms.cmd.Process.Kill()
+		_ = ms.cmd.Wait()
 		ms.log.Info("PT server process terminated", "binary", ms.config.BinaryPath)
 	}
 

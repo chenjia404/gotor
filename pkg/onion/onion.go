@@ -129,9 +129,9 @@ func parseV3Address(addr string) (*Address, error) {
 func computeV3Checksum(pubkey []byte, version byte) []byte {
 	// SHA3-256(".onion checksum" || pubkey || version)[:2]
 	h := sha3.New256()
-	h.Write([]byte(".onion checksum"))
-	h.Write(pubkey)
-	h.Write([]byte{version})
+	_, _ = h.Write([]byte(".onion checksum"))
+	_, _ = h.Write(pubkey)
+	_, _ = h.Write([]byte{version})
 	hash := h.Sum(nil)
 	return hash[:2]
 }
@@ -566,7 +566,7 @@ func (c *Client) fetchDescriptor(ctx context.Context, addr *Address) (*Descripto
 // computeDescriptorID computes the descriptor ID from a blinded public key
 func computeDescriptorID(blindedPubkey []byte) []byte {
 	h := sha3.New256()
-	h.Write(blindedPubkey)
+	_, _ = h.Write(blindedPubkey)
 	return h.Sum(nil)
 }
 
@@ -1458,8 +1458,8 @@ func (h *HSDir) SelectHSDirs(descriptorID []byte, hsdirs []*HSDirectory, replica
 // descriptor_id = H(blinded_pubkey || INT_8(replica))
 func ComputeReplicaDescriptorID(baseDescriptorID []byte, replica int) []byte {
 	h := sha3.New256()
-	h.Write(baseDescriptorID)
-	h.Write([]byte{byte(replica)})
+	_, _ = h.Write(baseDescriptorID)
+	_, _ = h.Write([]byte{security.ByteLen(replica)})
 	return h.Sum(nil)
 }
 
@@ -1920,13 +1920,13 @@ func (ip *IntroductionProtocol) buildEncryptedData(req *IntroduceRequest) ([]byt
 	if len(req.RendezvousLinkSpecs) > 255 {
 		return nil, fmt.Errorf("too many link specifiers")
 	}
-	plaintext.WriteByte(byte(len(req.RendezvousLinkSpecs)))
+	plaintext.WriteByte(security.ByteLen(len(req.RendezvousLinkSpecs)))
 	for _, ls := range req.RendezvousLinkSpecs {
 		if len(ls.Data) > 255 {
 			return nil, fmt.Errorf("link specifier too long")
 		}
 		plaintext.WriteByte(ls.Type)
-		plaintext.WriteByte(byte(len(ls.Data)))
+		plaintext.WriteByte(security.ByteLen(len(ls.Data)))
 		plaintext.Write(ls.Data)
 	}
 	// 填充到约 246 字节（与当前 Tor 行为接近）
@@ -2542,7 +2542,7 @@ func linkSpecsForRelay(h *HSDirectory) ([]byte, []LinkSpecifier, error) {
 		if v4 := ip.To4(); v4 != nil {
 			payload := make([]byte, 6)
 			copy(payload, v4)
-			binary.BigEndian.PutUint16(payload[4:], uint16(r.ORPort))
+			binary.BigEndian.PutUint16(payload[4:], security.PortUint16(r.ORPort))
 			specs = append(specs, LinkSpecifier{Type: LSTypeIPv4, Data: payload})
 		}
 	}
@@ -2554,7 +2554,7 @@ func linkSpecsForRelay(h *HSDirectory) ([]byte, []LinkSpecifier, error) {
 			if port == 0 {
 				port = r.ORPort
 			}
-			binary.BigEndian.PutUint16(payload[16:], uint16(port))
+			binary.BigEndian.PutUint16(payload[16:], security.PortUint16(port))
 			specs = append(specs, LinkSpecifier{Type: LSTypeIPv6, Data: payload})
 		}
 	}

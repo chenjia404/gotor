@@ -7,6 +7,8 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 const hidservPeriod = 24 * time.Hour
@@ -159,7 +161,7 @@ func hidservLaplace(mu, b, p float64) float64 {
 
 func hidservObfuscate(n uint64, deltaF, epsilon float64, bin uint64, u float64) int64 {
 	if epsilon <= 0 {
-		return int64(hidservRoundUpBin(n, bin))
+		return security.Uint64ToInt64Sat(hidservRoundUpBin(n, bin))
 	}
 	rounded := hidservRoundUpBin(n, bin)
 	noise := hidservLaplace(0, deltaF/epsilon, u)

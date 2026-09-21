@@ -37,6 +37,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -244,9 +245,9 @@ func randomBase64(n int) string {
 }
 
 func hexToBytes(h string) []byte {
-	b := make([]byte, len(h)/2)
-	for i := range b {
-		fmt.Sscanf(h[i*2:i*2+2], "%02X", &b[i])
+	b, err := hex.DecodeString(h)
+	if err != nil {
+		return nil
 	}
 	return b
 }

@@ -273,7 +273,7 @@ func saveSecureFile(path string, data []byte, perm os.FileMode) error {
 
 	// Atomic rename
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath) // Clean up on failure
+		_ = os.Remove(tmpPath) // Clean up on failure
 		return err
 	}
 

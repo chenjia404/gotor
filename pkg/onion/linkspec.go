@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/opd-ai/go-tor/pkg/directory"
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // LinkSpec types（tor-spec）
@@ -84,9 +85,9 @@ func ResolveFromIntroPoint(ip *IntroductionPoint) (*ResolvedRelay, error) {
 	}
 	// 重新打包为 NSPEC 格式
 	buf := make([]byte, 0, 128)
-	buf = append(buf, byte(len(ip.LinkSpecifiers)))
+	buf = append(buf, security.ByteLen(len(ip.LinkSpecifiers)))
 	for _, ls := range ip.LinkSpecifiers {
-		buf = append(buf, ls.Type, byte(len(ls.Data)))
+		buf = append(buf, ls.Type, security.ByteLen(len(ls.Data)))
 		buf = append(buf, ls.Data...)
 	}
 	return ParseLinkSpecifierList(buf)

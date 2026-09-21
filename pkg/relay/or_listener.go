@@ -200,7 +200,7 @@ func (l *ORListener) acceptLoop(ctx context.Context) {
 					"limit", l.maxConnections,
 					"rejected_total", rejected)
 			}
-			conn.Close()
+			_ = conn.Close()
 			continue
 		}
 		l.activeConns++
@@ -210,7 +210,7 @@ func (l *ORListener) acceptLoop(ctx context.Context) {
 			if err := l.dos.OnConnect(clientIP(conn.RemoteAddr())); err != nil {
 				l.releaseActiveSlot()
 				l.logger.Warn("DoS connection refused", "remote", conn.RemoteAddr(), "error", err)
-				conn.Close()
+				_ = conn.Close()
 				continue
 			}
 		}
@@ -246,7 +246,7 @@ func (l *ORListener) handleConnection(ctx context.Context, rawConn net.Conn) {
 
 	// Ensure cleanup
 	defer func() {
-		rawConn.Close()
+		_ = rawConn.Close()
 		if l.dos != nil {
 			l.dos.OnDisconnect(ip)
 		}
@@ -335,13 +335,13 @@ func (l *ORListener) Stop() error {
 
 	// Close listener
 	if l.listener != nil {
-		l.listener.Close()
+		_ = l.listener.Close()
 	}
 
 	// Close all active connections
 	l.connsMu.Lock()
 	for _, conn := range l.connections {
-		conn.Close()
+		_ = conn.Close()
 	}
 	l.connsMu.Unlock()
 

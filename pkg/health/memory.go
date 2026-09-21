@@ -7,6 +7,8 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // MemoryStats contains memory statistics for health checking.
@@ -168,8 +170,8 @@ func GetRuntimeMemoryStats() MemoryStats {
 		HeapIdle:     memStats.HeapIdle,
 		HeapReleased: memStats.HeapReleased,
 		NumGC:        memStats.NumGC,
-		LastGC:       time.Unix(0, int64(memStats.LastGC)),
-		GCPauseTotal: time.Duration(memStats.PauseTotalNs),
+		LastGC:       time.Unix(0, security.Uint64ToInt64Sat(memStats.LastGC)),
+		GCPauseTotal: time.Duration(security.Uint64ToInt64Sat(memStats.PauseTotalNs)),
 		NumGoroutine: runtime.NumGoroutine(),
 	}
 }

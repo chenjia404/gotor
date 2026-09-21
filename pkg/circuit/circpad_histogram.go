@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"math/big"
 	"time"
+
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // CircpadDelayInfinite 表示不调度 padding（无穷 bin / 无 token）。
@@ -64,7 +66,7 @@ func (h *CircpadHistogram) SampleDelay() (time.Duration, error) {
 	lo := uint64(h.Edges[bin])
 	hi := uint64(h.Edges[bin+1])
 	if hi <= lo {
-		return time.Duration(lo) * time.Microsecond, nil
+		return time.Duration(security.Uint64ToInt64Sat(lo)) * time.Microsecond, nil
 	}
 	span := hi - lo
 	off, err := randUint64(span)
@@ -72,7 +74,7 @@ func (h *CircpadHistogram) SampleDelay() (time.Duration, error) {
 		return 0, err
 	}
 	usec := lo + off
-	return time.Duration(usec) * time.Microsecond, nil
+	return time.Duration(security.Uint64ToInt64Sat(usec)) * time.Microsecond, nil
 }
 
 func randUint64(max uint64) (uint64, error) {

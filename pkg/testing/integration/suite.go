@@ -119,7 +119,9 @@ func (s *Suite) CreateMockCircuit(ctx context.Context, numHops int) (*circuit.Ci
 			i == 0,         // first hop is guard
 			i == numHops-1, // last hop is exit
 		)
-		circ.AddHop(hop)
+		if err := circ.AddHop(hop); err != nil {
+			return nil, err
+		}
 	}
 
 	// Simulate build delay outside of lock
@@ -209,7 +211,7 @@ func (s *MockServer) Stop() error {
 		s.mu.Lock()
 		s.running = false
 		for _, conn := range s.connections {
-			conn.Close()
+			_ = conn.Close()
 		}
 		s.connections = nil
 		s.mu.Unlock()
@@ -232,7 +234,7 @@ func (s *MockServer) acceptLoop() {
 		// Check if we're shutting down before adding connection
 		select {
 		case <-s.closeCh:
-			conn.Close()
+			_ = conn.Close()
 			return
 		default:
 		}
@@ -241,7 +243,7 @@ func (s *MockServer) acceptLoop() {
 		if s.running {
 			s.connections = append(s.connections, conn)
 		} else {
-			conn.Close()
+			_ = conn.Close()
 		}
 		s.mu.Unlock()
 	}

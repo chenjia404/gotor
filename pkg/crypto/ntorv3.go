@@ -27,6 +27,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/opd-ai/go-tor/pkg/security"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/sha3"
 )
@@ -119,7 +120,7 @@ func ntorV3AESCTR(key, plaintext []byte) ([]byte, error) {
 		return nil, err
 	}
 	out := append([]byte(nil), plaintext...)
-	iv := make([]byte, aes.BlockSize) // ntor-v3 规范 AES-CTR IV 全零，密钥由握手派生且一次性
+	iv := make([]byte, aes.BlockSize)               // ntor-v3 规范 AES-CTR IV 全零，密钥由握手派生且一次性
 	cipher.NewCTR(block, iv).XORKeyStream(out, out) // #nosec G407
 	return out, nil
 }
@@ -129,12 +130,12 @@ func EncodeNtorV3Extensions(exts []NtorV3Extension) []byte {
 	if len(exts) > 255 {
 		exts = exts[:255]
 	}
-	out := []byte{byte(len(exts))}
+	out := []byte{security.ByteLen(len(exts))}
 	for _, ext := range exts {
 		if len(ext.Data) > 255 {
 			continue
 		}
-		out = append(out, ext.Type, byte(len(ext.Data)))
+		out = append(out, ext.Type, security.ByteLen(len(ext.Data)))
 		out = append(out, ext.Data...)
 	}
 	return out

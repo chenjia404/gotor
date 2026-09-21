@@ -146,7 +146,10 @@ func (c *Cell) EncodeLink(w io.Writer, circIDLen int) error {
 		return fmt.Errorf("invalid CircID length %d, want 2 or 4", circIDLen)
 	}
 	if circIDLen == 2 {
-		if err := binary.Write(w, binary.BigEndian, uint16(c.CircID)); err != nil {
+		if c.CircID > 0xFFFF {
+			return fmt.Errorf("CircID %d exceeds 2-byte CIRCID_LEN", c.CircID)
+		}
+		if err := binary.Write(w, binary.BigEndian, security.Uint32ToUint16(c.CircID)); err != nil {
 			return fmt.Errorf("failed to write circuit ID: %w", err)
 		}
 	} else if err := binary.Write(w, binary.BigEndian, c.CircID); err != nil {

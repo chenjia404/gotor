@@ -248,7 +248,7 @@ func (sp *ServicePersistence) SaveState(state *ServiceState) error {
 	}
 
 	if err := os.Rename(tempPath, statePath); err != nil {
-		os.Remove(tempPath) // Clean up temp file
+		_ = os.Remove(tempPath) // Clean up temp file
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
 

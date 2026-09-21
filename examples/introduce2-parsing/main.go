@@ -107,7 +107,7 @@ func createMockIntroduce2(introEncKey []byte) []byte {
 	kdfInfo := []byte("tor-hs-ntor-curve25519-sha3-256-1:hs_key_extract")
 	kdf := hkdf.New(sha256.New, introEncKey, nil, kdfInfo)
 	keys := make([]byte, 64)
-	io.ReadFull(kdf, keys)
+	_, _ = io.ReadFull(kdf, keys)
 
 	encKey := keys[0:32]
 	macKey := keys[32:64]

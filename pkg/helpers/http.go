@@ -77,7 +77,7 @@ func dialWithContext(ctx context.Context, dialer proxy.Dialer, network, addr str
 		case <-ctx.Done():
 			// Context cancelled, close connection if established
 			if conn != nil {
-				conn.Close()
+				_ = conn.Close()
 			}
 		}
 	}()

@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/opd-ai/go-tor/pkg/security"
 )
 
 // Metrics provides a comprehensive metrics collection for the Tor client
@@ -317,9 +319,9 @@ func (m *Metrics) RecordPoolHealthCheckFailed() {
 
 // UpdateMemoryMetrics updates all memory-related metrics
 func (m *Metrics) UpdateMemoryMetrics(heapAlloc, heapSys, heapInuse uint64, numGoroutines int) {
-	m.MemoryHeapAlloc.Set(int64(heapAlloc))
-	m.MemoryHeapSys.Set(int64(heapSys))
-	m.MemoryHeapInuse.Set(int64(heapInuse))
+	m.MemoryHeapAlloc.Set(security.Uint64ToInt64Sat(heapAlloc))
+	m.MemoryHeapSys.Set(security.Uint64ToInt64Sat(heapSys))
+	m.MemoryHeapInuse.Set(security.Uint64ToInt64Sat(heapInuse))
 	m.MemoryNumGoroutines.Set(int64(numGoroutines))
 }
 

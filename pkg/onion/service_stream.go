@@ -156,8 +156,8 @@ func (sm *ServiceStreamManager) HandleRelayBegin(circuitID uint32, streamID uint
 	// Send RELAY_CONNECTED response
 	if err := sm.sendRelayConnected(circuit, circuitID, streamID); err != nil {
 		sm.logger.Error("Failed to send RELAY_CONNECTED", "error", err)
-		stream.Close()
-		conn.Close()
+		_ = stream.Close()
+		_ = conn.Close()
 		return err
 	}
 
@@ -189,7 +189,7 @@ func (sm *ServiceStreamManager) HandleRelayData(streamID uint16, data []byte) er
 		sm.logger.Error("Failed to write to backend",
 			"stream_id", streamID,
 			"error", err)
-		stream.Close()
+		_ = stream.Close()
 		return err
 	}
 
@@ -213,7 +213,7 @@ func (sm *ServiceStreamManager) HandleRelayEnd(streamID uint16) error {
 	}
 
 	sm.logger.Info("Received RELAY_END", "stream_id", streamID)
-	stream.Close()
+	_ = stream.Close()
 
 	// Remove from manager
 	sm.mu.Lock()
@@ -352,7 +352,7 @@ func (s *ServiceStream) forwardFromCircuit() {
 	// This goroutine mainly monitors context for cancellation
 	// Actual data forwarding happens in HandleRelayData
 	<-s.ctx.Done()
-	s.Close()
+	_ = s.Close()
 }
 
 // Close closes the stream and backend connection
@@ -371,7 +371,7 @@ func (s *ServiceStream) Close() error {
 		}
 
 		if s.conn != nil {
-			s.conn.Close()
+			_ = s.conn.Close()
 		}
 
 		if s.logger != nil {
@@ -401,7 +401,7 @@ func (sm *ServiceStreamManager) CloseAll() {
 	sm.mu.Unlock()
 
 	for _, s := range streams {
-		s.Close()
+		_ = s.Close()
 	}
 
 	sm.logger.Info("All streams closed", "count", len(streams))

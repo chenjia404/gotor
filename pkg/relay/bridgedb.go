@@ -235,7 +235,9 @@ func (s *BridgeDistributorServer) handleGetBridges(w http.ResponseWriter, r *htt
 	transport := r.URL.Query().Get("transport")
 	count := 3
 	if countStr := r.URL.Query().Get("count"); countStr != "" {
-		fmt.Sscanf(countStr, "%d", &count)
+		if _, err := fmt.Sscanf(countStr, "%d", &count); err != nil || count < 1 {
+			count = 3
+		}
 	}
 
 	bridges, err := s.distributor.GetBridges(clientIP, transport, count)
@@ -267,7 +269,9 @@ func (s *BridgeDistributorServer) handleGetBridges(w http.ResponseWriter, r *htt
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		s.logger.Warn("Failed to encode bridges response", "error", err)
+	}
 }
 
 // handleGetStats handles GET /stats
@@ -279,7 +283,9 @@ func (s *BridgeDistributorServer) handleGetStats(w http.ResponseWriter, r *http.
 
 	stats := s.distributor.GetStats()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	if err := json.NewEncoder(w).Encode(stats); err != nil {
+		s.logger.Warn("Failed to encode stats response", "error", err)
+	}
 }
 
 // EmailResponder simulates bridge email distribution (for research/educational purposes only)

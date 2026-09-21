@@ -568,7 +568,9 @@ func (c *Client) parseConsensusWithMetadata(r io.Reader) ([]*Relay, *ConsensusMe
 
 		// SPEC-003: Parse metadata header lines
 		if strings.HasPrefix(line, "network-status-version ") {
-			fmt.Sscanf(line, "network-status-version %d", &metadata.NetworkStatusVersion)
+			if _, err := fmt.Sscanf(line, "network-status-version %d", &metadata.NetworkStatusVersion); err != nil {
+				metadata.NetworkStatusVersion = 0
+			}
 		}
 		if strings.HasPrefix(line, "valid-after ") {
 			timeStr := strings.TrimPrefix(line, "valid-after ")
