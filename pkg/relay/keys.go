@@ -223,7 +223,7 @@ func LoadKeys(dataDir string) (*RelayKeys, error) {
 
 	// Load TLS certificate；C Tor keys 目录可能没有，用 RSA 身份钥现签
 	certPath := filepath.Join(dataDir, "tls_certificate.pem")
-	certPEMData, err := os.ReadFile(certPath)
+	certPEMData, err := os.ReadFile(certPath) // #nosec G304 -- DataDirectory/keys 由操作者配置
 	if err != nil {
 		cert, gerr := generateTLSCertificate(keys.RSAPrivate)
 		if gerr != nil {
@@ -242,7 +242,7 @@ func LoadKeys(dataDir string) (*RelayKeys, error) {
 
 	// Load ntor onion key（缺失则生成并落盘；兼容 C Tor tagged 头）
 	ntorPath := filepath.Join(dataDir, "secret_onion_key_ntor")
-	ntorData, err := os.ReadFile(ntorPath)
+	ntorData, err := os.ReadFile(ntorPath) // #nosec G304 -- DataDirectory/keys 由操作者配置
 	if err != nil {
 		ntorKey := make([]byte, 32)
 		if _, err := rand.Read(ntorKey); err != nil {

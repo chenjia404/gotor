@@ -132,7 +132,7 @@ func main() {
 	fmt.Printf("Configuration saved to: %s\n\n", savedPath)
 
 	// Read and display the generated file
-	content, err := os.ReadFile(savedPath)
+	content, err := os.ReadFile(savedPath) // #nosec G304 -- 刚写入的临时 torrc
 	if err != nil {
 		log.Fatalf("Failed to read generated file: %v", err)
 	}

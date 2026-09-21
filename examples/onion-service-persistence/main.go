@@ -46,7 +46,8 @@ func main() {
 
 	go func() {
 		fmt.Println("Starting HTTP server on localhost:8080...")
-		if err := http.ListenAndServe("localhost:8080", nil); err != nil {
+		srv := &http.Server{Addr: "localhost:8080", ReadHeaderTimeout: 10 * time.Second}
+		if err := srv.ListenAndServe(); err != nil {
 			log.Printf("HTTP server error: %v", err)
 		}
 	}()

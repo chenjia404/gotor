@@ -211,7 +211,7 @@ func (sc *StateCheckpointer) releaseLock() error {
 
 // copyFile copies src to dst with proper resource cleanup.
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	data, err := os.ReadFile(src) // #nosec G304 -- 检查点路径由配置指定
 	if err != nil {
 		return fmt.Errorf("read source: %w", err)
 	}
@@ -400,7 +400,7 @@ func (sc *StateCheckpointer) loadFromBackup() (*CheckpointState, error) {
 	for i := 1; i <= sc.config.BackupCount; i++ {
 		backupPath := fmt.Sprintf("%s.backup.%d", sc.config.FilePath, i)
 
-		data, err := os.ReadFile(backupPath)
+		data, err := os.ReadFile(backupPath) // #nosec G304 -- 备份路径由检查点配置派生
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue

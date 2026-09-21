@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/opd-ai/go-tor/pkg/logger"
 	"github.com/opd-ai/go-tor/pkg/relay"
@@ -98,7 +99,8 @@ func main() {
 	fmt.Println()
 	fmt.Println("Press Ctrl+C to stop")
 
-	if err := http.ListenAndServe(":8080", server); err != nil {
+	srv := &http.Server{Addr: ":8080", Handler: server, ReadHeaderTimeout: 10 * time.Second}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Error("HTTP server failed", "error", err)
 		os.Exit(1)
 	}

@@ -72,7 +72,7 @@ func (mc *ManagedClient) Start(ctx context.Context) error {
 		return errors.Wrap(errors.CategoryNetwork, errors.SeverityHigh, "failed to create state directory", err)
 	}
 
-	mc.cmd = exec.CommandContext(ctx, mc.config.BinaryPath)
+	mc.cmd = exec.CommandContext(ctx, mc.config.BinaryPath) // #nosec G204 -- PT 二进制由配置指定
 	mc.cmd.Env = mc.buildEnvironment()
 
 	stdout, err := mc.cmd.StdoutPipe()

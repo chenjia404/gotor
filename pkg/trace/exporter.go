@@ -128,7 +128,7 @@ func (e *FileExporter) Close() error {
 
 // NewFileExporter creates a new file exporter.
 // IMPORTANT: The caller MUST call Close() when done to prevent file descriptor leaks.
-// The file is opened in append mode with 0644 permissions.
+// The file is opened in append mode with 0600 permissions.
 // A finalizer is registered as a defensive measure, but explicit Close() is required.
 //
 // Example usage:
@@ -139,7 +139,7 @@ func (e *FileExporter) Close() error {
 //	}
 //	defer exporter.Close()
 func NewFileExporter(filename string, pretty bool) (*FileExporter, error) {
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 -- 追踪文件路径由调用方指定
 	if err != nil {
 		return nil, fmt.Errorf("failed to open trace file: %w", err)
 	}

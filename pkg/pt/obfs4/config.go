@@ -65,7 +65,7 @@ func LoadServerKeys(stateDir string) (certificate string, err error) {
 
 	// Read certificate from obfs4_bridgeline.txt
 	certFile := filepath.Join(stateDir, "obfs4_bridgeline.txt")
-	data, err := os.ReadFile(certFile)
+	data, err := os.ReadFile(certFile) // #nosec G304 -- stateDir 由调用方指定
 	if err != nil {
 		return "", fmt.Errorf("failed to load certificate: %w", err)
 	}
@@ -203,7 +203,7 @@ func extractAddress(line string) (string, error) {
 func ExportKeys(stateDir, outputPath string) error {
 	// Read the obfs4 state file
 	stateFile := filepath.Join(stateDir, "obfs4_state.json")
-	data, err := os.ReadFile(stateFile)
+	data, err := os.ReadFile(stateFile) // #nosec G304 -- stateDir 由调用方指定
 	if err != nil {
 		return fmt.Errorf("failed to read state file: %w", err)
 	}
@@ -219,7 +219,7 @@ func ExportKeys(stateDir, outputPath string) error {
 // ImportKeys imports obfs4 keys from a backup file.
 // Note: obfs4proxy manages keys internally. This function copies to the state directory.
 func ImportKeys(inputPath, stateDir string) error {
-	data, err := os.ReadFile(inputPath)
+	data, err := os.ReadFile(inputPath) // #nosec G304 -- 导入路径由调用方指定
 	if err != nil {
 		return fmt.Errorf("failed to read import file: %w", err)
 	}

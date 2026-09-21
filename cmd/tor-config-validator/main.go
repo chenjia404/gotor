@@ -246,12 +246,12 @@ func generateJSONSchema(outputPath string, verbose bool) error {
 	if outputPath != "" {
 		// Create directory if it doesn't exist
 		dir := filepath.Dir(outputPath)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return fmt.Errorf("failed to create directory: %w", err)
 		}
 
 		// Write file
-		if err := os.WriteFile(outputPath, jsonData, 0o644); err != nil {
+		if err := os.WriteFile(outputPath, jsonData, 0o644); err != nil { // #nosec G304,G306 -- CLI 输出的公开 JSON schema
 			return fmt.Errorf("failed to write file: %w", err)
 		}
 
@@ -365,12 +365,12 @@ func generateFromTemplate(templateName, outputPath string, verbose bool) error {
 	if outputPath != "" {
 		// Create directory if it doesn't exist
 		dir := filepath.Dir(outputPath)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return fmt.Errorf("failed to create directory: %w", err)
 		}
 
 		// Write file
-		if err := os.WriteFile(outputPath, content, 0o644); err != nil { // #nosec G304,G703 -- CLI 输出路径由用户指定
+		if err := os.WriteFile(outputPath, content, 0o644); err != nil { // #nosec G304,G306,G703 -- CLI 输出路径由用户指定
 			return fmt.Errorf("failed to write file: %w", err)
 		}
 
@@ -465,12 +465,12 @@ func generateSampleConfig(outputPath string, verbose bool) error {
 	if outputPath != "" {
 		// Create directory if it doesn't exist
 		dir := filepath.Dir(outputPath)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return fmt.Errorf("failed to create directory: %w", err)
 		}
 
 		// Write file
-		if err := os.WriteFile(outputPath, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(outputPath, []byte(content), 0o644); err != nil { // #nosec G304,G306 -- CLI 输出的样例配置
 			return fmt.Errorf("failed to write file: %w", err)
 		}
 

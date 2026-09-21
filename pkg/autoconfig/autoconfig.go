@@ -81,7 +81,7 @@ func EnsureDataDir(path string) error {
 			mode := info.Mode().Perm()
 			if mode != 0o700 {
 				// Fix permissions
-				if err := os.Chmod(path, 0o700); err != nil {
+				if err := os.Chmod(path, 0o700); err != nil { // #nosec G302 -- DataDirectory 目录权限 0700
 					return fmt.Errorf("failed to set directory permissions: %w", err)
 				}
 			}

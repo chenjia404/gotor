@@ -34,13 +34,12 @@ jobs:
       # 不用 securego/gosec Docker Action：v2.29.0 的 action.yml 仍拉取 2.28.0 镜像，
       # 其内置 Go 无法解析 go.mod 的 1.27.1，扫描会空退（SARIF 0 规则）并以非 0 退出。
       # 用本 job 已安装的 Go 1.27 编译 gosec v2.29.0（支持 Go 1.27）。
-      # -no-fail：存量告警（G115 协议整型、G104 示例未处理错误、规范要求的 SHA-1 等）
-      # 仍写入 SARIF 供 Code Scanning 展示，本步骤只保证扫描能跑完。
+      # 存量告警已清零，扫描失败即阻断合并。
       - name: Run gosec
         run: |
           export PATH="$(go env GOPATH)/bin:$PATH"
           go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
-          gosec -no-fail -fmt sarif -out results.sarif ./...
+          gosec -fmt sarif -out results.sarif ./...
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd  # v4.38.1

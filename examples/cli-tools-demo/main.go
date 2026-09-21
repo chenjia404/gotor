@@ -102,7 +102,7 @@ func main() {
 
 	for _, cmdInfo := range commands {
 		fmt.Printf("--- Running: torctl %s ---\n", cmdInfo.name)
-		cmd = exec.Command(cmdInfo.args[0], cmdInfo.args[1:]...)
+		cmd = exec.Command(cmdInfo.args[0], cmdInfo.args[1:]...) // #nosec G204 -- 演示调用本仓库构建的 torctl
 		output, err = cmd.CombinedOutput()
 		if err != nil {
 			log.Printf("Command failed: %v", err)

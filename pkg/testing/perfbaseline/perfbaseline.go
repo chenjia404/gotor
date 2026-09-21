@@ -213,7 +213,7 @@ func (b *Baseline) SaveSnapshot(path string) error {
 
 // LoadSnapshot reads a snapshot from a JSON file.
 func LoadSnapshot(path string) (*Snapshot, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- 快照路径由调用方指定
 	if err != nil {
 		return nil, fmt.Errorf("read snapshot: %w", err)
 	}

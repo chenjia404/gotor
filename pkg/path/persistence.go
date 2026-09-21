@@ -133,7 +133,7 @@ func (p *Persistence) releaseLock() error {
 // copyFile copies src to dst with proper resource cleanup.
 // Preserves restrictive permissions (0600) for security.
 func copyFile(src, dst string) error {
-	source, err := os.Open(src)
+	source, err := os.Open(src) // #nosec G304 -- 守卫状态路径由配置指定
 	if err != nil {
 		return fmt.Errorf("open source: %w", err)
 	}
@@ -146,7 +146,7 @@ func copyFile(src, dst string) error {
 	}
 
 	// Use restrictive permissions for security
-	dest, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	dest, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- 备份路径由配置指定
 	if err != nil {
 		return fmt.Errorf("create destination: %w", err)
 	}
@@ -322,7 +322,7 @@ func (p *Persistence) loadFromBackup(ctx context.Context) ([]GuardEntry, error) 
 	for i := 1; i <= p.config.BackupCount; i++ {
 		backupPath := fmt.Sprintf("%s.backup.%d", p.config.FilePath, i)
 
-		data, err := os.ReadFile(backupPath)
+		data, err := os.ReadFile(backupPath) // #nosec G304 -- 备份路径由守卫状态配置派生
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue

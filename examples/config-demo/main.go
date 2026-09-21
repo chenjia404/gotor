@@ -73,7 +73,7 @@ func main() {
 
 	// Demo 3: Display the actual file content
 	fmt.Println("--- Demo 3: Configuration File Content ---")
-	content, err := os.ReadFile(configFile)
+	content, err := os.ReadFile(configFile) // #nosec G304 -- 演示用临时配置文件
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to read config file: %v\n", err)
 		os.Exit(1)
@@ -99,7 +99,7 @@ ExcludeNodes badnode1
 ExcludeExitNodes badexit1
 ConnLimit 2000
 `
-	if err := os.WriteFile(customConfigFile, []byte(customContent), 0o644); err != nil {
+	if err := os.WriteFile(customConfigFile, []byte(customContent), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create custom config: %v\n", err)
 		os.Exit(1)
 	}
@@ -143,7 +143,7 @@ ConnLimit 2000
 	invalidContent := `SocksPort 70000  # Invalid - port too high
 ControlPort 9051
 `
-	if err := os.WriteFile(invalidConfigFile, []byte(invalidContent), 0o644); err != nil {
+	if err := os.WriteFile(invalidConfigFile, []byte(invalidContent), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create invalid config: %v\n", err)
 		os.Exit(1)
 	}

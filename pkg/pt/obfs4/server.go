@@ -144,7 +144,7 @@ func (s *Server) GetCertificate() (string, error) {
 	// Read certificate from state directory
 	// obfs4proxy stores the certificate in obfs4_bridgeline.txt
 	certFile := filepath.Join(s.config.StateDir, "obfs4_bridgeline.txt")
-	data, err := os.ReadFile(certFile)
+	data, err := os.ReadFile(certFile) // #nosec G304 -- StateDir 由调用方指定
 	if err != nil {
 		return "", fmt.Errorf("obfs4: failed to read certificate: %w", err)
 	}

@@ -126,7 +126,7 @@ func (sp *ServicePersistence) LoadIdentityKey() (ed25519.PrivateKey, error) {
 	keyPath := filepath.Join(sp.dataDir, identityKeyFile)
 
 	// Read key file
-	data, err := os.ReadFile(keyPath)
+	data, err := os.ReadFile(keyPath) // #nosec G304 -- DataDirectory 由操作者配置
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("identity key not found: %w", err)
@@ -195,7 +195,7 @@ func (sp *ServicePersistence) SaveNtorKey(ntorKey []byte) error {
 func (sp *ServicePersistence) LoadNtorKey() ([]byte, error) {
 	keyPath := filepath.Join(sp.dataDir, ntorKeyFile)
 
-	data, err := os.ReadFile(keyPath)
+	data, err := os.ReadFile(keyPath) // #nosec G304 -- DataDirectory 由操作者配置
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("ntor key not found: %w", err)
@@ -260,7 +260,7 @@ func (sp *ServicePersistence) SaveState(state *ServiceState) error {
 func (sp *ServicePersistence) LoadState() (*ServiceState, error) {
 	statePath := filepath.Join(sp.dataDir, stateFile)
 
-	data, err := os.ReadFile(statePath)
+	data, err := os.ReadFile(statePath) // #nosec G304 -- DataDirectory 由操作者配置
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("state file not found: %w", err)

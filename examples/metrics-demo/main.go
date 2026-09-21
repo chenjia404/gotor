@@ -107,7 +107,7 @@ func displayMetricsPeriodically(port int) {
 func displayMetrics(port int) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/metrics/json", port)
 
-	resp, err := http.Get(url)
+	resp, err := http.Get(url) // #nosec G107 -- 拉取本机 metrics 演示端点
 	if err != nil {
 		log.Printf("Failed to fetch metrics: %v", err)
 		return

@@ -83,7 +83,7 @@ func (ms *ManagedServer) Start(ctx context.Context) error {
 		return errors.Wrap(errors.CategoryNetwork, errors.SeverityHigh, "failed to create state directory", err)
 	}
 
-	ms.cmd = exec.CommandContext(ctx, ms.config.BinaryPath)
+	ms.cmd = exec.CommandContext(ctx, ms.config.BinaryPath) // #nosec G204 -- PT 二进制由配置指定
 	ms.cmd.Env = ms.buildEnvironment()
 
 	stdout, err := ms.cmd.StdoutPipe()
