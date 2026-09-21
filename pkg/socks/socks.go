@@ -343,7 +343,13 @@ func (s *Server) SetOnionNetwork(
 			"relays", len(relays))
 		cur, prev := dirClient.SharedRandomValues()
 		s.onionClient.SetSharedRandom(cur, prev)
-		s.onionClient.SetHSDirRingParams(onion.HSDirRingParamsFromConsensus(dirClient.LastConsensusParams()))
+		params := dirClient.LastConsensusParams()
+		s.onionClient.SetHSDirRingParams(onion.HSDirRingParamsFromConsensus(params))
+		s.onionClient.SetFlowControlConfig(
+			params["cc_alg"],
+			circuit.ConsensusSendmeInc(params),
+			circuit.CCParamsOnionFromConsensus(params),
+		)
 	}
 	if builder != nil {
 		begindir := onion.NewBegindirFetcher(builder, s.logger)
@@ -1350,6 +1356,12 @@ func (s *Server) relayOnionServiceData(ctx context.Context, socksConn net.Conn, 
 					return
 				}
 			case cell.RelayEnd:
+				reason := byte(0)
+				if len(relayCell.Data) > 0 {
+					reason = relayCell.Data[0]
+				}
+				s.logger.Info("Onion stream RELAY_END",
+					"circuit_id", circuitID, "stream_id", streamID, "reason", reason)
 				_ = socksConn.Close()
 				return
 			}

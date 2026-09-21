@@ -26,6 +26,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/opd-ai/go-tor/pkg/cell"
+	"github.com/opd-ai/go-tor/pkg/circuit"
 	"github.com/opd-ai/go-tor/pkg/crypto"
 	"github.com/opd-ai/go-tor/pkg/directory"
 	"github.com/opd-ai/go-tor/pkg/logger"
@@ -184,6 +185,7 @@ type Descriptor struct {
 	CreatedAt                time.Time           // When descriptor was created
 	Lifetime                 time.Duration       // Descriptor validity lifetime
 	PoWParams                *PoWParams          // 第二层明文 pow-params v1（可选）
+	FlowControl              *FlowControlParams  // 第二层明文 flow-control（可选，prop324）
 }
 
 // IntroductionPoint represents an introduction point
@@ -342,6 +344,8 @@ type RendezvousState struct {
 	IntroAuthKey     [32]byte // Introduction point AUTH_KEY (Ed25519)
 	Subcredential    [32]byte // N_hs_subcred
 	CircuitID        uint32   // Rendezvous circuit ID
+	NegotiateCC      bool     // INTRODUCE 已带 CC_FIELD_REQUEST
+	SendmeInc        int      // 描述符 flow-control 的 sendme-inc
 }
 
 // Client provides onion service client functionality for connecting to .onion addresses.
@@ -360,6 +364,10 @@ type Client struct {
 	// AfterIntroduce1 在 INTRODUCE1 发送成功后调用（用于 Padding=2 HS setup 机）。
 	// introCircuitID 为引言点电路；失败只记日志，不中断连接。
 	AfterIntroduce1 func(ctx context.Context, introCircuitID uint32) error
+
+	ccAlg         int              // 共识 cc_alg；0 表示全网关闭拥塞控制
+	ccSendmeInc   int              // 共识 cc_sendme_inc（默认 31）
+	onionCCParams circuit.CCParams // 洋葱会合用 Vegas 参数
 }
 
 // NewClient creates a new onion service client
@@ -375,6 +383,22 @@ func NewClient(log *logger.Logger) *Client {
 		consensus:       make([]*HSDirectory, 0),
 		rendezvousState: make(map[uint32]*RendezvousState), // AUDIT-006
 		authStore:       NewClientAuthStore(),              // Client authorization support
+		ccSendmeInc:     31,
+		onionCCParams:   circuit.DefaultOnionCCParams(),
+	}
+}
+
+// SetFlowControlConfig 注入共识拥塞控制参数，供 INTRODUCE CC 协商与会合窗使用。
+func (c *Client) SetFlowControlConfig(ccAlg, sendmeInc int, onionParams circuit.CCParams) {
+	if c == nil {
+		return
+	}
+	c.ccAlg = ccAlg
+	if sendmeInc >= 1 && sendmeInc <= 250 {
+		c.ccSendmeInc = sendmeInc
+	}
+	if onionParams.CwndInit > 0 {
+		c.onionCCParams = onionParams
 	}
 }
 
@@ -955,6 +979,11 @@ func parseDecryptedLayer(data []byte) (*Descriptor, error) {
 		case "pow-params":
 			if p := parsePoWParamsLine(args); p != nil {
 				desc.PoWParams = p
+			}
+
+		case "flow-control":
+			if p := parseFlowControlLine(args); p != nil {
+				desc.FlowControl = p
 			}
 		}
 	}
@@ -1793,6 +1822,7 @@ type IntroduceRequest struct {
 	EphemeralPublic     [32]byte           // Client's ephemeral public key X
 	Subcredential       []byte             // N_hs_subcred（32 字节）
 	PoW                 *PoWProof          // 可选；描述符宣告 pow-params 时由客户端填入
+	RequestCC           bool               // INTRODUCE 加密段带 CC_FIELD_REQUEST
 }
 
 // BuildIntroduce1Cell constructs an INTRODUCE1 cell for the introduction protocol
@@ -1905,11 +1935,19 @@ func (ip *IntroductionProtocol) buildEncryptedData(req *IntroduceRequest) ([]byt
 
 	var plaintext bytes.Buffer
 	plaintext.Write(req.RendezvousCookie)
+	var exts [][]byte
+	if req.RequestCC {
+		exts = append(exts, encodeCCRequestExtension())
+	}
 	if req.PoW != nil {
-		plaintext.WriteByte(1)
-		plaintext.Write(encodePoWExtension(req.PoW))
-	} else {
-		plaintext.WriteByte(0)
+		exts = append(exts, encodePoWExtension(req.PoW))
+	}
+	if len(exts) > 255 {
+		return nil, fmt.Errorf("too many INTRODUCE extensions")
+	}
+	plaintext.WriteByte(byte(len(exts)))
+	for _, ext := range exts {
+		plaintext.Write(ext)
 	}
 	plaintext.WriteByte(0x01)           // ONION_KEY_TYPE = NTOR
 	plaintext.Write([]byte{0x00, 0x20}) // ONION_KEY_LEN = 32
@@ -2101,13 +2139,14 @@ func (ip *IntroductionProtocol) SendIntroduce1(ctx context.Context, circuitID ui
 	return nil
 }
 
-// establishIntroductionCircuit 依次尝试描述符中的引言点。
+// establishIntroductionCircuit 打乱顺序后依次尝试描述符中的引言点。
 func (c *Client) establishIntroductionCircuit(ctx context.Context, intro *IntroductionProtocol, desc *Descriptor) (*IntroductionPoint, uint32, error) {
 	if desc == nil || len(desc.IntroPoints) == 0 {
 		return nil, 0, fmt.Errorf("no introduction points available")
 	}
+	order := shuffledIndices(len(desc.IntroPoints))
 	var lastErr error
-	for i := range desc.IntroPoints {
+	for pos, i := range order {
 		candidate := &desc.IntroPoints[i]
 		circuitID, err := intro.CreateIntroductionCircuit(ctx, candidate, c.circuitBuilder)
 		if err == nil {
@@ -2116,7 +2155,7 @@ func (c *Client) establishIntroductionCircuit(ctx context.Context, intro *Introd
 		lastErr = err
 		c.logger.Warn("Introduction circuit failed, trying next intro point",
 			"index", i,
-			"remaining", len(desc.IntroPoints)-i-1,
+			"remaining", len(order)-pos-1,
 			"error", err)
 	}
 	if lastErr == nil {
@@ -2125,12 +2164,27 @@ func (c *Client) establishIntroductionCircuit(ctx context.Context, intro *Introd
 	return nil, 0, lastErr
 }
 
+func shuffledIndices(n int) []int {
+	order := make([]int, n)
+	for i := range order {
+		order[i] = i
+	}
+	for i := n - 1; i > 0; i-- {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return order
+		}
+		j := int(binary.BigEndian.Uint64(b[:]) % uint64(i+1))
+		order[i], order[j] = order[j], order[i]
+	}
+	return order
+}
+
 // ConnectToOnionService orchestrates the full connection process to an onion service
 // This combines descriptor fetching, introduction, and rendezvous protocols
 func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint32, error) {
 	c.logger.Info("Connecting to onion service", "address", addr.String())
 
-	// Step 1: Get descriptor (from cache or fetch from HSDirs)
 	desc, err := c.GetDescriptor(ctx, addr)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get descriptor: %w", err)
@@ -2139,15 +2193,23 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 	c.logger.Info("Descriptor retrieved",
 		"intro_points", len(desc.IntroPoints),
 		"revision", desc.RevisionCounter,
-		"pow_effort", powEffortLog(desc.PoWParams))
+		"pow_effort", powEffortLog(desc.PoWParams),
+		"flow_ctrl", flowControlLog(desc.FlowControl))
 
-	// Step 2: Generate cryptographically secure rendezvous cookie
+	wantCC := false
+	sendmeInc := 0
+	if err := validateFlowControlForRequest(desc.FlowControl, c.ccAlg, c.ccSendmeInc); err == nil {
+		wantCC = true
+		sendmeInc = desc.FlowControl.SendmeInc
+	} else if desc.FlowControl != nil {
+		c.logger.Info("Onion FlowCtrl=2 not requested", "reason", err.Error())
+	}
+
 	rendezvousCookie := make([]byte, 20)
 	if _, err := rand.Read(rendezvousCookie); err != nil {
 		return 0, fmt.Errorf("failed to generate rendezvous cookie: %w", err)
 	}
 
-	// Step 3: Establish rendezvous point（从全网 Fast 节点选，而非仅 HSDir）
 	rendCandidates := c.rendezvousCandidates()
 	rendezvousCircuitID, rendezvousPoint, err := c.EstablishRendezvousPoint(ctx, rendezvousCookie, rendCandidates)
 	if err != nil {
@@ -2158,17 +2220,6 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 		"circuit_id", rendezvousCircuitID,
 		"fingerprint", rendezvousPoint.Fingerprint)
 
-	// Step 4–5: 轮换引言点建路（过期描述符里的节点可能缺 extend 密钥）
-	intro := NewIntroductionProtocol(c.logger)
-	introPoint, introCircuitID, err := c.establishIntroductionCircuit(ctx, intro, desc)
-	if err != nil {
-		c.cache.Remove(addr)
-		return 0, fmt.Errorf("failed to create introduction circuit: %w", err)
-	}
-
-	c.logger.Debug("Introduction circuit created", "circuit_id", introCircuitID)
-
-	// Step 6: 计算 subcredential 并构造 INTRODUCE1（hs-ntor）
 	timePeriod := GetTimePeriod(time.Now())
 	blinded := ComputeBlindedPubkey(ed25519.PublicKey(addr.Pubkey), timePeriod)
 	subcred := ComputeHSSubcredential(addr.Pubkey, blinded)
@@ -2178,15 +2229,6 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 		return 0, fmt.Errorf("rendezvous link specs: %w", err)
 	}
 
-	req := &IntroduceRequest{
-		IntroPoint:          introPoint,
-		RendezvousCookie:    rendezvousCookie,
-		RendezvousPoint:     rendezvousPoint.Fingerprint,
-		RendezvousCircuitID: rendezvousCircuitID,
-		Subcredential:       subcred,
-		RendezvousOnionKey:  rpOnionKey,
-		RendezvousLinkSpecs: rpLinkSpecs,
-	}
 	proof, err := SolveOnionPoW(ctx, desc.PoWParams, blinded)
 	if err != nil {
 		return 0, fmt.Errorf("onion pow: %w", err)
@@ -2199,52 +2241,97 @@ func (c *Client) ConnectToOnionService(ctx context.Context, addr *Address) (uint
 			"effort", proof.Effort,
 			"suggested", desc.PoWParams.SuggestedEffort)
 	}
-	req.PoW = proof
 
-	introduce1Data, err := intro.BuildIntroduce1Cell(req)
-	if err != nil {
-		return 0, fmt.Errorf("failed to build INTRODUCE1 cell: %w", err)
-	}
-
-	// 保存 hs-ntor 状态供 RENDEZVOUS2 验完握手
-	if len(introPoint.EncKey) == 32 && len(introPoint.AuthKey) == 32 {
-		st := &RendezvousState{CircuitID: rendezvousCircuitID}
-		copy(st.EphemeralPrivate[:], req.EphemeralPrivate[:])
-		copy(st.EphemeralPublic[:], req.EphemeralPublic[:])
-		copy(st.IntroEncKeyB[:], introPoint.EncKey)
-		copy(st.IntroAuthKey[:], introPoint.AuthKey)
-		copy(st.Subcredential[:], subcred)
-		c.StoreRendezvousState(rendezvousCircuitID, st)
-	}
-
-	c.logger.Debug("INTRODUCE1 cell built", "size", len(introduce1Data))
-
-	if err := intro.SendIntroduce1(ctx, introCircuitID, introduce1Data, c.cellSender); err != nil {
-		c.RemoveRendezvousState(rendezvousCircuitID)
-		return 0, fmt.Errorf("failed to send INTRODUCE1: %w", err)
-	}
-
-	c.logger.Debug("INTRODUCE1 cell sent")
-
-	// Padding=2：引言电路上启动 HS setup 机（失败不阻断连接）
-	if c.AfterIntroduce1 != nil {
-		if err := c.AfterIntroduce1(ctx, introCircuitID); err != nil {
-			c.logger.Warn("AfterIntroduce1 circpad hook failed",
-				"circuit_id", introCircuitID, "error", err)
+	intro := NewIntroductionProtocol(c.logger)
+	order := shuffledIndices(len(desc.IntroPoints))
+	var lastErr error
+	for pos, idx := range order {
+		if err := ctx.Err(); err != nil {
+			return 0, err
 		}
+		introPoint := &desc.IntroPoints[idx]
+		introCircuitID, err := intro.CreateIntroductionCircuit(ctx, introPoint, c.circuitBuilder)
+		if err != nil {
+			lastErr = err
+			c.logger.Warn("Introduction circuit failed, trying next intro point",
+				"index", idx, "remaining", len(order)-pos-1, "error", err)
+			continue
+		}
+
+		req := &IntroduceRequest{
+			IntroPoint:          introPoint,
+			RendezvousCookie:    rendezvousCookie,
+			RendezvousPoint:     rendezvousPoint.Fingerprint,
+			RendezvousCircuitID: rendezvousCircuitID,
+			Subcredential:       subcred,
+			RendezvousOnionKey:  rpOnionKey,
+			RendezvousLinkSpecs: rpLinkSpecs,
+			PoW:                 proof,
+			RequestCC:           wantCC,
+		}
+
+		introduce1Data, err := intro.BuildIntroduce1Cell(req)
+		if err != nil {
+			lastErr = err
+			c.logger.Warn("Build INTRODUCE1 failed", "index", idx, "error", err)
+			continue
+		}
+
+		if len(introPoint.EncKey) == 32 && len(introPoint.AuthKey) == 32 {
+			st := &RendezvousState{
+				CircuitID:   rendezvousCircuitID,
+				NegotiateCC: wantCC,
+				SendmeInc:   sendmeInc,
+			}
+			copy(st.EphemeralPrivate[:], req.EphemeralPrivate[:])
+			copy(st.EphemeralPublic[:], req.EphemeralPublic[:])
+			copy(st.IntroEncKeyB[:], introPoint.EncKey)
+			copy(st.IntroAuthKey[:], introPoint.AuthKey)
+			copy(st.Subcredential[:], subcred)
+			c.StoreRendezvousState(rendezvousCircuitID, st)
+		}
+
+		if err := intro.SendIntroduce1(ctx, introCircuitID, introduce1Data, c.cellSender); err != nil {
+			c.RemoveRendezvousState(rendezvousCircuitID)
+			lastErr = err
+			c.logger.Warn("Send INTRODUCE1 failed", "index", idx, "error", err)
+			continue
+		}
+
+		if c.AfterIntroduce1 != nil {
+			if err := c.AfterIntroduce1(ctx, introCircuitID); err != nil {
+				c.logger.Warn("AfterIntroduce1 circpad hook failed",
+					"circuit_id", introCircuitID, "error", err)
+			}
+		}
+
+		if err := c.CompleteRendezvous(ctx, rendezvousCircuitID); err != nil {
+			c.RemoveRendezvousState(rendezvousCircuitID)
+			lastErr = err
+			c.logger.Warn("Rendezvous failed, trying next intro point",
+				"index", idx, "remaining", len(order)-pos-1, "error", err)
+			continue
+		}
+
+		c.logger.Info("Successfully connected to onion service",
+			"address", addr.String(),
+			"rendezvous_circuit_id", rendezvousCircuitID,
+			"intro_index", idx)
+		return rendezvousCircuitID, nil
 	}
 
-	// Step 8: Wait for RENDEZVOUS2 and complete the connection
-	if err := c.CompleteRendezvous(ctx, rendezvousCircuitID); err != nil {
-		return 0, fmt.Errorf("failed to complete rendezvous: %w", err)
+	c.cache.Remove(addr)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no introduction points available")
 	}
+	return 0, fmt.Errorf("failed to connect via introduction points: %w", lastErr)
+}
 
-	c.logger.Info("Successfully connected to onion service",
-		"address", addr.String(),
-		"rendezvous_circuit_id", rendezvousCircuitID)
-
-	// Return the rendezvous circuit ID as it's the final connection circuit
-	return rendezvousCircuitID, nil
+func flowControlLog(p *FlowControlParams) string {
+	if p == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%d-%d/%d", p.VersionMin, p.VersionMax, p.SendmeInc)
 }
 
 // RendezvousProtocol handles rendezvous point operations for onion services
@@ -2673,6 +2760,8 @@ func (c *Client) CompleteRendezvous(ctx context.Context, rendezvousCircuitID uin
 		"key_material_len", len(keyMaterial),
 		"circuit_id", rendezvousCircuitID)
 
+	c.applyOnionFlowControl(rendezvousCircuitID, state)
+
 	// 安装会合末跳加密（SHA3-256 + AES-256）
 	if installer, ok := c.circuitBuilder.(interface {
 		InstallHSHop(circuitID uint32, keyMaterial []byte) error
@@ -2692,6 +2781,37 @@ func (c *Client) CompleteRendezvous(ctx context.Context, rendezvousCircuitID uin
 
 	c.RemoveRendezvousState(rendezvousCircuitID)
 	c.logger.Info("Rendezvous protocol completed successfully")
+	return nil
+}
+
+// applyOnionFlowControl 在安装 HS 跳之前对齐与洋葱服务的电路窗。
+// 已在 INTRODUCE 协商 CC：启用洋葱 Vegas；否则清掉建路时从中间跳继承的 FlowCtrl=2。
+func (c *Client) applyOnionFlowControl(circuitID uint32, state *RendezvousState) {
+	circ := c.lookupCircuit(circuitID)
+	if circ == nil {
+		return
+	}
+	if state != nil && state.NegotiateCC && state.SendmeInc >= 1 {
+		circ.SetCCParams(c.onionCCParams)
+		circ.EnableCongestionControl(state.SendmeInc)
+		c.logger.Info("Onion FlowCtrl=2 enabled",
+			"circuit_id", circuitID, "sendme_inc", state.SendmeInc)
+		return
+	}
+	if circ.CongestionControlEnabled() {
+		circ.DisableCongestionControl()
+		c.logger.Info("Onion classic flow control",
+			"circuit_id", circuitID, "reason", "no INTRODUCE CC_FIELD_REQUEST")
+	}
+}
+
+func (c *Client) lookupCircuit(circuitID uint32) *circuit.Circuit {
+	if adapter, ok := c.circuitBuilder.(*CircuitAdapter); ok {
+		return adapter.GetCircuit(circuitID)
+	}
+	if adapter, ok := c.cellSender.(*CircuitAdapter); ok {
+		return adapter.GetCircuit(circuitID)
+	}
 	return nil
 }
 

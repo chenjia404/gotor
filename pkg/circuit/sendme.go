@@ -124,6 +124,26 @@ func (c *Circuit) EnableCongestionControl(sendmeInc int) {
 	c.vegas = newVegasState(p, sendmeInc)
 	c.packageWindow = c.vegas.cwnd
 	c.deliverWindow = c.vegas.cwnd
+	c.sendmeReceived = 0
+	c.sendmeExpected = nil
+}
+
+// DisableCongestionControl 回到经典电路窗（1000 / SENDME+100）。
+// 会合电路建路时可能已与中间跳协商了 FlowCtrl=2，但洋葱服务端只有在
+// INTRODUCE 里收到 CC_FIELD_REQUEST 后才会用 Vegas；未协商时必须关掉，
+// 否则客户端按 sendme_inc=31 发 SENDME，服务按经典窗处理会提前掐流。
+func (c *Circuit) DisableCongestionControl() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.vegas = nil
+	c.sendmeInc = 0
+	c.packageWindow = 1000
+	c.deliverWindow = 1000
+	c.sendmeReceived = 0
+	c.sendmeExpected = nil
 }
 
 // decrementPackageWindowForSendme 原子减窗，并标明本 cell 是否落在 SENDME 边界。

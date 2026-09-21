@@ -69,3 +69,31 @@ func TestCCParamsFromNilConsensus(t *testing.T) {
 		t.Fatal("nil params must equal defaults")
 	}
 }
+
+func TestCCParamsOnionFromConsensus(t *testing.T) {
+	p := CCParamsOnionFromConsensus(map[string]int{
+		"cc_vegas_beta_onion":  372,
+		"cc_vegas_gamma_onion": 248,
+		"cc_vegas_delta_onion": 434,
+		"cc_sscap_onion":       475,
+	})
+	if p.VegasBeta != 372 || p.VegasGamma != 248 || p.VegasDelta != 434 || p.SSCap != 475 {
+		t.Fatalf("onion params = %+v", p)
+	}
+	p2 := CCParamsOnionFromConsensus(map[string]int{
+		"cc_vegas_beta_exit": 999,
+		"cc_sscap_exit":      999,
+	})
+	if p2.VegasBeta == 999 || p2.SSCap == 999 {
+		t.Fatalf("onion params must ignore exit keys: %+v", p2)
+	}
+}
+
+func TestConsensusSendmeInc(t *testing.T) {
+	if ConsensusSendmeInc(nil) != 31 {
+		t.Fatal("default sendme_inc")
+	}
+	if ConsensusSendmeInc(map[string]int{"cc_sendme_inc": 50}) != 50 {
+		t.Fatal("override")
+	}
+}

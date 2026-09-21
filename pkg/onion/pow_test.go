@@ -139,6 +139,7 @@ func TestBuildIntroduce1CellWithPoW(t *testing.T) {
 		RendezvousLinkSpecs: []LinkSpecifier{{Type: 0, Data: []byte{127, 0, 0, 1, 0, 80}}},
 		Subcredential:       make([]byte, 32),
 		PoW:                 proof,
+		RequestCC:           true,
 	}
 	cell, err := intro.BuildIntroduce1Cell(req)
 	if err != nil {

@@ -4,7 +4,8 @@ package circuit
 // 缺省值对照 C Tor congestion_control_common.c / congestion_control_vegas.c
 // 与 2026-08 共识（未列出的项用 C Tor 默认）。
 //
-// 客户端走 Exit 电路，因此 Vegas 阈值用 *_exit / cc_sscap_exit。
+// Exit 电路用 *_exit / cc_sscap_exit；洋葱会合电路用
+// CCParamsOnionFromConsensus 读 *_onion / cc_sscap_onion。
 type CCParams struct {
 	CwndInit        int // cc_cwnd_init
 	CwndMin         int // cc_cwnd_min
@@ -12,11 +13,11 @@ type CCParams struct {
 	CwndInc         int // cc_cwnd_inc
 	CwndIncRate     int // cc_cwnd_inc_rate
 	CwndIncPctSS    int // cc_cwnd_inc_pct_ss
-	VegasAlpha      int // cc_vegas_alpha_exit
-	VegasBeta       int // cc_vegas_beta_exit
-	VegasGamma      int // cc_vegas_gamma_exit
-	VegasDelta      int // cc_vegas_delta_exit
-	SSCap           int // cc_sscap_exit
+	VegasAlpha      int // cc_vegas_alpha_{exit|onion}
+	VegasBeta       int // cc_vegas_beta_{exit|onion}
+	VegasGamma      int // cc_vegas_gamma_{exit|onion}
+	VegasDelta      int // cc_vegas_delta_{exit|onion}
+	SSCap           int // cc_sscap_{exit|onion}
 	SSMax           int // cc_ss_max
 	CwndFullGap     int // cc_cwnd_full_gap
 	CwndFullMinPct  int // cc_cwnd_full_minpct
@@ -87,6 +88,51 @@ func CCParamsFromConsensus(params map[string]int) CCParams {
 	p.EwmaMax = pickParam(params, "cc_ewma_max", p.EwmaMax, 2, 100)
 	p.RTTResetPct = pickParam(params, "cc_rtt_reset_pct", p.RTTResetPct, 0, 100)
 	return p
+}
+
+// DefaultOnionCCParams 洋葱会合电路的 Vegas 缺省（C Tor *_onion / cc_sscap_onion）。
+func DefaultOnionCCParams() CCParams {
+	p := DefaultCCParams()
+	// C Tor：alpha_onion 默认与 exit 同为 186；beta/gamma/delta/sscap 用洋葱专用值。
+	p.VegasBeta = 6 * outbufCells  // 372
+	p.VegasGamma = 4 * outbufCells // 248
+	p.VegasDelta = 7 * outbufCells // 434
+	p.SSCap = 475
+	return p
+}
+
+// CCParamsOnionFromConsensus 读洋葱会合用的 Vegas / sscap 参数。
+// 缺 *_onion 键时保留 DefaultOnionCCParams，不退回 exit 阈值。
+func CCParamsOnionFromConsensus(params map[string]int) CCParams {
+	p := DefaultOnionCCParams()
+	if params == nil {
+		return p
+	}
+	p.CwndInit = pickParam(params, "cc_cwnd_init", p.CwndInit, sendmeIncDefault, 10000)
+	p.CwndMin = pickParam(params, "cc_cwnd_min", p.CwndMin, sendmeIncDefault, 1000)
+	p.CwndMax = pickParam(params, "cc_cwnd_max", p.CwndMax, 500, 1<<31-1)
+	p.CwndInc = pickParam(params, "cc_cwnd_inc", p.CwndInc, 1, 1000)
+	p.CwndIncRate = pickParam(params, "cc_cwnd_inc_rate", p.CwndIncRate, 1, 250)
+	p.CwndIncPctSS = pickParam(params, "cc_cwnd_inc_pct_ss", p.CwndIncPctSS, 1, 500)
+	p.VegasAlpha = pickParam(params, "cc_vegas_alpha_onion", p.VegasAlpha, 0, 1000)
+	p.VegasBeta = pickParam(params, "cc_vegas_beta_onion", p.VegasBeta, 0, 1000)
+	p.VegasGamma = pickParam(params, "cc_vegas_gamma_onion", p.VegasGamma, 0, 1000)
+	p.VegasDelta = pickParam(params, "cc_vegas_delta_onion", p.VegasDelta, 0, 1<<31-1)
+	p.SSCap = pickParam(params, "cc_sscap_onion", p.SSCap, 100, 1<<31-1)
+	p.SSMax = pickParam(params, "cc_ss_max", p.SSMax, 500, 1<<31-1)
+	p.CwndFullGap = pickParam(params, "cc_cwnd_full_gap", p.CwndFullGap, 0, 32767)
+	p.CwndFullMinPct = pickParam(params, "cc_cwnd_full_minpct", p.CwndFullMinPct, 0, 100)
+	p.CwndFullPerCwnd = pickParam(params, "cc_cwnd_full_per_cwnd", p.CwndFullPerCwnd, 0, 1)
+	p.EwmaSS = pickParam(params, "cc_ewma_ss", p.EwmaSS, 1, 100)
+	p.EwmaCwndPct = pickParam(params, "cc_ewma_cwnd_pct", p.EwmaCwndPct, 1, 100)
+	p.EwmaMax = pickParam(params, "cc_ewma_max", p.EwmaMax, 2, 100)
+	p.RTTResetPct = pickParam(params, "cc_rtt_reset_pct", p.RTTResetPct, 0, 100)
+	return p
+}
+
+// ConsensusSendmeInc 返回共识 cc_sendme_inc（缺省 31），供校验描述符 flow-control 行。
+func ConsensusSendmeInc(params map[string]int) int {
+	return pickParam(params, "cc_sendme_inc", sendmeIncDefault, 1, 250)
 }
 
 func pickParam(params map[string]int, key string, def, min, max int) int {

@@ -244,6 +244,21 @@ func TestEnableCongestionControlRejectsBadInc(t *testing.T) {
 	}
 }
 
+func TestDisableCongestionControlRestoresClassicWindow(t *testing.T) {
+	c := NewCircuit(1)
+	c.EnableCongestionControl(31)
+	if !c.CongestionControlEnabled() {
+		t.Fatal("expected Vegas")
+	}
+	c.DisableCongestionControl()
+	if c.CongestionControlEnabled() {
+		t.Fatal("Vegas should be cleared")
+	}
+	if c.SendmeIncrement() != 100 {
+		t.Fatalf("classic sendme_inc=%d", c.SendmeIncrement())
+	}
+}
+
 func TestPercentMaxMix(t *testing.T) {
 	if got := percentMaxMix(10, 20, 100); got != 20 {
 		t.Fatalf("pct=100 → max, got %d", got)
