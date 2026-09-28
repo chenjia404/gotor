@@ -7,7 +7,7 @@ require (
 	github.com/cretz/bine v0.2.0
 	github.com/gofrs/flock v0.13.1
 	github.com/klauspost/compress v1.20.0
-	github.com/ulikunitz/xz v0.5.16
+	github.com/ulikunitz/xz v0.5.17
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.46.0
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.46.0
